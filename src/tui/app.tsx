@@ -1361,13 +1361,18 @@ export function App({
     if (key.name === "c" && key.ctrl) {
       // Escalating flow: every press clears the prompt; a 2nd press inside
       // the window opens the close menu; a 3rd (in the menu) quits via the
-      // confirm branch above.
+      // confirm branch above. An empty prompt jumps straight to the menu.
       const at = Date.now();
       if (at - lastCtrlCRef.current > CTRL_C_WINDOW_MS) ctrlCCountRef.current = 0;
       ctrlCCountRef.current += 1;
       lastCtrlCRef.current = at;
       if (openThreadId !== null) resetDraft(openThreadId);
-      if (ctrlCCountRef.current >= 2) setQuitConfirmOpen(true);
+      if (draft.trim().length === 0 || ctrlCCountRef.current >= 2) {
+        toasts.dismiss("ctrl-c");
+        setQuitConfirmOpen(true);
+      } else {
+        toasts.push("ctrl-c", "info", "ctrl-c again if you want to quit", 2_000);
+      }
       return;
     }
     if ((key.name === "v" || key.name === "V") && (key.ctrl || key.meta)) {
@@ -2580,21 +2585,23 @@ export function App({
             <box style={{ flexGrow: 1 }} />
             <box style={{ flexDirection: "row", height: 1, flexShrink: 0, justifyContent: "flex-end" }}>
               <text
-                fg={quitCancelHover.hovered ? COLOR.text : COLOR.dim}
+                fg={COLOR.dim}
+                bg={quitCancelHover.hovered ? SURFACE.hover : SURFACE.raised}
                 selectable={false}
                 onMouseDown={closeQuitConfirm}
                 {...quitCancelHover.handlers}
               >
-                {"Cancel (esc)"}
+                {" Cancel (esc) "}
               </text>
+              <text fg={COLOR.dim} bg={SURFACE.raised} selectable={false}>{"  "}</text>
               <text
                 fg={COLOR.danger}
-                attributes={quitConfirmHover.hovered ? TextAttributes.BOLD | TextAttributes.UNDERLINE : 0}
+                bg={quitConfirmHover.hovered ? SURFACE.hover : SURFACE.raised}
                 selectable={false}
                 onMouseDown={onQuit}
                 {...quitConfirmHover.handlers}
               >
-                {"   Quit (enter / ctrl+c again)"}
+                {" Quit (enter / ctrl+c again) "}
               </text>
             </box>
           </box>
@@ -2604,7 +2611,8 @@ export function App({
         // The external editor owns the terminal now: keep rendering the app
         // underneath, but swallow every mouse event behind this catcher so
         // nothing clickable fires until the editor closes. Keys are already
-        // gated via `editingExternally`.
+        // gated via `editingExternally`. The message itself lives in the
+        // chat pane, not centered over the whole terminal.
         <box
           style={{
             position: "absolute",
@@ -2613,17 +2621,29 @@ export function App({
             width,
             height,
             flexDirection: "column",
-            justifyContent: "center",
             zIndex: 40,
           }}
           selectable={false}
           onMouseDown={() => {}}
         >
-          <text fg={COLOR.faint} selectable={false}>{"─".repeat(Math.max(0, width))}</text>
-          <box style={{ flexDirection: "row", height: 1, flexShrink: 0, justifyContent: "center" }}>
-            <text fg={COLOR.dim} selectable={false}>{"Save and close editor to continue…"}</text>
+          <box
+            style={{
+              position: "absolute",
+              left: SIDEBAR_WIDTH + CHAT_GUTTER,
+              top: 0,
+              width: chatWidth,
+              height,
+              flexDirection: "column",
+              justifyContent: "center",
+            }}
+            selectable={false}
+          >
+            <text fg={COLOR.faint} selectable={false}>{"─".repeat(Math.max(0, chatWidth))}</text>
+            <box style={{ flexDirection: "row", height: 1, flexShrink: 0, justifyContent: "center" }}>
+              <text fg={COLOR.dim} selectable={false}>{"Save and close editor to continue…"}</text>
+            </box>
+            <text fg={COLOR.faint} selectable={false}>{"─".repeat(Math.max(0, chatWidth))}</text>
           </box>
-          <text fg={COLOR.faint} selectable={false}>{"─".repeat(Math.max(0, width))}</text>
         </box>
       ) : null}
     </box>

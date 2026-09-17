@@ -1,25 +1,37 @@
 # AGENTS.md
 
-This repository owns the standalone `t3code` handover CLI.
+`t3code-tui` is an interactive terminal UI plus CLI for T3 Code threads (Bun + TypeScript + React via `@opentui/react`).
+
+## Layout
+
+- `src/cli.ts` — command definitions; thin dispatch over the modules below.
+- `src/tui/` — the interactive app: `app.tsx` wires state, `timeline.tsx` / `sidebar.tsx` / `composer.tsx` / `diffpanel.tsx` render panes, `model/` holds pure projection logic (`thread.ts`, `turns.ts`, `activity.ts`, …), `hooks/` shared runtime hooks.
+- `src/threads/`, `src/catalog/`, `src/projects/`, `src/handover/` — CLI implementations against the live T3 server.
+- `src/tui/render-check.tsx` — snapshot harness: drives the app with a mock client, scripts input, captures char frames. No live terminal needed.
+- `upstream/` — read-only T3 Code reference for behavior parity (banner triggers, compaction rules). Verify there before copying desktop behavior — never guess it.
 
 ## Workflow
 
 1. Inspect `git status --short --branch` and the files being changed.
-2. Keep the command's JSON envelope backward compatible.
-3. Run `bun run check` before claiming completion.
-4. The local `t3code` command is a `t3code.cmd` shim in bun's bin dir pointing at this repo's `dist/cli.js`; re-create it only when the package bin mapping changes or the repo moves — ordinary builds update the linked command in place.
+2. Keep CLI JSON envelopes backward compatible.
+3. Run `bun run check` (typecheck + tests + build) before claiming completion.
+4. Extend `render-check.tsx` and `model/*.test.ts` when changing TUI behavior.
+
+## TUI conventions
+
+- New stateful concerns go in `src/tui/hooks/`, not more `useState` in `app.tsx`.
+- Every modal renders inside `ModalShell`; notices go through `useToasts`.
+- Interactive chrome gets `useHover()` feedback and `selectable={false}`; only readable text stays selectable.
 
 ## Boundaries
 
-- Never print or persist T3 bearer tokens. Issue them through the upstream `t3 auth session` command and revoke them in `finally`.
-- Keep local project discovery read-only. Fall back to authenticated HTTP when the projection database or schema is unavailable.
-- Pass handover prompts as process arguments or stdin arrays, never by concatenating them into an executable shell command.
-- Preserve explicit failures for unsupported worktree preparation and exact-thread desktop navigation until upstream T3 exposes stable contracts.
+- Never print or persist T3 bearer tokens (mint via `t3 auth session`, revoke in `finally`).
+- Keep local project discovery read-only; fall back to authenticated HTTP when the projection DB/schema is unavailable.
+- Pass handover prompts as argv/stdin arrays, never concatenated into shell commands.
 
 ## Commands
 
 - Install: `bun install`
-- Typecheck, test, and build: `bun run check`
-- Link locally: create the `t3code.cmd` shim in bun's bin dir (see skill `skills/t3code-handoff/SKILL.md`)
+- Typecheck, test, build: `bun run check`
+- TUI snapshot harness: `bun src/tui/render-check.tsx`
 - Diagnose live integration: `t3code --json doctor`
-- No-write smoke: `t3code --json handover --cwd . --prompt "Smoke test" --open none --dry-run`

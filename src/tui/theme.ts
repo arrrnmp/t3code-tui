@@ -7,6 +7,9 @@ export const SURFACE = {
   base: "#09090b",
   panel: "#0f0f12",
   raised: "#17171b",
+  /** Button hover fill — one step above `raised`, for text buttons that
+      signal hover with a background instead of a tone/underline change. */
+  hover: "#202027",
   user: "#14141a",
   agent: "#0f0f12",
   border: "#27272a",

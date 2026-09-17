@@ -1,16 +1,16 @@
-# t3code-cli
+# t3code-tui
 
-`t3code` drives [T3 Code](https://github.com/pingdotgg/t3code) from the command line. It hands the current folder or Git repository to a new thread, and lets automation discover, inspect, message, settle, and unsettle existing threads.
+`t3code-tui` drives [T3 Code](https://github.com/pingdotgg/t3code) from your terminal: a full interactive TUI for working with threads, plus a scriptable CLI for handovers, thread inspection, messaging, and automation.
 
-It does not fake a handover by copying text or opening a generic app URL. It connects to the running local T3 server, resolves the workspace against T3 projects, optionally creates the missing project, creates a fresh thread, and starts its first prompt through T3's orchestration API.
+## Requirements
+
+Bun (it manages packages and runs everything) and a running T3 Code instance.
 
 ## Install
 
-Requirements: Bun (Bun manages packages and runs the CLI) and T3 Code.
-
 ```bash
-git clone https://github.com/arrrnmp/t3code-cli.git
-cd t3code-cli
+git clone https://github.com/arrrnmp/t3code-tui.git
+cd t3code-tui
 bun install
 ```
 
@@ -21,13 +21,13 @@ directory, with nothing to put on PATH. Point a `t3code` command at that instead
 macOS/Linux (bash/zsh) — add to your shell profile (`~/.bashrc`, `~/.zshrc`, ...):
 
 ```bash
-t3code() { bun "/absolute/path/to/t3code-cli/src/cli.ts" "$@"; }
+t3code() { bun "/absolute/path/to/t3code-tui/src/cli.ts" "$@"; }
 ```
 
 Windows (PowerShell) — add to your `$PROFILE`:
 
 ```powershell
-function t3code { bun "C:\absolute\path\to\t3code-cli\src\cli.ts" @args }
+function t3code { bun "C:\absolute\path\to\t3code-tui\src\cli.ts" @args }
 ```
 
 Reload the shell, then verify:
@@ -38,10 +38,44 @@ t3code --json doctor
 
 Every example below assumes `t3code` resolves that way. This package is not published
 (`private: true`), so install it by cloning; `bun run check` (typecheck, tests, and a build of
-`dist/` as a packaging sanity check) is optional and only relevant if you're changing the CLI
+`dist/` as a packaging sanity check) is optional and only relevant if you're changing the code
 itself.
 
-## Handover
+## Terminal UI
+
+```bash
+t3code tui
+```
+
+Opens the interactive client: sidebar with your threads, the live transcript with per-turn diffs,
+and a composer with model/effort pickers, image attachments, and an external-editor shortcut.
+Clicking a user prompt opens message actions (copy, revert); clicking a diff-turn header jumps
+the transcript to that turn; the command palette covers copy/thread/jump actions.
+
+| Keys | Action |
+| --- | --- |
+| `enter` | Send (composer) / confirm (close menu) |
+| `shift+enter`, `ctrl+j` | Newline in the composer |
+| `esc` | Unfocus composer / close diff / cancel menus |
+| `ctrl+c` | Clear prompt → close menu → quit (empty prompt jumps straight to the menu) |
+| `ctrl+t` | Toggle tasks panel |
+| `ctrl+p` | Command palette |
+| `ctrl+o`, `alt+e` | Edit the draft in `$VISUAL` / `$EDITOR` |
+| `ctrl+v`, `cmd+v` | Paste an image from the clipboard |
+| `i` | Focus the composer |
+| `s`, `[`, `]` | Sidebar mode / cycle project |
+| `arrows`, `pgup/pgdn` | Scroll the focused pane |
+
+## CLI
+
+The same binary scripts everything the TUI does, with stable `--json` envelopes
+(`{ "ok": true, "data": ... }`) for automation.
+
+### Handover
+
+Hands the current folder or Git repository to a new thread. It connects to the running local T3
+server, resolves the workspace against T3 projects, optionally creates the missing project,
+creates a fresh thread, and starts its first prompt through T3's orchestration API:
 
 ```bash
 t3code handover --prompt "Continue the implementation from this handover."
@@ -160,7 +194,7 @@ To run a message on a schedule (for example daily at 05:01), pair it with the OS
 
 ```powershell
 $action = New-ScheduledTaskAction -Execute "bun.exe" `
-  -Argument '"C:\absolute\path\to\t3code-cli\src\cli.ts" --json threads send --thread <thread-id> --prompt-file "<path-to-prompt.txt>" --open none'
+  -Argument '"C:\absolute\path\to\t3code-tui\src\cli.ts" --json threads send --thread <thread-id> --prompt-file "<path-to-prompt.txt>" --open none'
 $trigger = New-ScheduledTaskTrigger -Daily -At 05:01
 Register-ScheduledTask -TaskName "T3 5am thread ping" -Action $action -Trigger $trigger
 ```
@@ -168,7 +202,7 @@ Register-ScheduledTask -TaskName "T3 5am thread ping" -Action $action -Trigger $
 macOS/Linux equivalent (cron):
 
 ```bash
-1 5 * * * bun /absolute/path/to/t3code-cli/src/cli.ts --json threads send --thread <thread-id> --prompt-file "<path-to-prompt.txt>" --open none
+1 5 * * * bun /absolute/path/to/t3code-tui/src/cli.ts --json threads send --thread <thread-id> --prompt-file "<path-to-prompt.txt>" --open none
 ```
 
 ## Settings
@@ -205,6 +239,7 @@ T3 0.0.28 and later expose an atomic thread bootstrap contract for new worktrees
 ## Commands
 
 ```text
+t3code tui
 t3code --json doctor
 t3code config path|show|set
 t3code projects list
@@ -247,3 +282,7 @@ Current stable T3 Code registers `t3code://` but only uses a second launch to re
 ## Security
 
 The CLI uses T3's own `auth session issue` control plane to mint an administrative bearer token, keeps it only in memory, and revokes it in a `finally` block. Tokens are never included in JSON output or logs.
+
+## License
+
+AGPL-3.0-only. See [LICENSE](LICENSE).
