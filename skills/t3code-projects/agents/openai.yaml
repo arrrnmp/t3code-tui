@@ -1,0 +1,4 @@
+interface:
+  display_name: "T3 Code projects"
+  short_description: "Resolve folders to T3 Code projects and ensure they exist"
+  default_prompt: "Use $t3code-projects to resolve this folder to its T3 Code project."

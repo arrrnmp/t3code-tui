@@ -1,0 +1,58 @@
+{
+  "name": "@arrrnmp/t3code-cli",
+  "version": "0.1.2",
+  "description": "Drive T3 Code projects and threads from the command line.",
+  "license": "AGPL-3.0-only",
+  "keywords": [
+    "t3-code",
+    "cli",
+    "handover",
+    "codex"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/arrrnmp/t3code-cli.git"
+  },
+  "homepage": "https://github.com/arrrnmp/t3code-cli#readme",
+  "bugs": {
+    "url": "https://github.com/arrrnmp/t3code-cli/issues"
+  },
+  "type": "module",
+  "bin": {
+    "t3code": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "skills",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check": "bun run typecheck && bun run test && bun run build",
+    "check:tui": "bun src/tui/render-check.tsx"
+  },
+  "private": true,
+  "engines": {
+    "bun": ">=1.3.0"
+  },
+  "dependencies": {
+    "@opentui/core": "^0.5.11",
+    "@opentui/react": "^0.5.11",
+    "commander": "^14.0.1",
+    "diff": "9.0.0",
+    "effect": "4.0.0-beta.78",
+    "react": "^19.3.0",
+    "t3": "0.0.40"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "@types/react": "^19.3.0",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  },
+  "packageManager": "bun@1.3.13"
+}

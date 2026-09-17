@@ -1,0 +1,4 @@
+interface:
+  display_name: "T3 Code handoff"
+  short_description: "Hand the current conversation off to a fresh T3 Code thread"
+  default_prompt: "Use $t3code-handoff to hand this conversation off to a fresh thread in T3 Code."

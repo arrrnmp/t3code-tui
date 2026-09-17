@@ -1,0 +1,4 @@
+interface:
+  display_name: "T3 Code orchestrator"
+  short_description: "Plan and run multi-model delegations across T3 threads"
+  default_prompt: "Use $t3code-orchestrate to plan and run this task across the best models for each part."

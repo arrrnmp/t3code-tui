@@ -1,0 +1,4 @@
+interface:
+  display_name: "T3 Code diagnostics"
+  short_description: "Check whether T3 Code is running and reachable"
+  default_prompt: "Use $t3code-doctor to check whether T3 Code is running and reachable."

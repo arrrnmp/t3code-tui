@@ -1,0 +1,4 @@
+interface:
+  display_name: "T3 Code providers"
+  short_description: "Pick valid T3 provider, model, and effort values"
+  default_prompt: "Use $t3code-providers to pick valid provider, model, and effort values."

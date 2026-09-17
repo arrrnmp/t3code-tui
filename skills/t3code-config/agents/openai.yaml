@@ -1,0 +1,4 @@
+interface:
+  display_name: "T3 Code CLI settings"
+  short_description: "View or change t3code CLI settings"
+  default_prompt: "Use $t3code-config to view or change the t3code CLI settings."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "T3 Code threads"
+  short_description: "Create, read, message, snooze, interrupt, and delegate T3 Code threads"
+  default_prompt: "Use $t3code-threads to work with T3 Code threads."
