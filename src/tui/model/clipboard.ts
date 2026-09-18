@@ -12,11 +12,11 @@ export function isSshSession(env: NodeJS.ProcessEnv = process.env): boolean {
   return SSH_ENV_VARS.some((key) => typeof env[key] === "string" && (env[key] as string).length > 0);
 }
 
-// Note on "OSC 5522": no such OSC code exists. OSC 52 (`ESC ] 52 ; c ; <base64> BEL`)
-// is the one and only clipboard sequence; "5522" in requests is treated as a
-// typo/port-number confusion, so only 52 is implemented. Pasting *from* the
-// clipboard over SSH likewise has no OSC read-back path — images still paste
-// via the local host clipboard only.
+// Note on "OSC 5522": it is real — Kitty's clipboard extension for arbitrary
+// MIME types including images (`ESC ] 5522 ; …`, see
+// `model/terminalClipboard.ts`). Plain OSC 52 (`ESC ] 52 ; c ; <base64> BEL`)
+// stays text-only. Pasting *from* the clipboard over plain OSC 52 has no
+// read-back path — images arrive via 5522 or via the host clipboard.
 
 interface RendererOsc52 {
   copyToClipboardOSC52?: (text: string) => boolean;

@@ -23,8 +23,7 @@ import {
   clipboardFileName,
   extractMentions,
   MAX_PENDING_ATTACHMENTS,
-  readClipboardImage,
- } from "./model/attachments.js";
+} from "./model/attachments.js";
 import type { ImageAttachmentUpload } from "../threads/threadApi.js";
 import { findPatchFile, splitPatchByFile, type PatchFile } from "./model/patch.js";
 import { displayEffort, displayModelName } from "./model/display.js";
@@ -44,6 +43,7 @@ import { ContextUsageCard } from "./contextusagecard.js";
 import { COLOR, MARKER, providerColor, SPINNER, SURFACE, truncate } from "./theme.js";
 import { useToasts, type ToastTone } from "./hooks/useToasts.js";
 import { useClipboard } from "./hooks/useClipboard.js";
+import { readPastedImage, type TerminalClipboardDeps } from "./model/terminalClipboard.js";
 import { useHover } from "./hooks/useHover.js";
 import {
   cleanupTempDraftFile,
@@ -409,6 +409,7 @@ export function App({
     if (draft.trim().length === 0) return;
     void clipboard.copyText(draft).then((ok) => {
       if (ok) toasts.push("copy-draft", "info", "Copied to clipboard", COPY_TOAST_MS);
+      else if (clipboard.isRemote()) setError("copy failed — terminal may block OSC 52");
     });
   };
   /** One palette copy action: missing data toasts instead of dispatching. */
@@ -419,6 +420,7 @@ export function App({
     }
     void clipboard.copyText(text).then((ok) => {
       if (ok) toasts.push("palette-copy", "info", "Copied to clipboard", COPY_TOAST_MS);
+      else if (clipboard.isRemote()) setError("copy failed — terminal may block OSC 52");
     });
   };
   /** Latest assistant reply text, for the palette's copy action. */
@@ -1193,11 +1195,30 @@ export function App({
 
   /**
    * Alt+V (and Ctrl+V where the terminal passes it through) reads an image
-   * off the OS clipboard into a pending attachment chip. Most terminals
+   * off the clipboard into a pending attachment chip. Most terminals
    * swallow Ctrl+V for their own paste, so Alt+V is the reliable binding.
+   * The read goes to the *terminal* first (OSC 5522 — the only image path
+   * that crosses SSH), then the host OS clipboard, then a session-aware
+   * error. See `model/terminalClipboard.ts` for the protocol details.
    */
-  const pasteImage = () => {    setFocus("composer");
-    void readClipboardImage().then((result) => {
+  const pasteImage = () => {
+    setFocus("composer");
+    const withRenderer = renderer as unknown as {
+      subscribeOsc?: (handler: (sequence: string) => void) => () => void;
+    } | null;
+    const terminal: TerminalClipboardDeps | null =
+      renderer !== null &&
+      typeof withRenderer?.subscribeOsc === "function" &&
+      process.stdout.isTTY === true
+        ? {
+            write: (data: string) => {
+              process.stdout.write(data);
+            },
+            subscribe: (handler: (sequence: string) => void) =>
+              (withRenderer?.subscribeOsc as (handler: (sequence: string) => void) => () => void)(handler),
+          }
+        : null;
+    void readPastedImage({ env: process.env, terminal }).then((result) => {
       if (result.error !== null) {
         setError(result.error.slice(0, 120));
         return;
