@@ -6,7 +6,7 @@ import { SyntaxStyle, TextAttributes } from "@opentui/core";
 import { useHover } from "../../hooks/useHover.js";
 import { useAnimTick } from "../../hooks/useAnimTick.js";
 import { markModalDismissed } from "../../model/modalDismiss.js";
-import { describeActivity, fileRowCounts, formatMs } from "../../model/activity.js";
+import { describeActivity, fileRowCounts, formatMs, readRangeLabel } from "../../model/activity.js";
 import { findPatchFile, type PatchFile } from "../../model/patch.js";
 import { formatBytes, renderMessage } from "../../model/message.js";
 import type { TimelineEntry } from "../../model/thread.js";
@@ -293,8 +293,16 @@ function ActivityRow({ entry, now, turnFiles = [], onOpenUrl }: { entry: Timelin
   }
 
   if (view.kind === "read") {
+    const range = readRangeLabel(view.startLine, view.endLine);
     return (
-      <ToolChip rail={COLOR.agent} glyph="▤" title={`Read(${view.path})`} titleBold time={time} running={view.running}>
+      <ToolChip
+        rail={COLOR.agent}
+        glyph="▤"
+        title={`Read(${view.path})${range === null ? "" : ` ${range}`}`}
+        titleBold
+        time={time}
+        running={view.running}
+      >
         {null}
       </ToolChip>
     );

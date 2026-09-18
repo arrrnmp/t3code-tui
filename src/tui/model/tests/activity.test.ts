@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { describeActivity, fileRowCounts, formatMs, missingCompletedInput, toolCallIdOf, withCompletedInput } from "../activity.js";
+import { describeActivity, fileRowCounts, formatMs, missingCompletedInput, readRangeLabel, toolCallIdOf, withCompletedInput } from "../activity.js";
 import type { T3ThreadActivity } from "../../../types.js";
 
 function activity(kind: string, payload: Record<string, unknown>): T3ThreadActivity {
@@ -68,6 +68,62 @@ describe("describeActivity", () => {
     if (view.kind !== "command") throw new Error("unreachable");
     expect(view.failed).toBe(true);
     expect(view.outputTail).toContain("boom");
+  });
+
+  it("maps provider-native Bash dynamic_tool_call rows to the command view", () => {
+    const view = describeActivity(
+      activity("tool.completed", {
+        itemType: "dynamic_tool_call",
+        toolCallId: "call-9",
+        status: "completed",
+        title: "Bash",
+        data: {
+          toolName: "Bash",
+          input: { command: "bun run check", workdir: "C:\\repo" },
+        },
+      }),
+    );
+    expect(view).toMatchObject({
+      kind: "command",
+      tool: "bash",
+      command: "bun run check",
+      workdir: "C:\\repo",
+      running: false,
+    });
+  });
+
+  it("maps namespaced harness Bash rows to the same command view", () => {
+    const view = describeActivity(
+      activity("tool.completed", {
+        itemType: "dynamic_tool_call",
+        toolCallId: "call-9",
+        status: "completed",
+        title: "default.bash",
+        data: {
+          toolName: "default.bash",
+          input: { command: "bun run check" },
+        },
+      }),
+    );
+    expect(view).toMatchObject({
+      kind: "command",
+      tool: "bash",
+      command: "bun run check",
+      running: false,
+    });
+  });
+
+  it("marks provider-native Bash rows running while in flight", () => {
+    const view = describeActivity(
+      activity("tool.started", {
+        itemType: "dynamic_tool_call",
+        toolCallId: "call-9",
+        status: "inProgress",
+        title: "Bash",
+        data: { toolName: "bash", input: { command: "bun run check" } },
+      }),
+    );
+    expect(view).toMatchObject({ kind: "command", running: true });
   });
 
   it("reads real file_change payloads with edit stats", () => {
@@ -236,6 +292,224 @@ describe("describeActivity", () => {
       }),
     );
     expect(grep).toMatchObject({ kind: "grep", pattern: "pattern", scope: "*.ts" });
+  });
+
+  it("resolves read sections to 1-indexed line ranges", () => {
+    const section = describeActivity(
+      activity("tool.completed", {
+        itemType: "dynamic_tool_call",
+        toolCallId: "call-3",
+        status: "completed",
+        data: {
+          tool: "read",
+          state: { status: "completed", input: { filePath: "C:/repo/src/tui/app.tsx", offset: 700, limit: 101 } },
+        },
+      }),
+    );
+    expect(section).toMatchObject({ kind: "read", path: "src/tui/app.tsx", startLine: 700, endLine: 800 });
+
+    const unbounded = describeActivity(
+      activity("tool.completed", {
+        itemType: "dynamic_tool_call",
+        toolCallId: "call-3",
+        status: "completed",
+        data: {
+          tool: "read",
+          state: { status: "completed", input: { filePath: "C:/repo/src/tui/app.tsx", offset: 700 } },
+        },
+      }),
+    );
+    expect(unbounded).toMatchObject({ kind: "read", startLine: 700, endLine: null });
+
+    const head = describeActivity(
+      activity("tool.completed", {
+        itemType: "dynamic_tool_call",
+        toolCallId: "call-3",
+        status: "completed",
+        data: {
+          tool: "read",
+          state: { status: "completed", input: { filePath: "C:/repo/src/tui/app.tsx", limit: 50 } },
+        },
+      }),
+    );
+    expect(head).toMatchObject({ kind: "read", startLine: 1, endLine: 50 });
+
+    const whole = describeActivity(
+      activity("tool.completed", {
+        itemType: "dynamic_tool_call",
+        toolCallId: "call-3",
+        status: "completed",
+        data: { tool: "read", state: { status: "completed", input: { filePath: "C:/repo/package.json" } } },
+      }),
+    );
+    expect(whole).toMatchObject({ kind: "read", startLine: null, endLine: null });
+  });
+
+  it("labels read ranges as LNS-LNE", () => {
+    expect(readRangeLabel(700, 800)).toBe("L700-L800");
+    expect(readRangeLabel(700, null)).toBe("L700+");
+    expect(readRangeLabel(null, null)).toBeNull();
+  });
+
+  it("maps namespaced harness tool names by trailing segment", () => {
+    const read = describeActivity(
+      activity("tool.completed", {
+        itemType: "dynamic_tool_call",
+        toolCallId: "call-4",
+        status: "completed",
+        title: "default.read",
+        data: {
+          toolName: "default.read",
+          input: { filePath: "C:/repo/src/tui/app.tsx" },
+        },
+      }),
+    );
+    expect(read).toMatchObject({ kind: "read", path: "src/tui/app.tsx" });
+  });
+
+  it("maps namespaced harness grep rows to the grep view", () => {
+    const grep = describeActivity(
+      activity("tool.completed", {
+        itemType: "dynamic_tool_call",
+        toolCallId: "call-4",
+        status: "completed",
+        title: "default.grep",
+        data: {
+          toolName: "default.grep",
+          input: { pattern: "name", path: "C:/repo/src/tui/model/activity.ts" },
+        },
+      }),
+    );
+    expect(grep).toMatchObject({ kind: "grep", pattern: "name", scope: "src/tui/model/activity.ts" });
+  });
+
+  it("maps nameless stripped grep rows by server title instead of dumping results", () => {
+    const view = describeActivity(
+      activity("tool.completed", {
+        itemType: "dynamic_tool_call",
+        toolCallId: "call-4",
+        status: "completed",
+        title: "grep",
+        detail: "Found 2 matches\nC:/repo/src/tui/features/timeline/timeline.tsx:\n… 3 more lines",
+        data: {},
+      }),
+    );
+    expect(view).toMatchObject({ kind: "grep", pattern: "Found 2 matches", scope: null });
+  });
+
+  it("maps nameless stripped bash rows by server title", () => {
+    const view = describeActivity(
+      activity("tool.completed", {
+        itemType: "dynamic_tool_call",
+        toolCallId: "call-9",
+        status: "completed",
+        title: "Bash",
+        detail: "1.136.1\n",
+        data: {},
+      }),
+    );
+    expect(view).toMatchObject({ kind: "command", tool: "bash", command: "" });
+  });
+
+  it("leaves path-titled nameless rows on the existing paths", () => {
+    const view = describeActivity(
+      activity("tool.completed", {
+        itemType: "dynamic_tool_call",
+        toolCallId: "call-4",
+        status: "completed",
+        title: "src/tools/grep",
+        data: {},
+      }),
+    );
+    expect(view.kind).toBe("tool");
+  });
+
+  it("recovers the pattern from a pattern-titled completed grep row", () => {
+    const view = describeActivity(
+      activity("tool.completed", {
+        itemType: "dynamic_tool_call",
+        toolCallId: "call-4",
+        status: "completed",
+        title: "withCompletedInput|missingCompletedInput",
+        detail: "Found 14 matches\nC:/repo/src/tui/model/activity.ts:\n… 3 more lines",
+        data: {},
+      }),
+    );
+    expect(view).toMatchObject({
+      kind: "grep",
+      pattern: "withCompletedInput|missingCompletedInput",
+      scope: null,
+    });
+  });
+
+  it("recovers regex patterns containing backslashes from the title", () => {
+    const view = describeActivity(
+      activity("tool.completed", {
+        itemType: "dynamic_tool_call",
+        toolCallId: "call-4",
+        status: "completed",
+        title: "\\bname\\b",
+        detail: "Found 61 matches\nC:/repo/src/tui/model/attachments.ts:\n… 3 more lines",
+        data: {},
+      }),
+    );
+    expect(view).toMatchObject({ kind: "grep", pattern: "\\bname\\b", scope: null });
+  });
+
+  it("maps zero-match grep dumps to the pattern-titled grep view", () => {
+    const view = describeActivity(
+      activity("tool.completed", {
+        itemType: "dynamic_tool_call",
+        toolCallId: "call-4",
+        status: "completed",
+        title: "activity.test.ts",
+        detail: "No files found",
+        data: {},
+      }),
+    );
+    expect(view).toMatchObject({ kind: "grep", pattern: "activity.test.ts", scope: null });
+  });
+
+  it("tolerates T3's truncation note on the match header", () => {
+    const view = describeActivity(
+      activity("tool.completed", {
+        itemType: "dynamic_tool_call",
+        toolCallId: "call-4",
+        status: "completed",
+        title: "attachment|clipboard",
+        detail: "Found 100 matches (more matches available)\nC:/repo/AGENTS.md:\n",
+        data: {},
+      }),
+    );
+    expect(view).toMatchObject({ kind: "grep", pattern: "attachment|clipboard", scope: null });
+  });
+
+  it("collapses nameless glob path dumps to their common directory", () => {
+    const view = describeActivity(
+      activity("tool.completed", {
+        itemType: "dynamic_tool_call",
+        toolCallId: "call-6",
+        status: "completed",
+        title: "Tool",
+        detail: "C:/repo/src/tui/ui/tests/backdrop.test.ts\nC:/repo/src/tui/ui/terminalgate.tsx\n",
+        data: {},
+      }),
+    );
+    expect(view).toMatchObject({ kind: "list", path: "src/tui/ui" });
+  });
+
+  it("leaves path-titled content dumps out of the glob collapse", () => {
+    const view = describeActivity(
+      activity("tool.completed", {
+        itemType: "dynamic_tool_call",
+        toolCallId: "call-6",
+        status: "completed",
+        title: "src/notes.txt",
+        detail: "C:/repo/a.txt\nC:/repo/b.txt\n",
+        data: {},
+      }),
+    );
+    expect(view.kind).toBe("tool");
   });
 
   it("renders todowrite and plan checklists", () => {
@@ -552,6 +826,20 @@ describe("describeActivity", () => {
     );
     expect(untitled).toMatchObject({ kind: "read", path: "t3code-cli/package.json" });
 
+    // A listing row whose input survived (or came back via backfill) keeps
+    // its section range instead of rendering bare.
+    const ranged = describeActivity(
+      activity("tool.completed", {
+        itemType: "dynamic_tool_call",
+        toolCallId: "oc-read-3",
+        status: "completed",
+        title: "src/tui/model/activity.ts",
+        detail: "<path>C:/repo/src/tui/model/activity.ts</path>\n<type>file</type>\n<content>\n100: x",
+        data: { input: { filePath: "C:/repo/src/tui/model/activity.ts", offset: 100, limit: 20 } },
+      }),
+    );
+    expect(ranged).toMatchObject({ kind: "read", path: "model/activity.ts", startLine: 100, endLine: 119 });
+
     // Directory listings get their own header instead of an entries dump.
     const dir = describeActivity(
       activity("tool.completed", {
@@ -593,6 +881,53 @@ describe("describeActivity", () => {
     expect(withCompletedInput(full, { file_path: "C:/repo/other.ts" })).toBe(full);
     // In-flight and contentful rows never qualify.
     expect(missingCompletedInput(activity("tool.updated", { itemType: "file_change", toolCallId: "call-db-3", status: "inProgress", title: "edit", data: {} }))).toBeNull();
+  });
+
+  it("backfills stripped grep patterns and commands from the local DB", () => {
+    const bareGrep = activity("tool.completed", {
+      itemType: "dynamic_tool_call",
+      toolCallId: "call-db-4",
+      status: "completed",
+      title: "grep",
+      detail: "Found 2 matches\nC:/repo/src/tui/a.ts:\n",
+      data: {},
+    });
+    expect(missingCompletedInput(bareGrep)).toBe("call-db-4");
+    const mergedGrep = withCompletedInput(bareGrep, { pattern: "name", include: "*.ts" });
+    expect(describeActivity(mergedGrep)).toMatchObject({ kind: "grep", pattern: "name", scope: "*.ts" });
+    // A row whose pattern survived needs no backfill.
+    const fullGrep = activity("tool.completed", {
+      itemType: "dynamic_tool_call",
+      toolCallId: "call-db-5",
+      status: "completed",
+      title: "grep",
+      data: { toolName: "grep", input: { pattern: "name" } },
+    });
+    expect(missingCompletedInput(fullGrep)).toBeNull();
+  });
+
+  it("backfills stripped read ranges so repeated section reads stay distinct", () => {
+    const bareRead = activity("tool.completed", {
+      itemType: "dynamic_tool_call",
+      toolCallId: "call-db-6",
+      status: "completed",
+      title: "src/tui/model/activity.ts",
+      data: { toolName: "read" },
+    });
+    expect(describeActivity(bareRead)).toMatchObject({ kind: "read", startLine: null });
+    expect(missingCompletedInput(bareRead)).toBe("call-db-6");
+    const mergedRead = withCompletedInput(bareRead, {
+      filePath: "C:/repo/src/tui/model/activity.ts",
+      offset: 487,
+      limit: 30,
+    });
+    expect(describeActivity(mergedRead)).toMatchObject({
+      kind: "read",
+      path: "src/tui/model/activity.ts",
+      startLine: 487,
+      endLine: 516,
+    });
+    expect(readRangeLabel(487, 516)).toBe("L487-L516");
   });
 
   it("matches subtitle counts to the hunks that actually render", () => {

@@ -13,9 +13,16 @@ export interface EditorCommand {
 /**
  * Splits `"code --wait"` into command + leading args; the draft file is
  * always appended last by the caller — never via shell concatenation.
+ * Quoted segments stay intact, so Windows installs like
+ * `"C:\Program Files\Microsoft VS Code\Code.exe" --wait` survive.
  */
 export function parseEditorCommand(raw: string): EditorCommand {
-  const parts = raw.trim().split(/\s+/u).filter((part) => part.length > 0);
+  const parts: string[] = [];
+  const pattern = /"([^"]*)"|'([^']*)'|(\S+)/gu;
+  for (const match of raw.trim().matchAll(pattern)) {
+    const part = match[1] ?? match[2] ?? match[3] ?? "";
+    if (part.length > 0) parts.push(part);
+  }
   const [command, ...args] = parts;
   return { command: command ?? "vi", args };
 }
@@ -84,10 +91,20 @@ export async function cleanupTempDraftFile(dir: string): Promise<void> {
  * keeps rendering underneath behind its "save and close" overlay — no
  * renderer suspend/resume dance. Resolves with the exit code; rejects only
  * when the process cannot start.
+ *
+ * On Windows the spawn goes through `cmd.exe`: native `CreateProcess`
+ * cannot execute `.cmd`/`.bat` shims (VS Code's `code`, `code.cmd`) and
+ * skips PATHEXT resolution, so without a shell the most common Windows
+ * editors fail with ENOENT and the editor never opens. Argv stays an
+ * array — Node does the `cmd.exe` quoting, nothing is concatenated.
  */
 export async function runEditorAttached(command: string, args: readonly string[], file: string): Promise<number> {
   return await new Promise<number>((resolve, reject) => {
-    const child = spawn(command, [...args, file], { stdio: "inherit", windowsHide: true });
+    const child = spawn(command, [...args, file], {
+      stdio: "inherit",
+      windowsHide: true,
+      shell: process.platform === "win32",
+    });
     child.on("error", (cause) => reject(cause));
     child.on("close", (code) => resolve(code ?? 1));
   });

@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { KeyEvent, ScrollBoxRenderable, TextareaRenderable } from "@opentui/core";
+import { TextAttributes } from "@opentui/core";
 
 import { useHover } from "../../hooks/useHover.js";
 import { useAnimTick } from "../../hooks/useAnimTick.js";
@@ -385,6 +386,33 @@ export function Composer({
         onMouseDown={onFocus}
         selectable={false}
       >
+        {external ? (
+          // The draft lives in `$EDITOR`: the textarea and every footer
+          // toggleable (model, effort, permission, context, copy,
+          // external, stop) hide behind one centered italic notice.
+          // minHeight matches the resting composer (textarea min +
+          // spacer + footer) so the layout doesn't jump when the editor
+          // opens or closes.
+          <box
+            style={{
+              minHeight: MIN_COMPOSER_LINES + 2,
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              backgroundColor: SURFACE.raised,
+            }}
+          >
+            <text
+              fg={COLOR.dim}
+              bg={SURFACE.raised}
+              attributes={TextAttributes.ITALIC}
+              selectable={false}
+            >
+              {"Editing in external editor…"}
+            </text>
+          </box>
+        ) : (
+          <>
         <textarea
           ref={areaRef}
           focused={focused && !external}
@@ -492,8 +520,10 @@ export function Composer({
             </box>
           )}
         </box>
+          </>
+        )}
       </box>
-      {hideHint === true ? null : (
+      {hideHint === true || external ? null : (
         <box style={{ flexDirection: "row", height: 1, flexShrink: 0, justifyContent: "flex-end" }}>
           <text fg={COLOR.faint}>{truncate(hint, Math.max(0, width))}</text>
         </box>

@@ -36,6 +36,11 @@ export interface FileChangeView {
 export interface ReadView {
   kind: "read";
   path: string;
+  /** 1-indexed first line when only a section was read (offset); null for
+      whole-file reads. */
+  startLine: number | null;
+  /** 1-indexed last line (offset + limit - 1); null when unbounded. */
+  endLine: number | null;
   running: boolean;
 }
 
@@ -264,6 +269,53 @@ function lastLines(value: string, maxLines: number): string {
   return rows.slice(-maxLines).join("\n");
 }
 
+/** First non-empty line — the result summary (`Found 2 matches`) of a
+    stripped grep dump whose pattern didn't survive. */
+function firstLine(value: string | null): string | null {
+  if (value === null) return null;
+  const line = value.split("\n").map((row) => row.trim()).find((row) => row.length > 0);
+  return line ?? null;
+}
+
+/** Longest common directory of file paths (forward-slash form) — null
+    when the paths share nothing (different roots). */
+function commonDir(paths: readonly string[]): string | null {
+  const dirs = paths.map((value) =>
+    value
+      .replace(/\\/g, "/")
+      .split("/")
+      .filter((part) => part.length > 0)
+      .slice(0, -1),
+  );
+  const first = dirs[0] ?? [];
+  let common = 0;
+  while (common < first.length && dirs.every((parts) => parts[common] === first[common])) common++;
+  if (common === 0) return null;
+  return first.slice(0, common).join("/");
+}
+
+/**
+ * 1-indexed section bounds from a Read call's `offset`/`limit` (both
+ * harnesses share the same semantics: offset starts at line 1, limit caps
+ * the row count). Whole-file reads resolve to nulls so the row stays a bare `Read(path)`; `offset: 700, limit: 101` becomes L700-L800
+ * and an unbounded `offset: 700` becomes L700+.
+ */
+function readRange(input: Record<string, unknown>): { startLine: number | null; endLine: number | null } {
+  const offset = asNumber(input.offset);
+  const limit = asNumber(input.limit);
+  const startLine =
+    offset !== null && offset >= 1 ? Math.floor(offset) : limit !== null && limit > 0 ? 1 : null;
+  const endLine =
+    startLine !== null && limit !== null && limit > 0 ? startLine + Math.floor(limit) - 1 : null;
+  return { startLine, endLine };
+}
+
+/** `L700-L800`, `L700+`, or null for whole-file reads — the Read row suffix. */
+export function readRangeLabel(startLine: number | null, endLine: number | null): string | null {
+  if (startLine === null) return null;
+  return endLine === null ? `L${startLine}+` : `L${startLine}-L${endLine}`;
+}
+
 /** A pre-computed unified diff a provider already attached to the tool call
     (OpenCode's `state.metadata.diff`/`filediff.patch`) — prefer this over
     diffing ourselves since it's scoped to exactly what the provider changed. */
@@ -487,7 +539,12 @@ export function describeActivity(activity: T3ThreadActivity): ActivityView {
   if (itemType === "dynamic_tool_call" || itemType === "collab_agent_tool_call") {
     const display = tool ?? "tool";
     const name = display.toLowerCase();
-    if (name === "read") {
+    // Harnesses may namespace their tools (`default.bash`, `ns.read`) —
+    // match branches on the trailing segment so namespaced calls get the
+    // same mapped views instead of the raw generic fallback. Clean names
+    // are unaffected (the trailing segment is the whole name).
+    const short = name.split(/[^a-z]+/).filter((part) => part.length > 0).pop() ?? name;
+    if (short === "read") {
       // Claude's real Read tool call uses the snake_case `file_path` param
       // (same as Edit/Write); only checking `filePath` here always missed it
       // and silently fell back to the generic "Tool call" title instead.
@@ -496,9 +553,14 @@ export function describeActivity(activity: T3ThreadActivity): ActivityView {
       // title like "Tool call" is never a path and must not leak in.
       const readPath =
         asString(input.file_path) ?? asString(input.filePath) ?? (looksLikePath(title) ? title : null) ?? echoPath ?? "…";
-      return { kind: "read", path: readPath === "…" ? readPath : shortenPath(readPath), running };
+      return {
+        kind: "read",
+        path: readPath === "…" ? readPath : shortenPath(readPath),
+        ...readRange(input),
+        running,
+      };
     }
-    if (name === "grep") {
+    if (short === "grep") {
       return {
         kind: "grep",
         pattern: asString(input.pattern) ?? title,
@@ -506,7 +568,7 @@ export function describeActivity(activity: T3ThreadActivity): ActivityView {
         running,
       };
     }
-    if (name === "glob") {
+    if (short === "glob") {
       return {
         kind: "grep",
         pattern: asString(input.pattern) ?? title,
@@ -514,7 +576,25 @@ export function describeActivity(activity: T3ThreadActivity): ActivityView {
         running,
       };
     }
-    if (name === "todowrite" || name === "todo") {
+    // Provider-native shell calls (`Bash` as a `dynamic_tool_call`, possibly
+    // namespaced like `default.bash`) never pass through the T3-managed
+    // `command_execution` branch above, so without this they fall into the
+    // generic raw tool fallback. Map them to the same `$ bash` command view
+    // the timeline already renders.
+    if (short === "bash" || short === "shell" || short === "exec") {
+      return {
+        kind: "command",
+        tool: short,
+        command: asString(input.command) ?? title,
+        workdir: asString(input.workdir) ?? asString(input.cwd),
+        exit: null,
+        durationMs: null,
+        outputTail: null,
+        failed: false,
+        running,
+      };
+    }
+    if (short === "todowrite" || short === "todo") {
       const raw = input.todos;
       return { kind: "todos", title, items: decodeTodos(raw), running };
     }
@@ -522,7 +602,7 @@ export function describeActivity(activity: T3ThreadActivity): ActivityView {
     // Claude's `WebFetch`/`WebSearch` normally arrive under the dedicated
     // `web_search` itemType above, but fall back here if a build ever routes
     // them through the generic tool-call path instead.
-    if (name === "webfetch" || name === "websearch" || name === "mcp-websearch") {
+    if (short === "webfetch" || short === "websearch") {
       return {
         kind: "web",
         tool: display,
@@ -530,7 +610,7 @@ export function describeActivity(activity: T3ThreadActivity): ActivityView {
         running,
       };
     }
-    if (name === "question" || name === "askuserquestion") {
+    if (short === "question" || short === "askuserquestion") {
       const questions = input.questions;
       const first = Array.isArray(questions) ? asRecord(questions[0]) : null;
       const count = Array.isArray(questions) ? questions.length : 0;
@@ -541,7 +621,7 @@ export function describeActivity(activity: T3ThreadActivity): ActivityView {
         running,
       };
     }
-    if (name === "skill") {
+    if (short === "skill") {
       return { kind: "skill", name: asString(input.name) ?? title, running };
     }
     // OpenCode's list/read rows arrive nameless (`data: {}`) with a
@@ -549,11 +629,84 @@ export function describeActivity(activity: T3ThreadActivity): ActivityView {
     // without this they render as a raw XML dump under a bare path title.
     // Only nameless rows take this path; a named tool keeps its own branch.
     if (display === "tool") {
+      // Stripped wire rows also lose the tool NAME — but the server title
+      // often names it (`grep`, `Bash`) while `detail` carries the result
+      // dump. Route those titles to the mapped views (degraded: pattern /
+      // command only survive when the input wasn't stripped) instead of
+      // the raw dump. Path-like titles stay on the listing path below —
+      // a file that happens to end in a tool word must still resolve.
+      if (!looksLikePath(title)) {
+        const titled = title
+          .toLowerCase()
+          .split(/[^a-z]+/)
+          .filter((part) => part.length > 0)
+          .pop() ?? "";
+        if (titled === "grep" || titled === "glob") {
+          return {
+            kind: "grep",
+            // The pattern only survives when the input wasn't stripped;
+            // otherwise headline the dump's own summary line instead of a
+            // bare row.
+            pattern: asString(input.pattern) ?? firstLine(asString(payload.detail)) ?? "",
+            scope: asString(input.include) ?? shortInputPath(input),
+            running,
+          };
+        }
+        if (titled === "bash" || titled === "shell" || titled === "exec") {
+          return {
+            kind: "command",
+            tool: titled,
+            command: asString(input.command) ?? "",
+            workdir: asString(input.workdir) ?? asString(input.cwd),
+            exit: null,
+            durationMs: null,
+            outputTail: null,
+            failed: false,
+            running,
+          };
+        }
+      }
+      // Same stripped shape, but the server titled the completed row with
+      // the grep pattern itself instead of the verb — the pattern survives
+      // in the title even though the input didn't. The detail signature
+      // alone decides here: deliberately no path guard, because patterns
+      // routinely contain backslashes (`\bname\b`), slashes (`and/or`),
+      // and dots (`foo.ts`) that look path-like but aren't. Verb-titled
+      // rows above already claimed their own branches first. A zero-match
+      // dump (`No files found`) carries the pattern the same way. T3
+      // truncates long result lists, so the header may carry a trailing
+      // note (`Found 100 matches (more matches available)`).
+      {
+        const head = firstLine(asString(payload.detail));
+        if (head !== null && (/^found \d+ match/i.test(head) || /^no (files|matches|results?) found$/i.test(head))) {
+          return { kind: "grep", pattern: title, scope: null, running };
+        }
+      }
+      // Nameless glob dumps are bare path lists with no header and no XML
+      // — collapse them to their common directory instead of the raw dump.
+      // Path-titled rows stay out: that's a file's own content being read,
+      // not a match list (verb-titled shell rows already routed above, and
+      // an `ls`-titled one reads honestly as a listing either way).
+      if (!looksLikePath(title)) {
+        const dumpLines = (asString(payload.detail) ?? "")
+          .split("\n")
+          .map((row) => row.trim())
+          .filter((row) => row.length > 0)
+          .slice(0, 30);
+        if (dumpLines.length > 0 && dumpLines.every(looksLikePath)) {
+          const dir = commonDir(dumpLines);
+          if (dir !== null) return { kind: "list", path: shortenPath(dir), running };
+        }
+      }
       const listing = parseListingDetail(asString(payload.detail));
       if (listing !== null) {
         const rawPath = looksLikePath(title) ? title : listing.path;
         const path = shortenPath(rawPath);
-        return listing.directory ? { kind: "list", path, running } : { kind: "read", path, running };
+        // The input may have arrived later via backfill — a listing row
+        // whose offset survived (or recovered) still earns its range.
+        return listing.directory
+          ? { kind: "list", path, running }
+          : { kind: "read", path, ...readRange(input), running };
       }
     }
     // Unknown tool shape: never render a bare "tool" with nothing after it.
@@ -663,10 +816,12 @@ export function toolCallIdOf(activity: T3ThreadActivity): string | null {
 }
 
 /**
- * A completed file/read row whose input the wire stripped (diff-less file
- * view, or a `Read(…)` path) resolves to its tool call id for a local-DB
- * backfill — null when there is nothing to recover. Pass an already
- * computed view to avoid describing twice.
+ * A completed row whose input the wire stripped resolves to its tool call
+ * id for a local-DB backfill — diff-less file views, path-less reads, reads
+ * missing their section range, and empty grep patterns / commands, which
+ * re-render with the recovered input once merged. Null when there is
+ * nothing to recover. Pass an already computed view to avoid describing
+ * twice.
  */
 export function missingCompletedInput(activity: T3ThreadActivity, view?: ActivityView): string | null {
   if (activity.kind !== "tool.completed") return null;
@@ -680,10 +835,6 @@ export function missingCompletedInput(activity: T3ThreadActivity, view?: Activit
       return null;
     }
   }
-  const bare =
-    (resolved.kind === "file" && resolved.diff === null) ||
-    (resolved.kind === "read" && resolved.path === "…");
-  if (!bare) return null;
   const payload = asRecord(activity.payload);
   const data = payload === null ? null : asRecord(payload.data);
   const state = data === null ? null : asRecord(data.state);
@@ -691,7 +842,19 @@ export function missingCompletedInput(activity: T3ThreadActivity, view?: Activit
     const record = asRecord(value);
     return record !== null && Object.keys(record).length > 0;
   };
+  // Rows that already carry input need nothing, whatever they render.
   if (hasInput(state?.input) || hasInput(data?.input)) return null;
+  // ...while content-less file/read rows and grep/command rows (whose
+  // headline is a result summary, not the call) resolve for a backfill
+  // that may restore the stripped pattern or command. Reads with a known
+  // path but no section range resolve too — a repeated section read would
+  // otherwise stay indistinguishable from a whole-file one.
+  const bare =
+    (resolved.kind === "file" && resolved.diff === null) ||
+    (resolved.kind === "read" && (resolved.path === "…" || resolved.startLine === null)) ||
+    resolved.kind === "grep" ||
+    resolved.kind === "command";
+  if (!bare) return null;
   return id;
 }
 

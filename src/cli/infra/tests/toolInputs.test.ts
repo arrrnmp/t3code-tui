@@ -47,4 +47,11 @@ describe("readCompletedToolInputs", () => {
     ).resolves.toBeNull();
     await expect(readCompletedToolInputs("/state", "../../etc", async () => ({ stdout: "[]" }))).resolves.toBeNull();
   });
+
+  it("returns null without an injected runner when no database exists", async () => {
+    // Under Node the embedded driver import fails and the default CLI
+    // runner cannot reach this path — either way the answer is null, and
+    // crucially no empty database file is created along the way.
+    await expect(readCompletedToolInputs("/nonexistent-dir-xyz", "thread-1")).resolves.toBeNull();
+  });
 });

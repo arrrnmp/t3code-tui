@@ -1,6 +1,17 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { defaultEditorCandidates, parseEditorCommand, preferredEditorCommand, resolveEditorCommand } from "../externalEditor.js";
+import {
+  createTempDraftFile,
+  cleanupTempDraftFile,
+  defaultEditorCandidates,
+  parseEditorCommand,
+  preferredEditorCommand,
+  resolveEditorCommand,
+  runEditorAttached,
+} from "../externalEditor.js";
 
 describe("resolveEditorCommand", () => {
   it("prefers VISUAL over EDITOR", () => {
@@ -66,5 +77,36 @@ describe("preferredEditorCommand", () => {
 
   it("parses flags into args", () => {
     expect(parseEditorCommand("code --wait")).toEqual({ command: "code", args: ["--wait"] });
+  });
+
+  it("keeps quoted Windows install paths intact", () => {
+    expect(parseEditorCommand('"C:\\Program Files\\Microsoft VS Code\\Code.exe" --wait')).toEqual({
+      command: "C:\\Program Files\\Microsoft VS Code\\Code.exe",
+      args: ["--wait"],
+    });
+    expect(parseEditorCommand("'C:\\tools\\editor.exe' -nw")).toEqual({
+      command: "C:\\tools\\editor.exe",
+      args: ["-nw"],
+    });
+  });
+});
+
+describe("runEditorAttached", () => {
+  // A `.cmd` shim only executes through a shell on Windows — without one
+  // `spawn` rejects ENOENT and the editor never opens (VS Code's `code`).
+  it.skipIf(process.platform !== "win32")("executes .cmd shims on Windows", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "t3code-editor-test-"));
+    try {
+      const shim = path.join(dir, "probe.cmd");
+      writeFileSync(shim, "@exit 0\r\n", "utf8");
+      const draft = await createTempDraftFile("hello");
+      try {
+        await expect(runEditorAttached(shim, [], draft.file)).resolves.toBe(0);
+      } finally {
+        await cleanupTempDraftFile(draft.dir);
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

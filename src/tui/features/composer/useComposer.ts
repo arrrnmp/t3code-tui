@@ -133,8 +133,10 @@ export function useComposer(
     setEditingExternally(true);
     void (async () => {
       let temp: { dir: string; file: string } | null = null;
+      let editor = "editor";
       try {
         const { command, args } = await preferredEditorCommand();
+        editor = command;
         temp = await createTempDraftFile(seed);
         const exitCode = await runEditorAttached(command, args, temp.file);
         if (exitCode !== 0) {
@@ -147,7 +149,7 @@ export function useComposer(
           setComposerResetCounter((count) => count + 1);
         }
       } catch (cause: unknown) {
-        setError(`could not open external editor: ${String(cause).slice(0, 80)}`);
+        setError(`could not open ${editor}: ${String(cause).slice(0, 80)}`);
       } finally {
         if (temp !== null) await cleanupTempDraftFile(temp.dir);
         setEditingExternally(false);

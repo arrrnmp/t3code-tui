@@ -1,0 +1,133 @@
+{
+  "parsers": [
+    {
+      "filetype": "json",
+      "aliases": ["jsonc"],
+      "wasm": "https://github.com/tree-sitter/tree-sitter-json/releases/download/v0.24.8/tree-sitter-json.wasm",
+      "queries": {
+        "highlights": [
+          "https://raw.githubusercontent.com/tree-sitter/tree-sitter-json/v0.24.8/queries/highlights.scm"
+        ]
+      }
+    },
+    {
+      "filetype": "toml",
+      "wasm": "https://github.com/tree-sitter-grammars/tree-sitter-toml/releases/download/v0.7.0/tree-sitter-toml.wasm",
+      "queries": {
+        "highlights": [
+          "https://raw.githubusercontent.com/tree-sitter-grammars/tree-sitter-toml/v0.7.0/queries/highlights.scm"
+        ]
+      }
+    },
+    {
+      "filetype": "kotlin",
+      "aliases": ["kt", "kts"],
+      "wasm": "https://github.com/fwcd/tree-sitter-kotlin/releases/download/0.3.8/tree-sitter-kotlin.wasm",
+      "queries": {
+        "highlights": [
+          "https://raw.githubusercontent.com/fwcd/tree-sitter-kotlin/0.3.8/queries/highlights.scm"
+        ]
+      }
+    },
+    {
+      "filetype": "python",
+      "wasm": "https://github.com/tree-sitter/tree-sitter-python/releases/download/v0.25.0/tree-sitter-python.wasm",
+      "queries": {
+        "highlights": [
+          "https://raw.githubusercontent.com/tree-sitter/tree-sitter-python/v0.25.0/queries/highlights.scm"
+        ]
+      }
+    },
+    {
+      "filetype": "rust",
+      "wasm": "https://github.com/tree-sitter/tree-sitter-rust/releases/download/v0.24.2/tree-sitter-rust.wasm",
+      "queries": {
+        "highlights": [
+          "https://raw.githubusercontent.com/tree-sitter/tree-sitter-rust/v0.24.2/queries/highlights.scm"
+        ]
+      }
+    },
+    {
+      "filetype": "go",
+      "wasm": "https://github.com/tree-sitter/tree-sitter-go/releases/download/v0.25.0/tree-sitter-go.wasm",
+      "queries": {
+        "highlights": [
+          "https://raw.githubusercontent.com/tree-sitter/tree-sitter-go/v0.25.0/queries/highlights.scm"
+        ]
+      }
+    },
+    {
+      "filetype": "bash",
+      "wasm": "https://github.com/tree-sitter/tree-sitter-bash/releases/download/v0.25.1/tree-sitter-bash.wasm",
+      "queries": {
+        "highlights": [
+          "https://raw.githubusercontent.com/tree-sitter/tree-sitter-bash/v0.25.1/queries/highlights.scm"
+        ]
+      }
+    },
+    {
+      "filetype": "html",
+      "wasm": "https://github.com/tree-sitter/tree-sitter-html/releases/download/v0.23.2/tree-sitter-html.wasm",
+      "queries": {
+        "highlights": [
+          "https://raw.githubusercontent.com/tree-sitter/tree-sitter-html/v0.23.2/queries/highlights.scm"
+        ]
+      }
+    },
+    {
+      "filetype": "css",
+      "wasm": "https://github.com/tree-sitter/tree-sitter-css/releases/download/v0.25.0/tree-sitter-css.wasm",
+      "queries": {
+        "highlights": [
+          "https://raw.githubusercontent.com/tree-sitter/tree-sitter-css/v0.25.0/queries/highlights.scm"
+        ]
+      }
+    },
+    {
+      "filetype": "java",
+      "wasm": "https://github.com/tree-sitter/tree-sitter-java/releases/download/v0.23.5/tree-sitter-java.wasm",
+      "queries": {
+        "highlights": [
+          "https://raw.githubusercontent.com/tree-sitter/tree-sitter-java/v0.23.5/queries/highlights.scm"
+        ]
+      }
+    },
+    {
+      "filetype": "c",
+      "wasm": "https://github.com/tree-sitter/tree-sitter-c/releases/download/v0.24.2/tree-sitter-c.wasm",
+      "queries": {
+        "highlights": [
+          "https://raw.githubusercontent.com/tree-sitter/tree-sitter-c/v0.24.2/queries/highlights.scm"
+        ]
+      }
+    },
+    {
+      "filetype": "cpp",
+      "wasm": "https://github.com/tree-sitter/tree-sitter-cpp/releases/download/v0.23.4/tree-sitter-cpp.wasm",
+      "queries": {
+        "highlights": [
+          "https://raw.githubusercontent.com/tree-sitter/tree-sitter-c/v0.24.2/queries/highlights.scm",
+          "https://raw.githubusercontent.com/tree-sitter/tree-sitter-cpp/v0.23.4/queries/highlights.scm"
+        ]
+      }
+    },
+    {
+      "filetype": "ruby",
+      "wasm": "https://github.com/tree-sitter/tree-sitter-ruby/releases/download/v0.23.1/tree-sitter-ruby.wasm",
+      "queries": {
+        "highlights": [
+          "https://raw.githubusercontent.com/tree-sitter/tree-sitter-ruby/v0.23.1/queries/highlights.scm"
+        ]
+      }
+    },
+    {
+      "filetype": "php",
+      "wasm": "https://github.com/tree-sitter/tree-sitter-php/releases/download/v0.24.2/tree-sitter-php.wasm",
+      "queries": {
+        "highlights": [
+          "https://raw.githubusercontent.com/tree-sitter/tree-sitter-php/v0.24.2/queries/highlights.scm"
+        ]
+      }
+    }
+  ]
+}

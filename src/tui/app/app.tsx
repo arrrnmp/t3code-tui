@@ -1748,10 +1748,11 @@ export function App({
       ) : null}
       {editingExternally ? (
         // The external editor owns the terminal now: keep rendering the app
-        // underneath, but swallow every mouse event behind this catcher so
-        // nothing clickable fires until the editor closes. Keys are already
-        // gated via `editingExternally`. The message itself lives in the
-        // chat pane, not centered over the whole terminal.
+        // underneath, but swallow every mouse event behind this invisible
+        // catcher so nothing clickable fires until the editor closes. Keys
+        // are already gated via `editingExternally`. The state itself is
+        // shown by the composer's own centered overlay — this shield carries
+        // no message of its own.
         <box
           style={{
             position: "absolute",
@@ -1764,26 +1765,7 @@ export function App({
           }}
           selectable={false}
           onMouseDown={() => {}}
-        >
-          <box
-            style={{
-              position: "absolute",
-              left: SIDEBAR_WIDTH + CHAT_GUTTER,
-              top: 0,
-              width: chatWidth,
-              height,
-              flexDirection: "column",
-              justifyContent: "center",
-            }}
-            selectable={false}
-          >
-            <text fg={COLOR.faint} selectable={false}>{"─".repeat(Math.max(0, chatWidth))}</text>
-            <box style={{ flexDirection: "row", height: 1, flexShrink: 0, justifyContent: "center" }}>
-              <text fg={COLOR.dim} selectable={false}>{"Save and close editor to continue…"}</text>
-            </box>
-            <text fg={COLOR.faint} selectable={false}>{"─".repeat(Math.max(0, chatWidth))}</text>
-          </box>
-        </box>
+        />
       ) : null}
     </box>
   );

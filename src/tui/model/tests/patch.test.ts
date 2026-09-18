@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { findPatchFile, splitPatchByFile, type PatchFile } from "../patch.js";
+import { detectFiletype, findPatchFile, splitPatchByFile, type PatchFile } from "../patch.js";
 
 const PATCH = [
   "diff --git a/src/tui/app.tsx b/src/tui/app.tsx",
@@ -32,6 +32,32 @@ describe("splitPatchByFile", () => {
     expect(split.map((file) => file.path)).toEqual(["src/tui/app.tsx", "src/tui/timeline.tsx"]);
     expect(split[0]).toMatchObject({ additions: 2, deletions: 1, binary: false });
     expect(split[0]?.filetype).toBe("typescript");
+  });
+});
+
+describe("detectFiletype", () => {
+  it.each([
+    ["Main.kt", "kotlin"],
+    ["build.kts", "kotlin"],
+    ["data.json", "json"],
+    ["tsconfig.jsonc", "json"],
+    ["config.toml", "toml"],
+    ["app.py", "python"],
+    ["types.pyi", "python"],
+    ["main.rs", "rust"],
+    ["main.go", "go"],
+    ["Main.java", "java"],
+    ["app.rb", "ruby"],
+    ["index.php", "php"],
+    ["run.sh", "bash"],
+    ["run.zsh", "bash"],
+    ["style.css", "css"],
+    ["index.html", "html"],
+    ["main.c", "c"],
+    ["lib.hpp", "cpp"],
+    ["lib.cc", "cpp"],
+  ])("maps %s to %s", (file, expected) => {
+    expect(detectFiletype(file)).toBe(expected);
   });
 });
 

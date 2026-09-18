@@ -65,6 +65,11 @@ the transcript to that turn; the command palette covers copy/thread/jump actions
 | `s`, `[`, `]` | Sidebar mode / cycle project |
 | `arrows`, `pgup/pgdn` | Scroll the focused pane |
 
+The UI needs at least a 90×20 terminal (btop-style): below that it shows a
+resize notice instead of a broken layout, and resumes live when you grow it
+back. Resizes are followed over SSH too. Without a terminal at all (piped
+output, `ssh` without `-t`), `tui` exits with an error instead.
+
 ## CLI
 
 The same binary scripts everything the TUI does, with stable `--json` envelopes

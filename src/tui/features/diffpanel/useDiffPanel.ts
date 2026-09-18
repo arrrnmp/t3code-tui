@@ -312,11 +312,12 @@ export function useDiffPanel(params: {
     }
     // Completed rows recover their stripped input from the local projection
     // database (exact per-edit diffs, no git needed). Merged rows re-render
-    // through the normal pipeline; misses simply retry on the next new row
-    // instead of hot-looping, since nothing here re-fires without change.
+    // through the normal pipeline and are marked so they never re-queue;
+    // misses stay unmarked and retry on the next new row instead of
+    // hot-looping, since nothing here re-fires without change. Marking only
+    // on success matters: a read racing the server's own write must not
+    // poison its id for the rest of the session.
     if (stateDir !== null && mergeIds.length > 0) {
-      const wanted = [...new Set(mergeIds)];
-      for (const toolCallId of wanted) mergedToolInput.current.add(toolCallId);
       void readCompletedToolInputs(stateDir, id)
         .then((found) => {
           if (found === null || selectedIdRef.current !== id) return;

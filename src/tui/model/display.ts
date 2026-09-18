@@ -2,6 +2,25 @@ import type { ProviderSummary } from "../../cli/catalog/catalog.js";
 import type { ModelSelection } from "../../types.js";
 
 /**
+ * btop-style viewport floor enforced by `MinSizeGate`: 44 sidebar + 40
+ * composer minimum + ~6 columns of gutters/borders; 20 rows keeps the
+ * timeline, composer, and smallest modal usable. Below either dimension
+ * the app shows a resize notice instead of a broken layout.
+ */
+export const MIN_TERMINAL_WIDTH = 90;
+export const MIN_TERMINAL_HEIGHT = 20;
+
+/**
+ * Viewport check for `MinSizeGate`. Pure so it stays unit testable; the
+ * live dimensions come from `useTerminalDimensions`, which follows pty
+ * resizes (local, tmux, and SSH alike — all arrive as SIGWINCH on stdout,
+ * no local-only APIs involved).
+ */
+export function isTerminalTooSmall(width: number, height: number): boolean {
+  return width < MIN_TERMINAL_WIDTH || height < MIN_TERMINAL_HEIGHT;
+}
+
+/**
  * The `model` field on a thread's `modelSelection` is a provider-side slug
  * (`opencode/muse-spark-1.3-contributor-free`). The human-readable name lives
  * in the provider catalog (`server.getConfig`), so the composer footer and

@@ -32,7 +32,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "check": "bun run typecheck && bun run test",
-    "check:tui": "bun src/tui/render-check.tsx"
+    "check:tui": "bun src/tui/render-check.tsx",
+    "update:tree-sitter-assets": "bun ./scripts/update-tree-sitter-assets.ts --config ./parsers-config.json --assets ./src/tui/syntax --output ./src/tui/syntax/parsers.ts"
   },
   "private": true,
   "engines": {
