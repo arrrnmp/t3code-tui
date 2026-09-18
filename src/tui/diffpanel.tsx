@@ -3,9 +3,25 @@ import type { ScrollBoxRenderable } from "@opentui/core";
 import { SyntaxStyle } from "@opentui/core";
 
 import { useHover } from "./hooks/useHover.js";
+import { useAnimTick } from "./hooks/useAnimTick.js";
 import type { PatchFile } from "./model/patch.js";
 import { shortPath } from "./model/patch.js";
-import { CODE_SYNTAX_TOKENS, COLOR, DIFF_BG, MARKER, SURFACE } from "./theme.js";
+import { CODE_SYNTAX_TOKENS, COLOR, DIFF_BG, MARKER, SPINNER_FRAMES, SURFACE } from "./theme.js";
+
+/** Loading skeleton: braille spinner + a shimmer bar sweeping a dim track. Mounted only while fetching. */
+function DiffLoading({ width }: { width: number }) {
+  const tick = useAnimTick(true, 150);
+  const frame = SPINNER_FRAMES[Math.floor(tick / 150) % SPINNER_FRAMES.length] ?? "⠋";
+  const barWidth = Math.max(8, Math.min(24, width - 4));
+  const pos = Math.floor(tick / 150) % barWidth;
+  const bar = `${"░".repeat(pos)}▓${"░".repeat(Math.max(0, barWidth - pos - 1))}`;
+  return (
+    <box style={{ flexDirection: "column", flexShrink: 0 }}>
+      <text fg={COLOR.dim}>{` ${frame} loading patch…`}</text>
+      <text fg={COLOR.faint}>{` ${bar}`}</text>
+    </box>
+  );
+}
 
 let cached: SyntaxStyle | null = null;
 function syntaxStyle(): SyntaxStyle {
@@ -136,7 +152,7 @@ export function DiffPanel({
         </text>
       </box>
       {loading ? (
-        <text fg={COLOR.dim}>{" loading patch…"}</text>
+        <DiffLoading width={inner} />
       ) : files.length === 0 ? (
         <text fg={COLOR.dim}>{" no file changes in this turn"}</text>
       ) : (

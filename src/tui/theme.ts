@@ -129,6 +129,13 @@ export const MARKER = "▌";
     and the chat pane's live indicator stay in visual sync. */
 export const SPINNER = ["◐", "◓", "◑", "◒"];
 
+/**
+ * Lively braille spinner for in-pane live indicators (10 frames at ~100ms).
+ * The terminal title keeps `SPINNER` — titles update on the 1s `now` tick,
+ * so braille there would just alias.
+ */
+export const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
 export function rule(width: number): string {
   return "─".repeat(Math.max(0, width));
 }

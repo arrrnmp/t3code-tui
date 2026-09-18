@@ -4,13 +4,14 @@ import type { ScrollBoxRenderable } from "@opentui/core";
 import { SyntaxStyle, TextAttributes } from "@opentui/core";
 
 import { useHover } from "./hooks/useHover.js";
+import { useAnimTick } from "./hooks/useAnimTick.js";
 import { markModalDismissed } from "./model/modalDismiss.js";
 import { describeActivity, fileRowCounts, formatMs } from "./model/activity.js";
 import { findPatchFile, type PatchFile } from "./model/patch.js";
 import { formatBytes, renderMessage } from "./model/message.js";
 import type { TimelineEntry } from "./model/thread.js";
 import { clockTime, formatDuration, proportionalTarget, segmentWork, summarizeWork, type TurnGroup } from "./model/turns.js";
-import { CODE_SYNTAX_TOKENS, COLOR, DIFF_BG, MARKER, pulseColor, SPINNER, SURFACE, truncate } from "./theme.js";
+import { CODE_SYNTAX_TOKENS, COLOR, DIFF_BG, MARKER, pulseColor, SPINNER_FRAMES, SURFACE, truncate } from "./theme.js";
 
 /**
  * `SyntaxStyle.create()` registers no token styles, which paints every
@@ -601,11 +602,16 @@ function WorkFold({
   expanded: boolean;
   onToggle: () => void;
 }) {
+  // Live fold throbs warn→bright on its own 500ms clock; finished folds
+  // stay static so only the in-flight turn moves. Hooks stay above the
+  // empty-steps return so order never shifts when work lands.
+  const { hovered, handlers } = useHover();
+  const pulseTick = useAnimTick(open, 500);
   const steps = group.work.length;
   if (steps === 0) return null;
   const started = Date.parse(group.startedAt);
   const durationMs = open && !Number.isNaN(started) ? Math.max(0, now - started) : group.durationMs;
-  const { hovered, handlers } = useHover();
+  const foldFg = open ? pulseColor(pulseTick, COLOR.warn, COLOR.bright, 1800) : hovered ? COLOR.bright : COLOR.dim;
 
   return (
     <box
@@ -613,7 +619,7 @@ function WorkFold({
       onMouseDown={onToggle}
       {...handlers}
     >
-      <text fg={hovered ? COLOR.bright : open ? COLOR.warn : COLOR.dim} selectable={false}>
+      <text fg={foldFg} selectable={false}>
         {`${expanded ? "▾" : "▸"} ${open ? "Working" : "Worked"} for ${formatDuration(durationMs)}`}
       </text>
       <text fg={COLOR.faint} selectable={false}>
@@ -928,6 +934,7 @@ function TurnBlock({  group,
               background={SURFACE.base}
             />
             <MessageBody entry={live} t3Home={t3Home} background={SURFACE.base} />
+            {open ? <LiveCaret /> : null}
           </box>
         </box>
       )}
@@ -956,17 +963,17 @@ function TurnBlock({  group,
 }
 
 /**
- * Live turn marker for the chat pane's bottom bar: "thinking" before the model
+ * Live turn state for the chat pane's bottom bar: "thinking" before the model
  * has produced anything, "working" once there is visible work, with a live
  * elapsed clock. It lives in the border bar — the same look as the pane
  * chrome — instead of occupying a transcript row, so the last line of the
  * scrollback is always real content.
  */
-function runStatusLine(
+function runStatus(
   group: TurnGroup | undefined,
   now: number,
   turnStartedAt: string | null,
-): { text: string; elapsedMs: number } | null {
+): { busy: boolean; elapsedMs: number } | null {
   if (group === undefined) return null;
   // The server's own turn-start timestamp is the ground truth for the live
   // clock — grouped-entry timing is a fallback for when it isn't wired up
@@ -974,9 +981,38 @@ function runStatusLine(
   const anchor = turnStartedAt === null ? Date.parse(group.startedAt) : Date.parse(turnStartedAt);
   const started = Number.isNaN(anchor) ? Date.parse(group.startedAt) : anchor;
   const elapsedMs = Number.isNaN(started) ? 0 : Math.max(0, now - started);
-  const frame = SPINNER[Math.floor(elapsedMs / 1000) % SPINNER.length] ?? "◐";
   const busy = group.work.length > 0 || group.reply !== null || group.live !== null;
-  return { text: `${frame} ${busy ? "working" : "thinking"}… ${formatDuration(elapsedMs)}`, elapsedMs };
+  return { busy, elapsedMs };
+}
+
+/**
+ * Bottom-bar live badge with its own 100ms clock: braille spinner + dim→accent
+ * throb. The elapsed text still advances on the 1s `now` tick — only the
+ * frame and glow need the fast clock. Mounted only while a turn runs.
+ */
+function LiveBadge({ busy, elapsedMs }: { busy: boolean; elapsedMs: number }) {
+  const tick = useAnimTick(true, 100);
+  const frame = SPINNER_FRAMES[Math.floor(tick / 100) % SPINNER_FRAMES.length] ?? "⠋";
+  return (
+    // A real overlay instead of `bottomTitle`: the border prop shares one
+    // color with the top title, so it can't pulse independently.
+    <box style={{ position: "absolute", bottom: -1, right: 2, height: 1, flexShrink: 0 }}>
+      <text fg={pulseColor(tick, COLOR.dim, COLOR.accent, 2400)} bg={SURFACE.base}>
+        {` ${frame} ${busy ? "working" : "thinking"}… ${formatDuration(elapsedMs)} `}
+      </text>
+    </box>
+  );
+}
+
+/** Blinking block caret ending the live streaming reply. Mounted only on the live turn. */
+function LiveCaret() {
+  const tick = useAnimTick(true, 530);
+  const visible = Math.floor(tick / 530) % 2 === 0;
+  return (
+    <text fg={COLOR.accent} bg={SURFACE.base}>
+      {visible ? "▊" : " "}
+    </text>
+  );
 }
 
 export function Timeline({
@@ -1035,9 +1071,11 @@ export function Timeline({
 }) {
   const lastId = groups[groups.length - 1]?.id;
   const running = sessionStatus === "running" || sessionStatus === "starting";
-  const live = running ? runStatusLine(groups[groups.length - 1], now, turnStartedAt) : null;
+  const live = running ? runStatus(groups[groups.length - 1], now, turnStartedAt) : null;
 
   const [atBottom, setAtBottom] = useState(true);
+  // Jump pill breathes accent→bright only while visible (off-screen = zero cost).
+  const pillTick = useAnimTick(!atBottom, 800);
   useEffect(() => {
     const timer = setInterval(() => {
       const pane = scrollRef.current;
@@ -1065,15 +1103,7 @@ export function Timeline({
       bottomTitleAlignment="right"
       onMouseDown={onFocus}
     >
-      {live === null ? null : (
-        // A real overlay instead of `bottomTitle`: the border prop shares one
-        // color with the top title, so it can't pulse independently.
-        <box style={{ position: "absolute", bottom: -1, right: 2, height: 1, flexShrink: 0 }}>
-          <text fg={pulseColor(live.elapsedMs, COLOR.dim, COLOR.accent)} bg={SURFACE.base}>
-            {` ${live.text} `}
-          </text>
-        </box>
-      )}
+      {live === null ? null : <LiveBadge busy={live.busy} elapsedMs={live.elapsedMs} />}
       {atBottom ? null : (
         // Single-row square pill with 2-col padding per side — no rounded
         // border, so it reads as a flat chip rather than a modal.
@@ -1094,7 +1124,7 @@ export function Timeline({
           onMouseDown={scrollToBottom}
           selectable={false}
         >
-          <text fg={COLOR.accent} bg={SURFACE.raised} selectable={false}>{JUMP_TO_BOTTOM_LABEL}</text>
+          <text fg={pulseColor(pillTick, COLOR.accent, COLOR.bright, 1600)} bg={SURFACE.raised} selectable={false}>{JUMP_TO_BOTTOM_LABEL}</text>
         </box>
       )}
       <scrollbox

@@ -36,11 +36,12 @@ import { fetchWorkingTreeDiff } from "./model/gitdiff.js";
 import { createFileContentCache, diffCachedFiles, snapshotFiles } from "./model/filecache.js";
 import { readCompletedToolInputs } from "../infra/toolInputs.js";
 import { Sidebar } from "./sidebar.js";
+import { MonitoringBackdrop } from "./backdrop.js";
 import { HoverButton } from "./hoverbutton.js";
 import { openExternal } from "../infra/platformOpen.js";
 import { formatDuration } from "./model/turns.js";
 import { ContextUsageCard } from "./contextusagecard.js";
-import { COLOR, MARKER, providerColor, SPINNER, SURFACE, truncate } from "./theme.js";
+import { COLOR, MARKER, providerColor, pulseColor, SPINNER, SURFACE, truncate } from "./theme.js";
 import { useToasts, type ToastTone } from "./hooks/useToasts.js";
 import { useClipboard } from "./hooks/useClipboard.js";
 import { readPastedImage, type TerminalClipboardDeps } from "./model/terminalClipboard.js";
@@ -2358,6 +2359,9 @@ export function App({
           markedThreadIds={markedThreadIds}
           settledExpanded={settledExpanded}
           width={SIDEBAR_WIDTH}
+          now={now}
+          height={height}
+          screenWidth={width}
           onOpenThread={(threadId) => {
             setFocus("chat");
             setCreating(false);
@@ -2382,6 +2386,20 @@ export function App({
               backgroundColor: SURFACE.base,
             }}
           >
+            {/* Faint control-plane texture behind the empty state only:
+                grid + drifting status dots, zinc palette, unmounted (zero
+                cost) in thread view. offsetX is the pane's raw terminal
+                origin (the builder mods it) and the field spans the whole
+                screen with the sidebar's — one lattice, one swarm.
+                Foreground column sits above at zIndex 1 with its own opaque
+                surfaces so text never seams. */}
+            <MonitoringBackdrop
+              width={Math.max(0, width - SIDEBAR_WIDTH)}
+              height={height}
+              offsetX={SIDEBAR_WIDTH}
+              fieldWidth={width}
+              fieldHeight={height}
+            />
             {/* Explicit max-width column: alignItems:center shrink-wraps
                 children, so the composer needs its own width instead of
                 stretching like it does in the thread view. */}
@@ -2390,6 +2408,7 @@ export function App({
                 flexDirection: "column",
                 flexShrink: 0,
                 width: Math.min(76, Math.max(40, width - SIDEBAR_WIDTH - 8)),
+                zIndex: 1,
               }}
             >
               <box style={{ flexDirection: "row", height: 1, flexShrink: 0, justifyContent: "center" }}>
@@ -2592,7 +2611,9 @@ export function App({
           }}
           border={["left"]}
           borderStyle="heavy"
-          borderColor={TOAST_COLOR[toast.tone]}
+          borderColor={
+            toast.tone === "danger" ? pulseColor(now, TOAST_COLOR.danger, COLOR.bright, 1600) : TOAST_COLOR[toast.tone]
+          }
           backgroundColor={SURFACE.raised}
         >
           <box style={{ flexDirection: "row", height: 1, flexShrink: 0, justifyContent: "space-between" }}>

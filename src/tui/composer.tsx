@@ -3,8 +3,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { KeyEvent, ScrollBoxRenderable, TextareaRenderable } from "@opentui/core";
 
 import { useHover } from "./hooks/useHover.js";
+import { useAnimTick } from "./hooks/useAnimTick.js";
 import { PICK_BG, PICK_FG } from "./pickermodal.js";
-import { COLOR, SURFACE, truncate } from "./theme.js";
+import { COLOR, pulseColor, SURFACE, truncate } from "./theme.js";
 import { detectSkillTrigger, filterSkills, insertSkillMention, marqueeWindow, type SkillTrigger } from "./model/skills.js";
 import type { SkillSummary } from "../catalog/catalog.js";
 import type { ContextUsageDisplay } from "./model/turns.js";
@@ -278,6 +279,12 @@ export function Composer({
     });
   }
 
+  // Focused border breathes sky→deeper-sky while a turn runs — subtle glow,
+  // static otherwise. Gated internally so idle composers never re-render.
+  const borderTick = useAnimTick(running && focused, 400);
+  const frameBorderColor =
+    running && focused ? pulseColor(borderTick, SURFACE.borderFocus, "#0ea5e9", 2400) : focused ? SURFACE.borderFocus : SURFACE.border;
+
   return (
     <box style={{ width, flexDirection: "column", flexShrink: 0, marginTop: flushTop === true ? 0 : 1 }}>
       {skillTrigger === null ? null : (
@@ -361,7 +368,7 @@ export function Composer({
       <box
         border={["left"]}
         borderStyle="heavy"
-        borderColor={focused ? SURFACE.borderFocus : SURFACE.border}
+        borderColor={frameBorderColor}
         style={{
           flexDirection: "column",
           backgroundColor: SURFACE.raised,

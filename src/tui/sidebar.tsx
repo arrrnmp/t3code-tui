@@ -1,6 +1,27 @@
 import { useHover } from "./hooks/useHover.js";
+import { MonitoringBackdrop } from "./backdrop.js";
 import type { SidebarGroup, SidebarMode, SidebarSections, SidebarThread } from "./model/sidebar.js";
-import { COLOR, MARKER, rule, spread, STATUS_COLOR, SURFACE, truncate } from "./theme.js";
+import { COLOR, MARKER, pulseColor, rule, spread, STATUS_COLOR, SURFACE, truncate } from "./theme.js";
+
+/** Freshness window: updated inside it, a non-open card glows like new activity. */
+const FRESH_MS = 120_000;
+
+/**
+ * Live status colors: running throbs accent→bright, blocked danger→bright.
+ * `now` is wall-clock ms (the app's shared tick) used as the pulse phase —
+ * no extra timer per row. Idle statuses stay static.
+ */
+function statusGlyphColor(status: string, now: number): string {
+  if (status === "running") return pulseColor(now, STATUS_COLOR.running ?? COLOR.accent, COLOR.bright, 2400);
+  if (status === "blocked") return pulseColor(now, COLOR.danger, COLOR.bright, 1600);
+  return STATUS_COLOR[status] ?? COLOR.dim;
+}
+
+/** Waiting `?` blinks warn→faint (never hidden, so rows don't jitter). */
+function waitingColor(waiting: boolean, now: number): string {
+  if (!waiting) return COLOR.faint;
+  return Math.floor(now / 700) % 2 === 0 ? COLOR.warn : COLOR.faint;
+}
 
 const MODE_LABEL: Record<SidebarMode, string> = {
   flat: "all",
@@ -35,6 +56,7 @@ function ActiveCard({
   open,
   marked,
   compact,
+  now,
   onOpen,
 }: {
   row: SidebarThread;
@@ -47,9 +69,28 @@ function ActiveCard({
    * collapses to one row — title left, age + status right.
    */
   compact?: boolean;
+  /** Wall-clock ms driving the running/blocked pulse + waiting blink. */
+  now: number;
   onOpen: () => void;
 }) {
   const glyph = STATUS_GLYPH[row.status] ?? "";
+  const glyphColor = statusGlyphColor(row.status, now);
+  const waitColor = waitingColor(row.waiting, now);
+  // Live edge: running/blocked rows carry the accent marker even when they
+  // aren't open, so live harnesses read at a glance. Open stays a steady
+  // accent; running throbs accent→bright, blocked danger→bright.
+  const showMarker = open || row.status === "running" || row.status === "blocked";
+  const markerFg = open
+    ? COLOR.accent
+    : row.status === "running"
+      ? pulseColor(now, COLOR.accent, COLOR.bright, 1800)
+      : pulseColor(now, COLOR.danger, COLOR.bright, 1400);
+  // Freshness: touched in the last couple minutes, the card glows — bright
+  // title plus an accent age — until it settles back into the dim list.
+  const updatedMs = Date.parse(row.thread.updatedAt ?? "");
+  const fresh = !Number.isNaN(updatedMs) && now - updatedMs < FRESH_MS;
+  const titleFg = open || fresh ? COLOR.bright : COLOR.text;
+  const ageFg = fresh ? COLOR.accent : COLOR.dim;
   const body = width - 2;
   const { hovered, handlers } = useHover();
 
@@ -63,13 +104,13 @@ function ActiveCard({
         backgroundColor={open ? SURFACE.user : hovered ? SURFACE.border : SURFACE.raised}
         {...handlers}
       >
-        <text fg={open ? COLOR.accent : COLOR.faint} selectable={false}>{open ? MARKER : " "}</text>
-        <text fg={open ? COLOR.bright : COLOR.text} selectable={false}>
+        <text fg={showMarker ? markerFg : COLOR.faint} selectable={false}>{showMarker ? MARKER : " "}</text>
+        <text fg={titleFg} selectable={false}>
           {` ${truncate(row.title, Math.max(0, body - tail.length - 2))}`.padEnd(Math.max(0, body - tail.length))}
         </text>
-        <text fg={COLOR.dim} selectable={false}>{row.age.length > 0 ? `${row.age} ` : ""}</text>
-        <text fg={STATUS_COLOR[row.status] ?? COLOR.dim} selectable={false}>{glyph}</text>
-        <text fg={row.waiting ? COLOR.warn : COLOR.faint} selectable={false}>{row.waiting ? WAITING_GLYPH : ""}</text>
+        <text fg={ageFg} selectable={false}>{row.age.length > 0 ? `${row.age} ` : ""}</text>
+        <text fg={glyphColor} selectable={false}>{glyph}</text>
+        <text fg={waitColor} selectable={false}>{row.waiting ? WAITING_GLYPH : ""}</text>
         <text fg={marked ? COLOR.warn : COLOR.faint} selectable={false}>{marked ? DRAFT_DOT : ""}</text>
       </box>
     );
@@ -84,16 +125,16 @@ function ActiveCard({
       {...handlers}
     >
       <box style={{ flexDirection: "row", height: 1, flexShrink: 0 }}>
-        <text fg={open ? COLOR.accent : COLOR.faint} selectable={false}>{open ? MARKER : " "}</text>
+        <text fg={showMarker ? markerFg : COLOR.faint} selectable={false}>{showMarker ? MARKER : " "}</text>
         <text fg="#09090b" bg={row.badgeColor} selectable={false}>{` ${row.badge}`}</text>
         <text fg={marked ? COLOR.warn : "#09090b"} bg={row.badgeColor} selectable={false}>{marked ? DRAFT_DOT : " "}</text>
         <text fg={COLOR.dim} selectable={false}>{spread(` ${row.projectTitle}`, row.age, body - 4)}</text>
       </box>
       <box style={{ flexDirection: "row", height: 1, flexShrink: 0 }}>
-        <text fg={open ? COLOR.accent : COLOR.faint} selectable={false}>{open ? MARKER : " "}</text>
-        <text fg={open ? COLOR.bright : COLOR.text} selectable={false}>{` ${truncate(row.title, body - 4)}`.padEnd(body - 1 - (row.waiting ? 1 : 0))}</text>
-        <text fg={STATUS_COLOR[row.status] ?? COLOR.dim} selectable={false}>{glyph}</text>
-        <text fg={row.waiting ? COLOR.warn : COLOR.faint} selectable={false}>{row.waiting ? WAITING_GLYPH : ""}</text>
+        <text fg={showMarker ? markerFg : COLOR.faint} selectable={false}>{showMarker ? MARKER : " "}</text>
+        <text fg={titleFg} selectable={false}>{` ${truncate(row.title, body - 4)}`.padEnd(body - 1 - (row.waiting ? 1 : 0))}</text>
+        <text fg={glyphColor} selectable={false}>{glyph}</text>
+        <text fg={waitColor} selectable={false}>{row.waiting ? WAITING_GLYPH : ""}</text>
       </box>
     </box>
   );
@@ -104,14 +145,18 @@ function SettledRow({
   width,
   open,
   marked,
+  now,
   onOpen,
 }: {
   row: SidebarThread;
   width: number;
   open: boolean;
   marked: boolean;
+  /** Wall-clock ms driving the waiting blink (settled glyphs stay static). */
+  now: number;
   onOpen: () => void;
 }) {
+  const waitColor = waitingColor(row.waiting, now);
   const { hovered, handlers } = useHover();
   return (
     <box
@@ -125,7 +170,7 @@ function SettledRow({
       <text fg={COLOR.faint} selectable={false}>{row.badge}</text>
       <text fg={marked ? COLOR.warn : COLOR.faint} selectable={false}>{marked ? DRAFT_DOT : " "}</text>
       <text fg={open ? COLOR.text : COLOR.dim} selectable={false}>{spread(row.title, row.age, width - 4 - (row.waiting ? 1 : 0))}</text>
-      <text fg={row.waiting ? COLOR.warn : COLOR.faint} selectable={false}>{row.waiting ? WAITING_GLYPH : ""}</text>
+      <text fg={waitColor} selectable={false}>{row.waiting ? WAITING_GLYPH : ""}</text>
     </box>
   );
 }
@@ -223,6 +268,9 @@ export function Sidebar({
   markedThreadIds,
   settledExpanded,
   width,
+  now,
+  height,
+  screenWidth,
   onOpenThread,
   onToggleSettled,
   onShowMore,
@@ -236,6 +284,13 @@ export function Sidebar({
   markedThreadIds: ReadonlySet<string>;
   settledExpanded: boolean;
   width: number;
+  /** Wall-clock ms driving status pulses — the app's shared `now` tick. */
+  now: number;
+  /** Terminal height, sizing the grid texture behind the list. */
+  height: number;
+  /** Terminal width — the shared drifter field spans the whole screen. */
+  screenWidth: number;
+
   onOpenThread: (threadId: string) => void;
   onToggleSettled: () => void;
   onShowMore: () => void;
@@ -243,12 +298,14 @@ export function Sidebar({
   onSelectMode: (mode: SidebarMode) => void;
   /** Collapse/expand one project group. */
   onToggleProject: (projectId: string) => void;
-  /** Arrows, project row click, or `[` / `]`: move between projects. */
+  /** Arrows, project row click, or `[` / `]` move between projects. */
   onCycleProject: (direction: 1 | -1) => void;
   /** The only UI path to start a new thread now that `n` isn't advertised. */
   onNewThread: () => void;
 }) {
   const remaining = sections.settledTotal - sections.settled.length;
+  const runningCount = sections.active.filter((row) => row.status === "running").length;
+  const blockedCount = sections.active.filter((row) => row.status === "blocked").length;
   const prevProjectHover = useHover();
   const nextProjectHover = useHover();
   const settledToggleHover = useHover();
@@ -261,6 +318,7 @@ export function Sidebar({
       open={row.thread.id === openThreadId}
       marked={markedThreadIds.has(row.thread.id)}
       compact={compact}
+      now={now}
       onOpen={() => onOpenThread(row.thread.id)}
     />
   );
@@ -272,13 +330,29 @@ export function Sidebar({
       title=" Threads "
       titleColor={COLOR.dim}
     >
+      {/* One continuous field with the creating view: same lattice (offsets
+          are this pane's terminal-cell origin) and one shared drifter swarm across
+          the whole screen, so dots drift over the pane border instead of
+          each side running a mirrored set. left/top stay 0 — absolute
+          offsets are content-box relative, so 0 already means just inside
+          the border (probed: top=1 double-shifted a row). Content siblings
+          sit at zIndex 1 above it. */}
+      <MonitoringBackdrop
+        width={Math.max(0, width - 2)}
+        height={Math.max(0, height - 2)}
+        opacity={0.35}
+        offsetX={1}
+        offsetY={1}
+        fieldWidth={screenWidth}
+        fieldHeight={height}
+      />
       {/* View switcher, centered: each pill jumps straight to its view (`s`
           still cycles). Kept off the scroll list so thread clicks never
           bubble into it. The "+" sits as a normal trailing sibling now — a
           left spacer matching its own width keeps the pills genuinely
           centered instead of skewed by the button's width on one side. */}
       <box
-        style={{ flexDirection: "row", height: 1, flexShrink: 0, marginTop: 1, alignItems: "center" }}
+        style={{ flexDirection: "row", height: 1, flexShrink: 0, marginTop: 1, alignItems: "center", zIndex: 1 }}
         backgroundColor={SURFACE.panel}
       >
         <box style={{ width: NEW_THREAD_BUTTON_WIDTH, flexShrink: 0 }} backgroundColor={SURFACE.panel} />
@@ -295,12 +369,12 @@ export function Sidebar({
         </box>
         <NewThreadButton onClick={onNewThread} />
       </box>
-      <box style={{ height: 1, flexShrink: 0 }} backgroundColor={SURFACE.panel}>
+      <box style={{ height: 1, flexShrink: 0, zIndex: 1 }} backgroundColor={SURFACE.panel}>
         <text fg={COLOR.rule} bg={SURFACE.panel}>{` ${rule(Math.max(0, width - 4))}`}</text>
       </box>
       {sections.mode === "project" ? (
         <box
-          style={{ flexDirection: "row", height: 1, flexShrink: 0, paddingLeft: 1, paddingRight: 1 }}
+          style={{ flexDirection: "row", height: 1, flexShrink: 0, paddingLeft: 1, paddingRight: 1, zIndex: 1 }}
           backgroundColor={SURFACE.panel}
         >
           <box
@@ -335,7 +409,7 @@ export function Sidebar({
         </box>
       ) : null}
       <scrollbox
-        style={{ flexGrow: 1 }}
+        style={{ flexGrow: 1, zIndex: 1 }}
         contentOptions={{ paddingRight: 1 }}
         stickyStart="top"
         verticalScrollbarOptions={{ showArrows: false, trackOptions: { foregroundColor: COLOR.dim, backgroundColor: SURFACE.border } }}
@@ -365,7 +439,14 @@ export function Sidebar({
       {/* Anchored beneath the active list so expanding grows the section upward.
           The rule above it turns whatever gap the active list leaves into a
           deliberate break instead of a stray blank void. */}
-      <box style={{ flexDirection: "column", flexShrink: 0, backgroundColor: SURFACE.panel }}>
+      <box style={{ flexDirection: "column", flexShrink: 0, backgroundColor: SURFACE.panel, zIndex: 1 }}>
+        <box style={{ flexDirection: "row", height: 1, flexShrink: 0 }} backgroundColor={SURFACE.panel}>
+          <text fg={COLOR.dim} selectable={false}>{` ${sections.active.length} active · `}</text>
+          <text fg={runningCount > 0 ? COLOR.accent : COLOR.faint} selectable={false}>{`${runningCount} running`}</text>
+          {blockedCount > 0 ? (
+            <text fg={COLOR.danger} selectable={false}>{` · ${blockedCount} blocked`}</text>
+          ) : null}
+        </box>
         <box style={{ height: 1, flexShrink: 0 }} backgroundColor={SURFACE.panel}>
           <text fg={COLOR.rule} bg={SURFACE.panel}>{` ${rule(Math.max(0, width - 4))}`}</text>
         </box>
@@ -393,6 +474,7 @@ export function Sidebar({
                 width={width - 2}
                 open={row.thread.id === openThreadId}
                 marked={markedThreadIds.has(row.thread.id)}
+                now={now}
                 onOpen={() => onOpenThread(row.thread.id)}
               />
             ))}
