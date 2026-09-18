@@ -16,7 +16,12 @@ import { RenameModal } from "./renamemodal.js";
 import { AnswerPanel } from "./answerpanel.js";
 import { dispatchErrorMessage } from "../errors.js";
 import { extractProviders, type ProviderSummary } from "../catalog/catalog.js";
-import type { ModelSelection, ProviderOptionSelection } from "../types.js";
+import type { ModelSelection, ProviderOptionSelection, RuntimeMode } from "../types.js";
+import {
+  compatibleRuntimeMode,
+  displayRuntimeMode,
+  runtimeModeChoicesForProvider,
+} from "../catalog/permissions.js";
 import {
   attachmentFromBytes,
   buildImageAttachments,
@@ -185,6 +190,13 @@ export function App({
       source thread. */
   const [creatingModelSelection, setCreatingModelSelection] = useState<ModelSelection | null>(null);
   /**
+   * Overrides the permission level the new thread starts with once the user
+   * picks one while creating — `null` means "still inheriting" from the
+   * source thread. Same rule as `creatingModelSelection`: picking during
+   * `creating` lands here, never dispatches against the source thread.
+   */
+  const [creatingRuntimeMode, setCreatingRuntimeMode] = useState<RuntimeMode | null>(null);
+  /**
    * Overrides the project the new thread lands in once the user picks a
    * different one while creating — `null` means "still inheriting" from the
    * source thread. Picked via the project picker (command palette or `[`/`]`
@@ -243,7 +255,7 @@ export function App({
   const [tasksVisible, setTasksVisible] = useState(true);
   /** Centered picker modal: model/effort lists, the diff-turn list, the command palette, the rename or custom-answer prompt, message actions, or the new-thread project list. */
   const [picker, setPicker] = useState<
-    "model" | "effort" | "diff-turn" | "command" | "rename" | "message" | "answer-custom" | "project" | "project-new" | null
+    "model" | "effort" | "permission" | "diff-turn" | "command" | "rename" | "message" | "answer-custom" | "project" | "project-new" | null
   >(null);
   const [pickerFilter, setPickerFilter] = useState("");
   /** Where esc/backdrop returns focus after the command palette closes. */
@@ -397,6 +409,11 @@ export function App({
       thread this is the local override (once picked) or the source thread's
       own model, never a dispatch target. */
   const effectiveModelSelection = creating ? (creatingModelSelection ?? selected?.modelSelection) : selected?.modelSelection;
+  /** The permission level a turn would run with — the local override while
+      drafting, else the open thread's own mode. */
+  const effectiveRuntimeMode = creating
+    ? (creatingRuntimeMode ?? selected?.runtimeMode ?? null)
+    : (selected?.runtimeMode ?? null);
   /**
    * The project the next thread lands in: while drafting, the local override
    * (once picked) or the source thread's own project — never dispatched
@@ -500,6 +517,7 @@ export function App({
         closePicker(paletteReturnFocus);
         if (!settled) {
           setCreatingModelSelection(null);
+          setCreatingRuntimeMode(null);
           setCreatingProjectId(null);
           setCreating(true);
           setFocus("composer");
@@ -1261,11 +1279,11 @@ export function App({
       const nowIso = new Date().toISOString();
       const threadId = crypto.randomUUID();
       const title = threadTitle(parsed.text);
-      const runtimeMode = source.runtimeMode ?? "full-access";
       const interactionMode = source.interactionMode ?? "default";
       // The local override picked while drafting wins over whatever the
       // source thread carries — that's the whole point of `creatingModelSelection`.
       const modelSelection = creatingModelSelection ?? source.modelSelection;
+      const runtimeMode = creatingRuntimeMode ?? source.runtimeMode ?? "full-access";
       const create = {
         type: "thread.create",
         commandId: crypto.randomUUID(),
@@ -1307,6 +1325,7 @@ export function App({
         writePending(source.id, []);
         setCreating(false);
         setCreatingModelSelection(null);
+        setCreatingRuntimeMode(null);
         setCreatingProjectId(null);
         setFocus("chat");
         setOpenThreadId(threadId);
@@ -1322,6 +1341,7 @@ export function App({
       return;
     }
     setCreatingModelSelection(null);
+    setCreatingRuntimeMode(null);
     setCreatingProjectId(null);
     setCreating(true);
     setFocus("composer");
@@ -1851,6 +1871,43 @@ export function App({
     });
   };
 
+  const openPermissionPicker = () => {
+    if (selected === null) {
+      setError("no open thread to set permissions for");
+      return;
+    }
+    setPickerFilter("");
+    setPicker("permission");
+    setFocus("chat");
+  };
+
+  /**
+   * While drafting a new thread this only lands in `creatingRuntimeMode`
+   * (same rule as the model override); otherwise it dispatches
+   * `thread.runtime-mode.set` against the open thread and the thread
+   * subscription projects the new mode into the footer.
+   */
+  const setThreadRuntimeMode = (runtimeMode: RuntimeMode) => {
+    if (creating) {
+      setCreatingRuntimeMode(runtimeMode);
+      closePicker();
+      return;
+    }
+    if (openThreadId === null) return;
+    void client
+      .dispatch({
+        type: "thread.runtime-mode.set",
+        commandId: crypto.randomUUID(),
+        threadId: openThreadId,
+        runtimeMode,
+        createdAt: new Date().toISOString(),
+      })
+      .then(() => {
+        closePicker();
+      })
+      .catch((cause: unknown) => setError(String(cause).slice(0, 120)));
+  };
+
   // A 1s tick while a turn is in flight drives the thinking/working elapsed
   // counter; the 30s tick above is enough for sidebar ages when idle.
   useEffect(() => {
@@ -1872,6 +1929,21 @@ export function App({
       loaded at least once. Backs both the `$` skill picker and the
       provider-brand color on the model name. */
   const currentProvider = providers?.find((candidate) => candidate.instanceId === effectiveModelSelection?.instanceId);
+  /**
+   * Offerable permission levels for the open thread's provider (every known
+   * mode until the catalog loads or when the driver states nothing), and
+   * the mode actually shown: the effective one while offered, else the
+   * provider's first — display-only fallback, never written back until the
+   * user picks, mirroring the desktop composer.
+   */
+  const supportedModes = currentProvider?.supportedRuntimeModes ?? null;
+  const permissionChoices = useMemo(
+    () => runtimeModeChoicesForProvider({ supportedRuntimeModes: supportedModes }),
+    [supportedModes],
+  );
+  const permission = displayRuntimeMode(
+    compatibleRuntimeMode(effectiveRuntimeMode ?? "full-access", permissionChoices),
+  );
   const currentSkills = currentProvider?.skills;
   const modelColor = providerColor(currentProvider?.driver, effectiveModelSelection?.instanceId, model);
   const contextUsageDisplay = threadState.contextUsage === null ? null : formatContextUsage(threadState.contextUsage);
@@ -2051,6 +2123,7 @@ export function App({
                   }
                   if (!creating) {
                     setCreatingModelSelection(null);
+                    setCreatingRuntimeMode(null);
                     setCreatingProjectId(null);
                     setCreating(true);
                   }
@@ -2169,6 +2242,26 @@ export function App({
         ],
       };
     }
+    // Permission levels need no provider catalog: the choices derive from
+    // the open thread's provider snapshot (or every known mode until it
+    // loads), so this branch sits above the catalog loading gate.
+    if (picker === "permission") {
+      const shown = compatibleRuntimeMode(effectiveRuntimeMode ?? "full-access", permissionChoices);
+      return {
+        kind: "list",
+        sections: [
+          {
+            rows: permissionChoices.map((choice) => ({
+              key: `permission:${choice.mode}`,
+              label: choice.label,
+              meta: choice.description,
+              selected: shown === choice.mode,
+              onPick: () => setThreadRuntimeMode(choice.mode),
+            })),
+          },
+        ],
+      };
+    }
     if (providers === null) {
       if (providersError !== null) return { kind: "error", message: providersError };
       return { kind: "loading" };
@@ -2232,7 +2325,7 @@ export function App({
       ],
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [picker, providers, providersError, effectiveModelSelection, creating, deleteArmed, deleteSupported, revertArmed, answerDraft]);
+  }, [picker, providers, providersError, effectiveModelSelection, effectiveRuntimeMode, permissionChoices, creating, deleteArmed, deleteSupported, revertArmed, answerDraft]);
 
   const pickerGeometry = useMemo(() => {
     const panelWidth = Math.min(64, Math.max(30, width - 6));
@@ -2296,6 +2389,7 @@ export function App({
     if (creating) {
       setCreating(false);
       setCreatingModelSelection(null);
+      setCreatingRuntimeMode(null);
       setCreatingProjectId(null);
       setFocus("chat");
       return;
@@ -2437,6 +2531,7 @@ export function App({
                 model={model}
                 modelColor={modelColor}
                 effort={effort}
+                permission={permission}
                 flushTop={pending.length > 0}
                 submitVerb="creates"
                 running={false}
@@ -2444,6 +2539,7 @@ export function App({
                 hideHint
                 onModelClick={openModelPicker}
                 onEffortClick={openEffortPicker}
+                onPermissionClick={openPermissionPicker}
                 onCopyClick={copyDraft}
                 onExternalEditClick={editDraftExternally}
                 editingExternally={editingExternally}
@@ -2540,12 +2636,14 @@ export function App({
             model={model}
             modelColor={modelColor}
             effort={effort}
+            permission={permission}
             flushTop={pending.length > 0}
             submitVerb="sends"
             running={sessionRunning}
             width={chatWidth}
             onModelClick={openModelPicker}
             onEffortClick={openEffortPicker}
+            onPermissionClick={openPermissionPicker}
             onStopClick={interruptTurn}
             onCopyClick={copyDraft}
             onExternalEditClick={editDraftExternally}
@@ -2705,7 +2803,9 @@ export function App({
                   }`
               : picker === "effort"
                 ? "Select effort"
-                : picker === "diff-turn"
+                : picker === "permission"
+                  ? "Select permission"
+                  : picker === "diff-turn"
                   ? "Select diff turn"
                   : picker === "command"
                     ? "Command palette"
@@ -2724,7 +2824,9 @@ export function App({
                 : "No models reported by the server."
               : picker === "effort"
                 ? "No effort options for this model."
-                : picker === "diff-turn"
+                : picker === "permission"
+                  ? "No permission levels for this provider."
+                  : picker === "diff-turn"
                   ? "No turns with changes."
                   : picker === "command"
                     ? "No matching commands."

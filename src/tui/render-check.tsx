@@ -649,10 +649,12 @@ console.log(setup.captureCharFrame());
 // Ctrl+C opens a compact, content-sized confirm (not full-screen) with a
 // dimmed backdrop behind it — left-aligned copy, right-aligned actions.
 await act(async () => setup.mockInput.pressKey("c", { ctrl: true }));
+await new Promise((resolve) => setTimeout(resolve, 200));
 await setup.flush();
 console.log("--- quit confirm (ctrl+c) ---");
 console.log(setup.captureCharFrame());
 await act(async () => setup.mockInput.pressEscape());
+await new Promise((resolve) => setTimeout(resolve, 200));
 await setup.flush();
 
 // Sidebar geometry: border row, then three 3-line thread cards, then the
@@ -661,6 +663,43 @@ await act(async () => setup.mockMouse.click(6, 24));
 await setup.flush();
 console.log("--- settled expanded (clicked footer header) ---");
 console.log(setup.captureCharFrame());
+
+// The composer footer's permission segment opens the permission picker,
+// whose rows are the provider's supported modes (all four here — the mock
+// catalog states none, and t-now is still selected this early). Picking
+// dispatches thread.runtime-mode.set and the mock server accepts, closing
+// back to the composer.
+function permissionFooterTarget(): { x: number; y: number } {
+  const rows = setup.captureCharFrame().split("\n");
+  const y = rows.findIndex((line) => line.includes("Full access"));
+  if (y === -1) fail("permission footer segment not visible");
+  const x = rows[y]?.indexOf("Full access") ?? -1;
+  return { x: x === -1 ? 60 : x, y };
+}
+await act(async () => {
+  const target = permissionFooterTarget();
+  await setup.mockMouse.click(target.x, target.y);
+});
+await new Promise((resolve) => setTimeout(resolve, 400));
+await setup.flush();
+console.log("--- permission picker (open) ---");
+const permissionOpenFrame = setup.captureCharFrame();
+console.log(permissionOpenFrame);
+if (!permissionOpenFrame.includes("Select permission")) fail("permission footer click did not open the picker");
+if (!permissionOpenFrame.includes("Supervised")) fail("permission picker missing the Supervised row");
+await act(async () => {
+  const rows = setup.captureCharFrame().split("\n");
+  const y = rows.findIndex((line) => line.includes("Supervised"));
+  if (y === -1) fail("Supervised row not visible");
+  const x = rows[y]?.indexOf("Supervised") ?? -1;
+  await setup.mockMouse.click(x === -1 ? 55 : x, y);
+});
+await new Promise((resolve) => setTimeout(resolve, 400));
+await setup.flush();
+console.log("--- permission picked (dispatched) ---");
+const permissionDoneFrame = setup.captureCharFrame();
+console.log(permissionDoneFrame);
+if (permissionDoneFrame.includes("Select permission")) fail("permission pick did not close the picker");
 
 // The timeline's own "diff …" row — the `d` keybinding is gone, so this
 // click is the way a user opens it. Still near the top here (above the

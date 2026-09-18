@@ -73,9 +73,11 @@ export function Composer({
   model,
   modelColor,
   effort,
+  permission,
   flushTop,
   onModelClick,
   onEffortClick,
+  onPermissionClick,
   onStopClick,
   onCopyClick,
   onExternalEditClick,
@@ -110,11 +112,14 @@ export function Composer({
   modelColor?: string | null | undefined;
   /** Effort knob value (e.g. `xhigh`); null hides the segment. */
   effort?: string | null;
+  /** Pretty permission level (e.g. `Full access`); null hides the segment. */
+  permission?: string | null;
   /** Pending attachments sit directly above: drop the top margin to sit flush. */
   flushTop?: boolean;
-  /** Footer segments open the model/effort picker modals on click. */
+  /** Footer segments open the model/effort/permission picker modals on click. */
   onModelClick?: () => void;
   onEffortClick?: () => void;
+  onPermissionClick?: () => void;
   /** A running turn gets a clickable stop control in the footer instead of
       relying on a key. */
   onStopClick?: () => void;
@@ -457,6 +462,19 @@ export function Composer({
               </text>
             ) : (
               <HoverText text={` · ${effort}`} color={COLOR.warn} hoverColor={COLOR.bright} onClick={onEffortClick} />
+            )}
+            {permission === null || permission === undefined || permission.length === 0 ? null : onPermissionClick ===
+              undefined ? (
+              <text fg={COLOR.dim} bg={SURFACE.raised} selectable={false}>
+                {` · ${permission}`}
+              </text>
+            ) : (
+              <HoverText
+                text={` · ${permission}`}
+                color={COLOR.dim}
+                hoverColor={COLOR.bright}
+                onClick={onPermissionClick}
+              />
             )}
           </box>
           {footerSegments.length === 0 ? null : (

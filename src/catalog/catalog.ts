@@ -1,4 +1,17 @@
 import { CliError } from "../errors.js";
+import type { RuntimeMode } from "../types.js";
+
+/**
+ * Runtime modes a provider driver understands. Unknown strings are dropped
+ * (mirroring upstream's ForwardCompatibleArray), so a newer server never
+ * breaks this client — and neither does a driver listing modes we predate.
+ */
+const KNOWN_RUNTIME_MODES: ReadonlySet<string> = new Set([
+  "approval-required",
+  "auto-accept-edits",
+  "auto",
+  "full-access",
+]);
 
 export interface ProviderChoice {
   id: string;
@@ -60,6 +73,14 @@ export interface ProviderSummary {
   status: string | null;
   authStatus: string | null;
   models: ModelSummary[];
+  /**
+   * Runtime modes this provider instance supports (`ServerProvider.
+   * supportedRuntimeModes`). Null when the server predates the field or the
+   * driver states nothing — both read as "every known mode", matching the
+   * desktop's `length > 0` gate. Unknown future modes are dropped on the
+   * way in, never surfaced.
+   */
+  supportedRuntimeModes: RuntimeMode[] | null;
   /** Null when the driver has no notion of subscription usage at all. */
   usageLimits: ProviderUsageLimits | null;
   /** `ServerProvider.skills` — flattened across every workspace the provider has scanned. */
@@ -200,6 +221,12 @@ function extractHiddenModelSlugs(settings: unknown, instanceId: string): Readonl
   return new Set(hidden.filter((slug): slug is string => typeof slug === "string"));
 }
 
+function extractSupportedRuntimeModes(raw: unknown): RuntimeMode[] | null {
+  if (!Array.isArray(raw)) return null;
+  const modes = raw.filter((mode): mode is RuntimeMode => typeof mode === "string" && KNOWN_RUNTIME_MODES.has(mode));
+  return modes;
+}
+
 function extractProvider(raw: unknown, settings: unknown): ProviderSummary {
   const entry = asRecord(raw);
   const instanceId = entry ? asNonEmptyString(entry.instanceId) : null;
@@ -220,6 +247,7 @@ function extractProvider(raw: unknown, settings: unknown): ProviderSummary {
       const summary = extractModel(model, hiddenSlugs);
       return summary ? [summary] : [];
     }),
+    supportedRuntimeModes: extractSupportedRuntimeModes(entry?.supportedRuntimeModes),
     usageLimits: extractUsageLimits(entry?.usageLimits),
     skills: (entry && Array.isArray(entry.skills) ? entry.skills : []).flatMap((skill) => {
       const summary = extractSkill(skill);

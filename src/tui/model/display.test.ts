@@ -34,6 +34,7 @@ function providers(): ProviderSummary[] {
         },
       ],
       usageLimits: null,
+      supportedRuntimeModes: null,
       skills: [],
     },
     {
@@ -67,6 +68,7 @@ function providers(): ProviderSummary[] {
         },
       ],
       usageLimits: null,
+      supportedRuntimeModes: null,
       skills: [],
     },
   ];

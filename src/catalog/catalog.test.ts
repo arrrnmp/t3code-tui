@@ -202,6 +202,28 @@ describe("extractProviders", () => {
     ]);
   });
 
+  it("extracts supported runtime modes and drops unknown ones", () => {
+    const providers = extractProviders({
+      providers: [
+        {
+          instanceId: "locked",
+          driver: "codex",
+          enabled: true,
+          installed: true,
+          supportedRuntimeModes: ["approval-required", "future-mode", "full-access", 42],
+        },
+        {
+          instanceId: "silent",
+          driver: "claudeAgent",
+          enabled: true,
+          installed: true,
+        },
+      ],
+    });
+    expect(providers[0]!.supportedRuntimeModes).toEqual(["approval-required", "full-access"]);
+    expect(providers[1]!.supportedRuntimeModes).toBeNull();
+  });
+
   it("rejects responses without a providers array", () => {
     expect(() => extractProviders({})).toThrowError(
       expect.objectContaining({ code: "T3_CONTRACT_CHANGED" }),

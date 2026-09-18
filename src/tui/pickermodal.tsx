@@ -1,9 +1,13 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useKeyboard } from "@opentui/react";
 
 import { ModalShell } from "./modalshell.js";
 import { markModalDismissed } from "./model/modalDismiss.js";
+import { marqueeWindow } from "./model/skills.js";
 import { COLOR, SURFACE, truncate } from "./theme.js";
+
+/** Marquee tick for the highlighted row's meta text, ms per column — same cadence as the skill popup. */
+const PICKER_MARQUEE_INTERVAL_MS = 350;
 
 export interface PickerRow {
   key: string;
@@ -74,6 +78,14 @@ export function PickerModal({
   onClose: () => void;
 }) {
   const [index, setIndex] = useState(0);
+  const [marqueeTick, setMarqueeTick] = useState(0);
+
+  // The highlighted row's meta text auto-scrolls instead of sitting
+  // truncated or overflowing — ticks only while the modal is mounted.
+  useEffect(() => {
+    const timer = setInterval(() => setMarqueeTick((tick) => tick + 1), PICKER_MARQUEE_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, []);
 
   const visible = useMemo(() => {
     if (body.kind !== "list") return [];
@@ -179,19 +191,32 @@ export function PickerModal({
                 const disabled = row.disabled === true;
                 const rowBg = active && !disabled ? PICK_BG : SURFACE.raised;
                 const labelFg = disabled ? COLOR.faint : active ? PICK_FG : row.selected === true ? COLOR.accent : COLOR.text;
+                // The label is the actionable part — it never gets crowded
+                // out by a long meta description. Whatever width survives
+                // goes to the meta; the highlighted row's meta auto-scrolls
+                // through the rest instead of sitting truncated or
+                // overflowing the row.
+                const labelText = truncate(`${row.selected === true ? "● " : "  "}${row.label}`, inner);
+                const metaBudget = inner - labelText.length - 1;
+                const metaText =
+                  row.meta === undefined || row.meta.length === 0 || metaBudget < 6
+                    ? null
+                    : active
+                      ? marqueeWindow(row.meta, metaBudget, marqueeTick)
+                      : truncate(row.meta, metaBudget);
                 return (
                   <box
                     key={row.key}
-                    style={{ flexDirection: "row", height: 1, flexShrink: 0, justifyContent: "space-between" }}
+                    style={{ width: inner, flexDirection: "row", height: 1, flexShrink: 0, justifyContent: "space-between" }}
                     backgroundColor={rowBg}
                     {...(disabled ? {} : { onMouseDown: row.onPick })}
                     onMouseOver={() => setIndex(visible.findIndex((entry) => entry.key === row.key))}
                   >
                     <text fg={labelFg} bg={rowBg} selectable={false}>
-                      {`${row.selected === true ? "● " : "  "}${truncate(row.label, Math.max(0, inner - (row.meta === undefined ? 4 : row.meta.length + 5)))}`}
+                      {labelText}
                     </text>
-                    {row.meta === undefined ? null : (
-                      <text fg={active && !disabled ? PICK_FG : COLOR.faint} bg={rowBg} selectable={false}>{` ${row.meta}`}</text>
+                    {metaText === null ? null : (
+                      <text fg={active && !disabled ? PICK_FG : COLOR.faint} bg={rowBg} selectable={false}>{` ${metaText}`}</text>
                     )}
                   </box>
                 );
