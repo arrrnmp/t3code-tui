@@ -1,10 +1,10 @@
 import { createCliRenderer } from "@opentui/core";
 import { createRoot } from "@opentui/react";
 
-import { withT3Session } from "../infra/api.js";
-import { discoverRuntime, resolveT3Home } from "../infra/runtime.js";
+import { withT3Session } from "../cli/infra/api.js";
+import { discoverRuntime, resolveT3Home } from "../cli/infra/runtime.js";
 import type { CliConfig } from "../types.js";
-import { App } from "./app.js";
+import { App } from "./app/app.js";
 import { T3Connection } from "./client/connection.js";
 import { SURFACE } from "./theme.js";
 

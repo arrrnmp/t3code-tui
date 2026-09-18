@@ -1,4 +1,4 @@
-import type { ProviderSummary } from "../../catalog/catalog.js";
+import type { ProviderSummary } from "../../cli/catalog/catalog.js";
 import type { ModelSelection } from "../../types.js";
 
 /**

@@ -3,7 +3,7 @@ import path from "node:path";
 
 import { createHostClipboard } from "@opentui/core";
 
-import type { ImageAttachmentUpload } from "../../threads/threadApi.js";
+import type { ImageAttachmentUpload } from "../../cli/threads/threadApi.js";
 
 /**
  * Inline image upload as the client `thread.turn.start` command accepts it:

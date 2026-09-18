@@ -1,4 +1,4 @@
-import type { SkillSummary } from "../../catalog/catalog.js";
+import type { SkillSummary } from "../../cli/catalog/catalog.js";
 
 export interface SkillTrigger {
   /** Offset of the leading `$` in the full draft text. */

@@ -21,13 +21,13 @@ directory, with nothing to put on PATH. Point a `t3code` command at that instead
 macOS/Linux (bash/zsh) — add to your shell profile (`~/.bashrc`, `~/.zshrc`, ...):
 
 ```bash
-t3code() { bun "/absolute/path/to/t3code-tui/src/cli.ts" "$@"; }
+t3code() { bun "/absolute/path/to/t3code-tui/src/cli/index.ts" "$@"; }
 ```
 
 Windows (PowerShell) — add to your `$PROFILE`:
 
 ```powershell
-function t3code { bun "C:\absolute\path\to\t3code-tui\src\cli.ts" @args }
+function t3code { bun "C:\absolute\path\to\t3code-tui\src\cli\index.ts" @args }
 ```
 
 Reload the shell, then verify:
@@ -37,9 +37,8 @@ t3code --json doctor
 ```
 
 Every example below assumes `t3code` resolves that way. This package is not published
-(`private: true`), so install it by cloning; `bun run check` (typecheck, tests, and a build of
-`dist/` as a packaging sanity check) is optional and only relevant if you're changing the code
-itself.
+(`private: true`), so install it by cloning; `bun run check` (typecheck and tests) is optional
+and only relevant if you're changing the code itself.
 
 ## Terminal UI
 
@@ -194,7 +193,7 @@ To run a message on a schedule (for example daily at 05:01), pair it with the OS
 
 ```powershell
 $action = New-ScheduledTaskAction -Execute "bun.exe" `
-  -Argument '"C:\absolute\path\to\t3code-tui\src\cli.ts" --json threads send --thread <thread-id> --prompt-file "<path-to-prompt.txt>" --open none'
+  -Argument '"C:\absolute\path\to\t3code-tui\src\cli\index.ts" --json threads send --thread <thread-id> --prompt-file "<path-to-prompt.txt>" --open none'
 $trigger = New-ScheduledTaskTrigger -Daily -At 05:01
 Register-ScheduledTask -TaskName "T3 5am thread ping" -Action $action -Trigger $trigger
 ```
@@ -202,7 +201,7 @@ Register-ScheduledTask -TaskName "T3 5am thread ping" -Action $action -Trigger $
 macOS/Linux equivalent (cron):
 
 ```bash
-1 5 * * * bun /absolute/path/to/t3code-tui/src/cli.ts --json threads send --thread <thread-id> --prompt-file "<path-to-prompt.txt>" --open none
+1 5 * * * bun /absolute/path/to/t3code-tui/src/cli/index.ts --json threads send --thread <thread-id> --prompt-file "<path-to-prompt.txt>" --open none
 ```
 
 ## Settings

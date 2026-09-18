@@ -12,7 +12,7 @@ import * as RpcSerialization from "effect/unstable/rpc/RpcSerialization";
 import * as Socket from "effect/unstable/socket/Socket";
 
 import { CliError } from "../../errors.js";
-import { T3Api } from "../../infra/api.js";
+import { T3Api } from "../../cli/infra/api.js";
 import type { T3Runtime } from "../../types.js";
 
 // Subscriptions decode as `unknown` on purpose: the TUI reads a narrow set of

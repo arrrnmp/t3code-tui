@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { commandExists } from "../../infra/process.js";
+import { commandExists } from "../../cli/infra/process.js";
 
 export interface EditorCommand {
   command: string;
