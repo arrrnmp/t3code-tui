@@ -2,13 +2,11 @@ import type { ProviderSummary } from "../../cli/catalog/catalog.js";
 import type { ModelSelection } from "../../types.js";
 
 /**
- * btop-style viewport floor enforced by `MinSizeGate`: 44 sidebar + 40
- * composer minimum + ~6 columns of gutters/borders; 20 rows keeps the
- * timeline, composer, and smallest modal usable. Below either dimension
- * the app shows a resize notice instead of a broken layout.
+ * btop-style viewport floor enforced by `MinSizeGate`. Below either
+ * dimension the app shows a resize notice instead of a broken layout.
  */
-export const MIN_TERMINAL_WIDTH = 90;
-export const MIN_TERMINAL_HEIGHT = 20;
+export const MIN_TERMINAL_WIDTH = 180;
+export const MIN_TERMINAL_HEIGHT = 47;
 
 /**
  * Viewport check for `MinSizeGate`. Pure so it stays unit testable; the

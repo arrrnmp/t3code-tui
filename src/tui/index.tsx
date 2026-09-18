@@ -38,7 +38,7 @@ export async function runTui(config: CliConfig): Promise<void> {
     try {
       await new Promise<void>((resolve) => {
         root.render(
-          <MinSizeGate>
+          <MinSizeGate onQuit={resolve}>
             <App
               client={connection}
               onQuit={resolve}

@@ -150,12 +150,11 @@ describe("displayEffort", () => {
 
 describe("isTerminalTooSmall", () => {
   it.each([
-    [90, 20, false],
-    [140, 26, false],
-    [200, 60, false],
-    [89, 20, true],
-    [90, 19, true],
-    [80, 24, true],
+    [180, 47, false],
+    [300, 60, false],
+    [179, 47, true],
+    [180, 46, true],
+    [140, 26, true],
     [0, 0, true],
   ])("maps %ix%i to too-small=%s", (width, height, expected) => {
     expect(isTerminalTooSmall(width, height)).toBe(expected);
