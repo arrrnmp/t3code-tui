@@ -1,4 +1,5 @@
 import type { TimelineEntry } from "./thread.js";
+import { describeActivity } from "./activity.js";
 
 export interface TurnGroup {
   id: string;
@@ -214,7 +215,103 @@ export function clockTime(value: string, now: number): string {
   return `${String(date.getDate()).padStart(2, "0")} ${MONTH_LABEL[date.getMonth()]}, ${time}`;
 }
 
-export type WorkBlock<T> = { kind: "single"; entry: T } | { kind: "stack"; key: string; entries: T[] };
+/**
+ * One-line aggregate of a finished turn's tool calls: "Ran 3 commands,
+ * read 2 files, asked 1 question". Counts every countable tool row across
+ * the whole turn (never per-tool stacks), highest count first, first-seen
+ * order breaking ties. Non-tool rows (notes, plan echoes) never count.
+ * Returns null when there is nothing countable to say.
+ */
+export function summarizeWork(entries: readonly TimelineEntry[]): string | null {
+  const counts = new Map<string, { count: number; seen: number }>();
+  const bump = (key: string): void => {
+    const slot = counts.get(key);
+    if (slot === undefined) counts.set(key, { count: 1, seen: counts.size });
+    else slot.count += 1;
+  };
+  for (const entry of entries) {
+    if (entry.kind !== "activity" || entry.activity === null) continue;
+    let view: ReturnType<typeof describeActivity>;
+    try {
+      view = describeActivity(entry.activity);
+    } catch {
+      continue;
+    }
+    switch (view.kind) {
+      case "command":
+        bump("command");
+        break;
+      case "file":
+        // A creation computes its diff from nothing (`removed: null`); an
+        // edit always counts both sides. Stripped rows carry neither, so
+        // they read as updates — the honest fallback without input.
+        bump(view.diff !== null && view.removed === null && (view.added ?? 0) > 0 ? "file-created" : "file-updated");
+        break;
+      case "read":
+      case "list":
+      case "image":
+        bump("read");
+        break;
+      case "grep":
+        bump("grep");
+        break;
+      case "web":
+        bump("web");
+        break;
+      case "question":
+        bump("question");
+        break;
+      case "task":
+        bump("task");
+        break;
+      case "skill":
+        bump("skill");
+        break;
+      case "tool":
+        bump("tool");
+        break;
+      case "todos":
+      case "note":
+        break;
+    }
+  }
+  if (counts.size === 0) return null;
+  const ranked = [...counts].sort(
+    ([keyA, a], [keyB, b]) => b.count - a.count || a.seen - b.seen,
+  );
+  const parts = ranked.map(([key, slot]) => summarizePart(key, slot.count));
+  const [first, ...rest] = parts;
+  if (first === undefined) return null;
+  return [first.charAt(0).toUpperCase() + first.slice(1), ...rest].join(", ");
+}
+
+function summarizePart(key: string, count: number): string {
+  const plural = count === 1 ? "" : "s";
+  switch (key) {
+    case "command":
+      return `ran ${count} command${plural}`;
+    case "file-created":
+      return `created ${count} new file${plural}`;
+    case "file-updated":
+      return `updated ${count} file${plural}`;
+    case "read":
+      return `read ${count} file${plural}`;
+    case "grep":
+      return `searched code ${count} time${plural}`;
+    case "web":
+      return `searched the web ${count} time${plural}`;
+    case "question":
+      return `asked ${count} question${plural}`;
+    case "task":
+      return `ran ${count} task${plural}`;
+    case "skill":
+      return `used ${count} skill${plural}`;
+    case "tool":
+      return `used ${count} tool${plural}`;
+    default:
+      return `ran ${count} step${plural}`;
+  }
+}
 
 /**
  * Scroll offset that puts group `index` of `total` at the top of a pane with
@@ -227,27 +324,46 @@ export function proportionalTarget(index: number, total: number, scrollHeight: n
   if (total <= 0) return 0;
   const maxTop = Math.max(0, scrollHeight - viewportHeight);
   return Math.max(0, Math.min(maxTop, Math.floor((index / total) * scrollHeight)));
-}/**
- * Folds consecutive work entries with the same stack key (one tool run after
- * another) into a stack showing a summary plus the latest card. Entries
- * without a key — intermediate assistant messages — always break a run.
+}
+
+export interface WorkSegment {
+  /** Tool calls since the previous message (or the turn start). */
+  tools: TimelineEntry[];
+  /**
+   * The assistant message closing this segment — an intermediate work
+   * message, or the turn's closing reply (which still renders separately
+   * below, so callers skip it here). Null while the segment is still open:
+   * no message has landed after these tools yet.
+   */
+  message: TimelineEntry | null;
+}
+
+/**
+ * Splits a turn's work at every assistant message: each message closes the
+ * tools before it into a summarizable segment, and the trailing tools stay
+ * open (flat) until a message lands after them. A closing reply bounds the
+ * trailing tools the same way without joining the segment list itself.
  */
-export function stackWorkEntries<T>(entries: readonly T[], keyOf: (entry: T) => string | null): WorkBlock<T>[] {
-  const blocks: WorkBlock<T>[] = [];
-  for (const entry of entries) {
-    const key = keyOf(entry);
-    const last = blocks[blocks.length - 1];
-    if (key !== null && last !== undefined && last.kind === "stack" && last.key === key) {
-      last.entries.push(entry);
-      continue;
-    }
-    if (key !== null) {
-      blocks.push({ kind: "stack", key, entries: [entry] });
-      continue;
-    }
-    blocks.push({ kind: "single", entry });
+export function segmentWork(
+  work: readonly TimelineEntry[],
+  closing: TimelineEntry | null,
+): WorkSegment[] {
+  const segments: WorkSegment[] = [];
+  let tools: TimelineEntry[] = [];
+  const flush = (message: TimelineEntry | null): void => {
+    if (tools.length > 0 || message !== null) segments.push({ tools, message });
+    tools = [];
+  };
+  for (const entry of work) {
+    if (entry.kind === "activity") tools.push(entry);
+    else flush(entry);
   }
-  return blocks.map((block) =>
-    block.kind === "stack" && block.entries.length === 1 ? { kind: "single", entry: block.entries[0] as T } : block,
-  );
+  flush(null);
+  if (closing !== null) {
+    const last = segments[segments.length - 1];
+    if (last !== undefined && last.message === null && last.tools.length > 0) {
+      last.message = closing;
+    }
+  }
+  return segments;
 }

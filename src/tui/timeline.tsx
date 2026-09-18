@@ -1,4 +1,4 @@
-import type { RefObject } from "react";
+import type { ReactNode, RefObject } from "react";
 import { useEffect, useMemo, useState } from "react";
 import type { ScrollBoxRenderable } from "@opentui/core";
 import { SyntaxStyle, TextAttributes } from "@opentui/core";
@@ -9,7 +9,7 @@ import { describeActivity, fileRowCounts, formatMs } from "./model/activity.js";
 import { findPatchFile, type PatchFile } from "./model/patch.js";
 import { formatBytes, renderMessage } from "./model/message.js";
 import type { TimelineEntry } from "./model/thread.js";
-import { clockTime, formatDuration, proportionalTarget, stackWorkEntries, type TurnGroup, type WorkBlock } from "./model/turns.js";
+import { clockTime, formatDuration, proportionalTarget, segmentWork, summarizeWork, type TurnGroup } from "./model/turns.js";
 import { CODE_SYNTAX_TOKENS, COLOR, DIFF_BG, MARKER, pulseColor, SPINNER, SURFACE, truncate } from "./theme.js";
 
 /**
@@ -627,7 +627,7 @@ function WorkFold({
  * A plan proposed while the thread ran in plan-approval mode — no separate
  * assistant reply exists for that turn, so this stands in for one. Collapsed
  * by default since a plan's markdown body can run long; expands inline like
- * `WorkFold`/`ToolStack` rather than opening a modal, since this is a
+ * `WorkFold`/`WorkSummary` rather than opening a modal, since this is a
  * read-only view (approval happens outside the thread's own transcript).
  */
 function PlanCard({ entry, now }: { entry: TimelineEntry; now: number }) {
@@ -642,7 +642,7 @@ function PlanCard({ entry, now }: { entry: TimelineEntry; now: number }) {
       <box
         style={{ flexDirection: "row", height: 1, flexShrink: 0 }}
         onMouseDown={() => {
-          // Same reflow hazard as WorkFold/ToolStack: expanding pushes chat
+          // Same reflow hazard as WorkFold/WorkSummary: expanding pushes chat
           // content down on the same click, so the mouse-up half can land on
           // a message row that just shifted under the cursor.
           markModalDismissed();
@@ -709,122 +709,53 @@ function TurnDiffRow({
   );
 }
 
-/** Consecutive runs of one tool fold into a stack; anything else breaks it. */
-function workStackKey(entry: TimelineEntry): string | null {
-  if (entry.kind !== "activity" || entry.activity === null) return null;
-  const view = describeActivity(entry.activity);
-  switch (view.kind) {
-    case "command":
-      return `command:${view.tool}`;
-    case "file":
-      return `file:${view.verb}`;
-    case "read":
-      return "read";
-    case "list":
-      return "list";
-    case "grep":
-      return "grep";
-    case "todos":
-      return `todos:${view.title}`;
-    case "task":
-      return "task";
-    case "question":
-      return "question";
-    case "skill":
-      return "skill";
-    case "web":
-      return `web:${view.tool}`;
-    case "image":
-      return "image";
-    case "tool":
-      return `tool:${view.tool}`;
-    case "note":
-      return null;
-  }
-}
-
-function stackSummary(entries: TimelineEntry[]): { label: string; total: string | null } {
-  const last = entries[entries.length - 1];
-  let label = "calls";
-  if (last !== undefined && last.kind === "activity" && last.activity !== null) {
-    const view = describeActivity(last.activity);
-    label =
-      view.kind === "command"
-        ? view.tool
-        : view.kind === "file"
-          ? view.verb
-          : view.kind === "todos"
-            ? view.title
-            : view.kind === "web" || view.kind === "tool"
-              ? view.tool
-              : view.kind;
-  }
-  let totalMs = 0;
-  let timed = 0;
-  for (const entry of entries) {
-    if (entry.kind !== "activity" || entry.activity === null) continue;
-    const view = describeActivity(entry.activity);
-    if (view.kind === "command" && view.durationMs !== null) {
-      totalMs += view.durationMs;
-      timed += 1;
-    }
-  }
-  return { label, total: timed === 0 ? null : formatDuration(totalMs) };
-}
-
-function ToolStack({
-  entries,
-  renderEntry,
-  peekLast = true,
+/**
+ * One message-closed tool segment inside an expanded Worked fold: the
+ * aggregate summary ("Ran 2 commands, read 1 file") with the segment's own
+ * expand toggle — the flat tools appear between the summary and the message
+ * that closed them. Same reflow hazard as WorkFold, same mouse-up swallow.
+ */
+function WorkSegment({
+  summary,
+  width,
+  tools,
+  message,
 }: {
-  entries: TimelineEntry[];
-  renderEntry: (entry: TimelineEntry) => React.ReactNode;
-  /**
-   * Collapsed preview: `true` renders header + last row (a live stack whose
-   * latest call is still in flight, or the turn's final block with nothing
-   * after it); `false` renders header only (a superseded stack — a newer
-   * tool of another type, or an assistant reply, has landed since).
-   */
-  peekLast?: boolean;
+  summary: string | null;
+  width: number;
+  /** Flat tool rows, shown when the segment has no summary or is expanded. */
+  tools: ReactNode;
+  /** The assistant message closing the segment (always visible, never folded). */
+  message: ReactNode | null;
 }) {
   const [expanded, setExpanded] = useState(false);
   const { hovered, handlers } = useHover();
-  const summary = stackSummary(entries);
-  const visible = expanded ? entries : peekLast ? entries.slice(-1) : [];
-
+  if (summary === null) {
+    return (
+      <>
+        {tools}
+        {message}
+      </>
+    );
+  }
   return (
-    <box style={{ flexDirection: "column", flexShrink: 0 }}>
+    <>
       <box
         style={{ flexDirection: "row", marginLeft: GUTTER, marginTop: 1, height: 1, flexShrink: 0 }}
         onMouseDown={() => {
-          // Expanding/collapsing a tool stack reflows the chat pane on the
-          // same click, so the mouse-up half can land on a message row that
-          // just shifted under the cursor — same swallow window as a modal
-          // dismiss so it doesn't open message actions unintentionally.
           markModalDismissed();
           setExpanded((current) => !current);
         }}
         {...handlers}
       >
-        <text fg={hovered ? COLOR.text : COLOR.dim} selectable={false}>
-          {`${expanded ? "▾" : "▸"} ${summary.label} ×${entries.length}`}
+        <text fg={hovered ? COLOR.bright : COLOR.dim} selectable={false}>
+          {`${expanded ? "▾" : "▸"} ${truncate(summary, Math.max(20, width - 8))}`}
         </text>
-        {summary.total === null ? null : <text fg={COLOR.faint} selectable={false}>{`  ·  ${summary.total}`}</text>}
       </box>
-      {visible.map((entry) => (
-        <box key={entry.id} style={{ flexDirection: "column", flexShrink: 0 }}>
-          {renderEntry(entry)}
-        </box>
-      ))}
-    </box>
+      {expanded ? tools : null}
+      {message}
+    </>
   );
-}
-
-/** Whether a work entry is still in flight (its latest activity row runs). */
-function entryRunning(entry: TimelineEntry): boolean {
-  if (entry.kind !== "activity" || entry.activity === null) return false;
-  const view = describeActivity(entry.activity);
-  return "running" in view ? view.running === true : false;
 }
 
 function TurnBlock({  group,
@@ -840,6 +771,7 @@ function TurnBlock({  group,
   onOpenMessageActions,
   onOpenUrl,
   turnFiles,
+  width,
 }: {
   group: TurnGroup;
   model: string;
@@ -855,6 +787,8 @@ function TurnBlock({  group,
   onOpenMessageActions: (entry: TimelineEntry) => void;
   /** Opens a fetched URL in the browser (web rows render it clickable). */
   onOpenUrl: (url: string) => void;
+  /** Chat pane width, for truncating the folded work-summary row. */
+  width: number;
   /** This turn's checkpoint patch files (empty until backfilled) — rows
       without their own diff render the matching file's hunks from here. */
   turnFiles: readonly PatchFile[];
@@ -883,10 +817,7 @@ function TurnBlock({  group,
       seen.add(path);
       first.add(entry.id);
     };
-    for (const block of stackWorkEntries(group.work, workStackKey)) {
-      if (block.kind === "single") consider(block.entry);
-      else for (const row of block.entries) consider(row);
-    }
+    for (const entry of group.work) consider(entry);
     return first;
   }, [group]);
   const renderWorkEntry = (entry: TimelineEntry) =>
@@ -912,7 +843,9 @@ function TurnBlock({  group,
         backgroundColor={SURFACE.base}
       >
         <SpeakerHeader
-          label={`${model} · working`}
+          // Intermediate messages read present-tense only while the turn is
+          // still live — on a finished turn they are plain past messages.
+          label={open ? `${model} · working` : model}
           time={clockTime(entry.at, now)}
           color={COLOR.dim}
           background={SURFACE.base}
@@ -927,34 +860,21 @@ function TurnBlock({  group,
   const closing = group.reply ?? (!open ? group.live : null);
   const live = open ? group.live : null;
 
-  const workBlocks = stackWorkEntries(group.work, workStackKey);
-  // Stacked-collapse rule: only the turn's latest stack keeps its last row
-  // visible. An earlier stack — superseded by a different tool type, or by
-  // an assistant reply that closed the turn — folds to its header only.
-  // The latest stack keeps its last row while it is the final word (live
-  // turn, or finished with no closing reply yet); once a closing reply
-  // lands, it too folds header-only.
-  const renderWorkBlock = (block: WorkBlock<TimelineEntry>, key: string, peekLast: boolean) =>
-    block.kind === "single" ? (
-      <box key={key} style={{ flexDirection: "column", flexShrink: 0 }}>
-        {renderWorkEntry(block.entry)}
-      </box>
-    ) : (
-      <ToolStack key={key} entries={block.entries} renderEntry={renderWorkEntry} peekLast={peekLast} />
-    );
-  const stackPeekable = (block: WorkBlock<TimelineEntry>, index: number): boolean => {
-    if (block.kind !== "stack") return true;
-    if (index !== workBlocks.length - 1) return false;
-    if (closing !== null) return false;
-    const last = block.entries[block.entries.length - 1];
-    if (last !== undefined && entryRunning(last)) return true;
-    return live === null;
-  };
-  // Folding the "Worked for..." row is only reachable once a turn has
-  // finished (it stays force-expanded while `open`), so the fold's own peek
-  // is the *last* activity the turn produced — the same row that was already
-  // visible right up until the user folded it, not the section going blank.
-  const peekBlock = workBlocks[workBlocks.length - 1];
+  // Fold rule: the Worked fold always hides the work when collapsed. Once
+  // expanded, tools stay flat only until an assistant message lands after
+  // them — every message (intermediate or closing) bounds the tools before
+  // it into its own expandable summary segment, and only the still-open
+  // trailing tools render flat. The live turn can't fold anyway (it stays
+  // force-expanded). While open, the closing reply is stale by definition
+  // (newer tools already landed after it), so it must not bound the
+  // trailing tools — the newest calls stay visible until the turn ends.
+  const segments = workExpanded ? segmentWork(group.work, open ? null : closing) : [];
+
+  const renderToolRow = (entry: TimelineEntry) => (
+    <box key={entry.id} style={{ flexDirection: "column", flexShrink: 0 }}>
+      {renderWorkEntry(entry)}
+    </box>
+  );
 
   return (
     <box style={{ flexDirection: "column", flexShrink: 0, marginBottom: 1 }}>
@@ -963,15 +883,28 @@ function TurnBlock({  group,
       ))}
 
       <WorkFold group={group} open={open} now={now} expanded={workExpanded} onToggle={() => onToggleWork(group.id)} />
-      {workExpanded
-        // Live and finished turns stack alike: `Bash ×20` reads as one
-        // header plus its running (or latest) row, with earlier stacks
-        // header-only once a newer tool type takes over. Rows render
-        // strictly below the toggle, pushing the reply down.
-        ? workBlocks.map((block, index) => renderWorkBlock(block, `${group.id}-w${index}`, stackPeekable(block, index)))
-        : peekBlock === undefined
-          ? null
-          : renderWorkBlock(peekBlock, `${group.id}-peek`, stackPeekable(peekBlock, workBlocks.length - 1))}
+      {segments.map((segment, index) => {
+        const closingBoundary =
+          segment.message !== null && closing !== null && segment.message.id === closing.id;
+        // Only a message-closed segment folds into a summary — the still-open
+        // trailing tools always render flat until a message lands after them.
+        const segmentSummary = segment.message === null ? null : summarizeWork(segment.tools);
+        return (
+          <WorkSegment
+            key={`${group.id}-seg${index}`}
+            summary={segmentSummary}
+            width={width}
+            tools={segment.tools.map((entry) => renderToolRow(entry))}
+            message={
+              segment.message === null || closingBoundary ? null : (
+                <box key={segment.message.id} style={{ flexDirection: "column", flexShrink: 0 }}>
+                  {renderWorkEntry(segment.message)}
+                </box>
+              )
+            }
+          />
+        );
+      })}
 
       {group.proposedPlan === null ? null : <PlanCard entry={group.proposedPlan} now={now} />}
 
@@ -1217,6 +1150,7 @@ export function Timeline({
               onOpenDiff={onOpenDiff}
               onOpenMessageActions={onOpenMessageActions}
               onOpenUrl={onOpenUrl}
+              width={width}
             />
           );
         })}

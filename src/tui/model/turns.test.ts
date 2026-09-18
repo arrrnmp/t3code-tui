@@ -7,7 +7,8 @@ import {
   formatTokenCount,
   groupTurns,
   proportionalTarget,
-  stackWorkEntries,
+  segmentWork,
+  summarizeWork,
 } from "./turns.js";
 import type { TimelineEntry } from "./thread.js";
 
@@ -29,28 +30,121 @@ function entry(overrides: Partial<TimelineEntry> & { id: string }): TimelineEntr
   };
 }
 
-describe("stackWorkEntries", () => {
-  it("folds consecutive same-key entries and breaks on keyless ones", () => {
-    const blocks = stackWorkEntries(["b1", "b2", "r1", "b3", "g1", "g2"], (entry) =>
-      entry.startsWith("b")
-        ? "bash"
-        : entry.startsWith("g")
-          ? "grep"
-          : null,
-    );
-    expect(blocks).toEqual([
-      { kind: "stack", key: "bash", entries: ["b1", "b2"] },
-      { kind: "single", entry: "r1" },
-      { kind: "single", entry: "b3" },
-      { kind: "stack", key: "grep", entries: ["g1", "g2"] },
-    ]);
+describe("summarizeWork", () => {
+  const toolEntry = (id: string, kind: string, payload: Record<string, unknown>): TimelineEntry =>
+    entry({
+      id,
+      kind: "activity",
+      activityKind: kind,
+      activity: {
+        id,
+        tone: "tool",
+        kind,
+        summary: kind,
+        turnId: "turn-1",
+        createdAt: "2026-09-16T02:00:00.000Z",
+        payload,
+      } as unknown as TimelineEntry["activity"],
+    });
+
+  const commandPayload = (command: string): Record<string, unknown> => ({
+    itemType: "command_execution",
+    toolCallId: `call-${command}`,
+    status: "completed",
+    title: command,
+    detail: "",
+    data: {
+      tool: "bash",
+      state: { status: "completed", input: { command }, metadata: { exit: 0 }, time: { start: 1, end: 2 } },
+    },
   });
 
-  it("leaves non-repeating entries as singles", () => {
-    const blocks = stackWorkEntries(["a", "b"], () => "same");
-    expect(blocks).toEqual([
-      { kind: "stack", key: "same", entries: ["a", "b"] },
-    ]);
+  const readPayload = (path: string): Record<string, unknown> => ({
+    itemType: "dynamic_tool_call",
+    toolCallId: `read-${path}`,
+    status: "completed",
+    title: "Tool call",
+    detail: "",
+    data: { toolName: "Read", input: { file_path: path } },
+  });
+
+  it("aggregates every tool type into one line, highest count first", () => {
+    const entries = [
+      toolEntry("c1", "tool.completed", commandPayload("bun install")),
+      toolEntry("c2", "tool.completed", commandPayload("bun run check")),
+      toolEntry("r1", "tool.completed", readPayload("a.ts")),
+      toolEntry("q1", "user-input.requested", {
+        requestId: "req_1",
+        questions: [{ id: "q1", header: "Next", question: "What next?", options: [] }],
+      }),
+    ];
+    expect(summarizeWork(entries)).toBe("Ran 2 commands, read 1 file, asked 1 question");
+  });
+
+  it("tells created files apart from updated ones", () => {
+    const updated = toolEntry("f1", "tool.completed", {
+      itemType: "file_change",
+      toolCallId: "call-f1",
+      status: "completed",
+      title: "a.ts",
+      detail: "",
+      data: {
+        tool: "Edit",
+        files: [{ path: "a.ts" }],
+        state: { status: "completed", input: { file_path: "a.ts", old_string: "a\n", new_string: "b\n" } },
+      },
+    });
+    const created = toolEntry("f2", "tool.completed", {
+      itemType: "file_change",
+      toolCallId: "call-f2",
+      status: "completed",
+      title: "b.ts",
+      detail: "",
+      data: {
+        tool: "Write",
+        files: [{ path: "b.ts" }],
+        state: { status: "completed", input: { file_path: "b.ts", content: "hello\n" } },
+      },
+    });
+    expect(summarizeWork([updated, created])).toBe("Updated 1 file, created 1 new file");
+  });
+
+  it("skips notes and returns null when nothing countable ran", () => {
+    const note = toolEntry("n1", "runtime.warning", { detail: "quota wobble" });
+    expect(summarizeWork([note])).toBeNull();
+    expect(summarizeWork([])).toBeNull();
+  });
+});
+
+describe("segmentWork", () => {
+  const tool = (id: string): TimelineEntry => entry({ id, kind: "activity" });
+  const msg = (id: string): TimelineEntry => entry({ id, kind: "assistant", text: id });
+
+  it("closes a segment at every assistant message, trailing tools stay open", () => {
+    const closing = msg("m2");
+    const segments = segmentWork([tool("a"), tool("b"), msg("m1"), tool("c")], closing);
+    expect(segments).toHaveLength(2);
+    expect(segments[0]?.tools.map((row) => row.id)).toEqual(["a", "b"]);
+    expect(segments[0]?.message?.id).toBe("m1");
+    expect(segments[1]?.tools.map((row) => row.id)).toEqual(["c"]);
+    expect(segments[1]?.message?.id).toBe("m2");
+  });
+
+  it("leaves the trailing segment open without a closing reply", () => {
+    const segments = segmentWork([tool("a"), msg("m1"), tool("b")], null);
+    expect(segments).toHaveLength(2);
+    expect(segments[1]?.message).toBeNull();
+  });
+
+  it("bounds nothing when the work ends with a message already", () => {
+    const segments = segmentWork([tool("a"), msg("m1")], msg("m2"));
+    expect(segments).toHaveLength(1);
+    expect(segments[0]?.message?.id).toBe("m1");
+  });
+
+  it("returns no segments for empty work", () => {
+    expect(segmentWork([], msg("m2"))).toEqual([]);
+    expect(segmentWork([], null)).toEqual([]);
   });
 });
 

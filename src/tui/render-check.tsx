@@ -679,6 +679,38 @@ await act(async () => setup.mockInput.pressKey("HOME"));
 await setup.flush();
 console.log("--- work expanded (top) ---");
 console.log(setup.captureCharFrame());
+// A replied turn folds its tools into per-message summary segments inside
+// the expanded Worked fold — no per-tool stacks anywhere. Sweep the whole
+// transcript top to bottom: expand any collapsed fold on sight, and pass
+// iff the aggregate summary shows up somewhere with no per-tool stack ever
+// appearing. Position-free by design — sticky-scroll jumps make fixed
+// coordinates meaningless here. Ends with turn-1 expanded, which is what
+// later steps assume.
+await act(async () => setup.mockInput.pressKey("HOME"));
+await setup.flush();
+let sawSummary = false;
+let sawStack = false;
+for (let sweep = 0; sweep < 60; sweep += 1) {
+  const frame = setup.captureCharFrame();
+  if (frame.includes("Ran 3 commands")) sawSummary = true;
+  if (frame.includes("read ×") || frame.includes("Update ×")) sawStack = true;
+  if (sawSummary) break;
+  const rows = frame.split("\n");
+  const shutFold = rows.findIndex((line) => line.includes("▸ Worked for"));
+  if (shutFold !== -1) {
+    const line = rows[shutFold] ?? "";
+    const glyph = line.indexOf("▸");
+    await act(async () => setup.mockMouse.click(glyph === -1 ? 50 : glyph, shutFold));
+    await setup.flush();
+    continue;
+  }
+  await act(async () => setup.mockMouse.scroll(70, 5, "down"));
+  await setup.flush();
+}
+console.log("--- work summarized (inside fold) ---");
+console.log(setup.captureCharFrame());
+if (sawStack) fail("tool calls still stack per tool");
+if (!sawSummary) fail("closed turn does not summarize its tools");
 // Wheel down to review the remaining cards.
 for (let wheel = 0; wheel < 18; wheel += 1) {
   await act(async () => setup.mockMouse.scroll(80, 12, "down"));
@@ -868,10 +900,25 @@ await setup.flush();
 console.log("--- timeline top (idle) ---");
 console.log(setup.captureCharFrame());
 
-// Wheel inside the timeline box (not the tasks/composer rows below it) to
-// bring the closing reply into view.
-for (let wheel = 0; wheel < 10; wheel += 1) {
+// Wheel inside the timeline box (not the tasks/composer rows below it)
+// until the closing reply's header scrolls into view, then click it. The
+// header is located fresh every time — flat tool rows above it reflow the
+// pane, so stale coordinates would miss.
+function replyHeader(): { x: number; y: number } {
+  const rows = setup.captureCharFrame().split("\n");
+  const y = rows.findIndex((line) => /Claude Opus 5\s+·\s+\d\d:\d\d/.test(line));
+  if (y === -1) fail("closing reply header not visible");
+  const x = rows[y]?.indexOf("Claude Opus 5") ?? -1;
+  // Click the header row well right of the text, still inside the card: a
+  // click on a text cell leaves a live selection behind, and any later
+  // message-action click reads that stale selection as "that was a drag"
+  // and swallows itself. Empty card chrome selects only spaces.
+  return { x: x === -1 ? 100 : Math.min(x + 60, 125), y };
+}
+for (let wheel = 0; wheel < 40; wheel += 1) {
   await act(async () => setup.mockMouse.scroll(70, 5, "down"));
+  await setup.flush();
+  if (/Claude Opus 5\s+·\s+\d\d:\d\d/.test(setup.captureCharFrame())) break;
 }
 await setup.flush();
 console.log("--- reply visible ---");
@@ -879,7 +926,10 @@ console.log(setup.captureCharFrame());
 
 // Clicking the assistant's closing reply opens the same modal (Copy plus
 // Revert, resolved through its turn).
-await act(async () => setup.mockMouse.click(70, 8));
+await act(async () => {
+  const header = replyHeader();
+  await setup.mockMouse.click(header.x, header.y);
+});
 await setup.flush();
 console.log("--- assistant message actions (open) ---");
 console.log(setup.captureCharFrame());
@@ -927,7 +977,10 @@ if (toastDismissedFrame.includes("Answer submitted")) fail("toast × did not dis
 // Assert the window is still held first, so a slow harness reads as a
 // harness failure instead of a false behavior pass.
 if (!wasModalJustDismissed()) fail("harness outran the 250ms dismiss window");
-await act(async () => setup.mockMouse.click(70, 8));
+await act(async () => {
+  const header = replyHeader();
+  await setup.mockMouse.click(header.x, header.y);
+});
 await setup.flush();
 console.log("--- reply click inside toast-dismiss window (swallowed) ---");
 const swallowedFrame = setup.captureCharFrame();
@@ -937,7 +990,10 @@ if (swallowedFrame.includes("Message actions"))
 
 // Past the window the same click opens message actions.
 await new Promise((resolve) => setTimeout(resolve, 350));
-await act(async () => setup.mockMouse.click(70, 8));
+await act(async () => {
+  const header = replyHeader();
+  await setup.mockMouse.click(header.x, header.y);
+});
 await setup.flush();
 console.log("--- reply click past window (actions open) ---");
 const reopenedFrame = setup.captureCharFrame();
@@ -953,20 +1009,47 @@ await setup.flush();
 // proves the toggle's own mark rather than a stale one.
 await new Promise((resolve) => setTimeout(resolve, 350));
 
-// Expanding the Worked fold reflows the chat pane on the same click, so it
-// marks the same swallow window (like opening the diff panel does). The
-// toggle also pins the turn toward the top, so the frame shows the prompt
-// rather than the fold itself — assert the collapsed row is gone instead.
-await act(async () => setup.mockMouse.click(50, 1));
-await setup.flush();
+// The Worked fold is located by text from the top — flat tool rows reflow
+// the pane, so fixed rows miss. Returns its toggle target and whether it
+// currently shows collapsed.
+async function foldTarget(): Promise<{ x: number; y: number; collapsed: boolean }> {
+  await act(async () => setup.mockInput.pressKey("HOME"));
+  await setup.flush();
+  for (let wheel = 0; wheel < 30; wheel += 1) {
+    const rows = setup.captureCharFrame().split("\n");
+    const row = rows.findIndex((line) => line.includes("Worked for"));
+    if (row !== -1) {
+      const line = rows[row] ?? "";
+      const glyph = line.indexOf("▸") !== -1 ? line.indexOf("▸") : line.indexOf("▾");
+      return { x: glyph === -1 ? 50 : glyph, y: row, collapsed: line.includes("▸") };
+    }
+    await act(async () => setup.mockMouse.scroll(70, 5, "down"));
+    await setup.flush();
+  }
+  fail("Worked fold not visible");
+}
+// Normalize to collapsed, then expand under test (with a gap so the final
+// assertion proves the expanding click's own mark, not the collapse's).
+{
+  const target = await foldTarget();
+  if (!target.collapsed) {
+    await act(async () => setup.mockMouse.click(target.x, target.y));
+    await setup.flush();
+    await new Promise((resolve) => setTimeout(resolve, 350));
+  }
+}
+{
+  const target = await foldTarget();
+  await act(async () => setup.mockMouse.click(target.x, target.y));
+  await setup.flush();
+}
 if (!wasModalJustDismissed()) fail("work toggle did not mark the dismiss window");
 console.log("--- work expanded (guard marked) ---");
 const workExpandedFrame = setup.captureCharFrame();
 console.log(workExpandedFrame);
 if (workExpandedFrame.includes("▸ Worked for")) fail("work toggle did not expand");
 
-// Scroll down over the timeline to bring the fold and its tool-call stacks
-// back into view for the tool-stack toggle below.
+// Scroll down over the timeline to review the expanded flat rows.
 for (let wheel = 0; wheel < 6; wheel += 1) {
   await act(async () => setup.mockMouse.scroll(70, 5, "down"));
 }
@@ -975,13 +1058,43 @@ console.log("--- work expanded (scrolled to tools) ---");
 console.log(setup.captureCharFrame());
 
 // Let the work-toggle window expire, so the assertion below proves the
-// stack toggle's own mark. Expanding a tool-call stack reflows the chat pane
-// on the same click, so it marks the same swallow window too.
+// segment-summary toggle's own mark. Clicking a segment summary expands its
+// flat tools (the per-tool stack toggle this step used to cover is gone —
+// tools render flat inside message-closed segments) and reflows the pane,
+// so it marks the same swallow window too.
 await new Promise((resolve) => setTimeout(resolve, 350));
-await act(async () => setup.mockMouse.click(50, 7));
-await setup.flush();
-if (!wasModalJustDismissed()) fail("tool-stack toggle did not mark the dismiss window");
-console.log("--- tool stack toggled (guard marked) ---");
+{
+  // Segments render inside the expanded fold — make sure it is open (the
+  // collapse above is what the previous search leaves behind when it runs
+  // before this step, not a state this step can assume either way).
+  const target = await foldTarget();
+  if (target.collapsed) {
+    await act(async () => setup.mockMouse.click(target.x, target.y));
+    await setup.flush();
+    await new Promise((resolve) => setTimeout(resolve, 350));
+  }
+}
+{
+  // The segment summary sits just below its fold — step down until it
+  // scrolls into view, expand it, and prove the flat tools appear.
+  let summaryRow = -1;
+  for (let wheel = 0; wheel < 15 && summaryRow === -1; wheel += 1) {
+    const rows = setup.captureCharFrame().split("\n");
+    summaryRow = rows.findIndex((line) => line.includes("▸ Ran "));
+    if (summaryRow !== -1) break;
+    await act(async () => setup.mockMouse.scroll(70, 5, "down"));
+    await setup.flush();
+  }
+  const rows = setup.captureCharFrame().split("\n");
+  summaryRow = rows.findIndex((line) => line.includes("▸ Ran "));
+  if (summaryRow === -1) fail("aggregate summary row not visible");
+  const line = rows[summaryRow] ?? "";
+  const glyph = line.indexOf("▸");
+  await act(async () => setup.mockMouse.click(glyph === -1 ? 50 : glyph, summaryRow));
+  await setup.flush();
+}
+if (!wasModalJustDismissed()) fail("summary toggle did not mark the dismiss window");
+console.log("--- summary toggled (guard marked) ---");
 console.log(setup.captureCharFrame());
 
 // A second request arrives inline; esc dismisses it without answering.
@@ -1040,8 +1153,8 @@ await act(async () => setup.mockMouse.click(105, 23));
 await setup.flush();
 console.log("--- context-usage card (open) ---");
 console.log(setup.captureCharFrame());
-// The card stays open (no backdrop/esc — only its × closes it, and it sits
-// over the composer corner, clear of the timeline rows below). Scroll the
+// The card stays open (no backdrop/esc — only its × closes it, docked to
+// the chat pane's top-right, clear of the composer below). Scroll the
 // timeline to the bottom: turn-2 carries a Claude-style Read. Break as soon
 // as turn-2's prompt is visible instead of scrolling a fixed distance.
 let bottomFrame = "";
@@ -1061,41 +1174,35 @@ for (let wheel = 0; wheel < 6; wheel += 1) {
 await setup.flush();
 bottomFrame = setup.captureCharFrame();
 
-// Turn-2's work is folded with the Reads hidden behind the peek (a live
-// question sorts newer), so expand its fold first. It is the only Worked
-// fold in the bottom frame — turn-1's scrolled far above.
+// Turn-2 has no closing reply yet, so its tools render flat — expanding
+// its fold changes nothing and no per-tool stack may appear. It is the
+// only Worked fold in the bottom frame — turn-1's scrolled far above.
 const bottomRows = bottomFrame.split("\n");
 const foldRow = bottomRows.findIndex((line) => line.includes("Worked for"));
 if (foldRow === -1) fail("turn-2 Worked fold not visible");
 const foldGlyph = bottomRows[foldRow]?.indexOf("▸") ?? -1;
 await act(async () => setup.mockMouse.click(foldGlyph === -1 ? 50 : foldGlyph, foldRow));
 await setup.flush();
-// The reads stack together (`read ×N`) with only the header showing, so
-// expand that stack the same way before asserting the individual rows.
-let stackFrame = "";
+// The rows render flat below the fold — scroll until the first Read shows,
+// then nudge once more for its sibling.
+let readRowFrame = "";
 for (let wheel = 0; wheel < 40; wheel += 1) {
   await act(async () => setup.mockMouse.scroll(70, 5, "down"));
   await setup.flush();
-  stackFrame = setup.captureCharFrame();
-  if (stackFrame.includes("read ×")) break;
+  readRowFrame = setup.captureCharFrame();
+  if (readRowFrame.includes("Read(src/tui/theme.ts)")) break;
 }
-if (!stackFrame.includes("read ×")) fail("turn-2 read stack not visible");
-const stackRows = stackFrame.split("\n");
-const stackRow = stackRows.findIndex((line) => line.includes("read ×"));
-if (stackRow === -1) fail("turn-2 read stack not visible");
-const stackGlyph = stackRows[stackRow]?.indexOf("▸") ?? -1;
-await act(async () => setup.mockMouse.click(stackGlyph === -1 ? 50 : stackGlyph, stackRow));
-await setup.flush();
-// The new rows mount below the header, so nudge down to bring them into view.
-for (let wheel = 0; wheel < 4; wheel += 1) {
+if (!readRowFrame.includes("Read(src/tui/theme.ts)")) fail("turn-2 Read row does not render Read(path)");
+for (let wheel = 0; wheel < 6; wheel += 1) {
   await act(async () => setup.mockMouse.scroll(70, 5, "down"));
 }
 await setup.flush();
 console.log("--- read row (Read with path in header) ---");
-const readRowFrame = setup.captureCharFrame();
+readRowFrame = setup.captureCharFrame();
 console.log(readRowFrame);
 if (!readRowFrame.includes("Read(src/tui/theme.ts)")) fail("turn-2 Read row does not render Read(path)");
 if (!readRowFrame.includes("Read(src/tui/sidebar.ts)")) fail("wire-shape Read row does not resolve the detail echo");
+if (readRowFrame.includes("read ×") || readRowFrame.includes("Update ×")) fail("tool calls still stack per tool");
 // The List row sits below the reads — one more nudge to bring it into view.
 for (let wheel = 0; wheel < 4; wheel += 1) {
   await act(async () => setup.mockMouse.scroll(70, 5, "down"));
@@ -1105,25 +1212,10 @@ console.log("--- list row (List with path in header) ---");
 const listRowFrame = setup.captureCharFrame();
 console.log(listRowFrame);
 if (!listRowFrame.includes("List(src/tui)")) fail("directory row does not render List(path)");
-// The probe edits stack together (`Update ×N`) collapsed, so expand that
-// stack before asserting: only its first row carries the backfilled hunks.
+// The probe edits render flat (no `Update ×N` stack): only the first row
+// carries the backfilled hunks. Scroll until they come into view.
 let inlineFrame = "";
 for (let wheel = 0; wheel < 30; wheel += 1) {
-  await act(async () => setup.mockMouse.scroll(70, 5, "down"));
-  await setup.flush();
-  inlineFrame = setup.captureCharFrame();
-  if (inlineFrame.includes("Update ×")) break;
-}
-if (!inlineFrame.includes("Update ×")) fail("probe Update stack not visible");
-const inlineRows = inlineFrame.split("\n");
-const inlineRow = inlineRows.findIndex((line) => line.includes("Update ×"));
-if (inlineRow === -1) fail("probe Update stack not visible");
-const inlineGlyph = inlineRows[inlineRow]?.indexOf("▸") ?? -1;
-await act(async () => setup.mockMouse.click(inlineGlyph === -1 ? 50 : inlineGlyph, inlineRow));
-await setup.flush();
-// The new rows mount below the header — scroll until the first row's hunks
-// come into view.
-for (let wheel = 0; wheel < 20; wheel += 1) {
   await act(async () => setup.mockMouse.scroll(70, 5, "down"));
   await setup.flush();
   inlineFrame = setup.captureCharFrame();

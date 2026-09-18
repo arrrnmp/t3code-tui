@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { basename, resolve } from "node:path";
 import type { CliRenderer, ScrollBoxRenderable } from "@opentui/core";
 import { TextAttributes } from "@opentui/core";
 import { useKeyboard, useRenderer, useSelectionHandler, useTerminalDimensions } from "@opentui/react";
@@ -23,18 +24,20 @@ import {
   extractMentions,
   MAX_PENDING_ATTACHMENTS,
   readClipboardImage,
-} from "./model/attachments.js";
+ } from "./model/attachments.js";
 import type { ImageAttachmentUpload } from "../threads/threadApi.js";
-import { splitPatchByFile, type PatchFile } from "./model/patch.js";
+import { findPatchFile, splitPatchByFile, type PatchFile } from "./model/patch.js";
 import { displayEffort, displayModelName } from "./model/display.js";
 import { buildSidebarSections, orderedProjectIds, type SidebarMode } from "./model/sidebar.js";
 import { formatContextUsage, formatTokenCount, groupTurns, proportionalTarget } from "./model/turns.js";
 import { markModalDismissed, wasModalJustDismissed } from "./model/modalDismiss.js";
-import { describeActivity, missingCompletedInput, withCompletedInput, toolCallIdOf } from "./model/activity.js";
+import { activityFilePath, describeActivity, missingCompletedInput, withCompletedInput, toolCallIdOf } from "./model/activity.js";
 import type { ActivityView } from "./model/activity.js";
 import { fetchWorkingTreeDiff } from "./model/gitdiff.js";
+import { createFileContentCache, diffCachedFiles, snapshotFiles } from "./model/filecache.js";
 import { readCompletedToolInputs } from "../infra/toolInputs.js";
 import { Sidebar } from "./sidebar.js";
+import { HoverButton } from "./hoverbutton.js";
 import { openExternal } from "../infra/platformOpen.js";
 import { formatDuration } from "./model/turns.js";
 import { ContextUsageCard } from "./contextusagecard.js";
@@ -218,6 +221,15 @@ export function App({
    */
   const gitPatchCache = useRef<PatchFile[]>([]);
   const lastGitWanted = useRef<string | null>(null);
+  /**
+   * Last-known file contents for the non-git fallback diff layer (see
+   * `model/filecache.ts`): checkpoints are git-ref based and the overlay
+   * needs a repo, so without either, stripped Edit rows diff a Read-time
+   * snapshot against current disk content. Bounded; workspace-scoped, so it
+   * survives thread switches like the tree it mirrors.
+   */
+  const contentCache = useRef(createFileContentCache());
+  const lastSnapshotWanted = useRef<string | null>(null);
   /** Completed tool calls whose input was already merged back from the
       local projection database (or confirmed missing) — cleared with the
       rest of the per-thread caches below. */
@@ -230,7 +242,7 @@ export function App({
   const [tasksVisible, setTasksVisible] = useState(true);
   /** Centered picker modal: model/effort lists, the diff-turn list, the command palette, the rename or custom-answer prompt, message actions, or the new-thread project list. */
   const [picker, setPicker] = useState<
-    "model" | "effort" | "diff-turn" | "command" | "rename" | "message" | "answer-custom" | "project" | null
+    "model" | "effort" | "diff-turn" | "command" | "rename" | "message" | "answer-custom" | "project" | "project-new" | null
   >(null);
   const [pickerFilter, setPickerFilter] = useState("");
   /** Where esc/backdrop returns focus after the command palette closes. */
@@ -1299,6 +1311,48 @@ export function App({
     closePicker("composer");
   };
 
+  /** Creates a project from a local folder and points the draft at it. An
+      already-known folder just selects its project (same as the CLI's
+      `projects ensure`). Shape mirrors the CLI's `buildProjectCreateCommand`
+      (`src/projects/projects.ts`) — the server fills in the rest. */
+  const submitProjectFolder = (rawPath: string) => {
+    const trimmed = rawPath.trim();
+    if (trimmed.length === 0) {
+      setError("enter a folder path for the new project");
+      return;
+    }
+    const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
+    if ((trimmed === "~" || trimmed.startsWith("~/")) && home.length === 0) {
+      setError("could not resolve ~ — enter a full path");
+      return;
+    }
+    const workspaceRoot = resolve(trimmed === "~" || trimmed.startsWith("~/") ? home + trimmed.slice(1) : trimmed);
+    const normalized = workspaceRoot.replace(/[/\\]+$/, "");
+    const existing = shell.projects.find(
+      (project) =>
+        typeof project.workspaceRoot === "string" && project.workspaceRoot.replace(/[/\\]+$/, "") === normalized,
+    );
+    if (existing !== undefined) {
+      pickCreatingProject(existing.id);
+      return;
+    }
+    const projectId = crypto.randomUUID();
+    const title = basename(workspaceRoot) || "project";
+    void client
+      .dispatch({
+        type: "project.create",
+        commandId: crypto.randomUUID(),
+        projectId,
+        title,
+        workspaceRoot,
+        createWorkspaceRootIfMissing: true,
+        defaultModelSelection: null,
+        createdAt: new Date().toISOString(),
+      })
+      .then(() => pickCreatingProject(projectId))
+      .catch((cause: unknown) => setError(dispatchErrorMessage(cause)));
+  };
+
   /** Opens the project picker for the new thread's target project. */
   const openProjectPicker = () => {
     setPickerFilter("");
@@ -1463,6 +1517,8 @@ export function App({
       selected === null ? null : (shell.projects.find((project) => project.id === selected.projectId)?.workspaceRoot ?? null);
     const gitParts: string[] = [];
     const gitWanted: string[] = [];
+    const gitFullWanted: { full: string; display: string }[] = [];
+    const readWanted: string[] = [];
     const mergeIds: string[] = [];
     for (const group of groups) {
       const turnCount = group.diff?.checkpoint?.checkpointTurnCount;
@@ -1476,11 +1532,19 @@ export function App({
         } catch {
           continue;
         }
+        if (view.kind === "read") {
+          // Baseline for the content-cache fallback: what the agent just
+          // saw on disk, for a later stripped Edit row to diff against.
+          const full = activityFilePath(entry.activity);
+          if (full !== null) readWanted.push(full);
+        }
         if (view.kind === "file" && view.diff === null) {
           groupBare = true;
           if (open && view.path !== "…") {
             gitParts.push(`${group.id}\n${view.path.toLowerCase()}\n${entry.id}`);
             gitWanted.push(view.path);
+            const full = activityFilePath(entry.activity);
+            if (full !== null) gitFullWanted.push({ full, display: view.path });
           }
         }
         const missing = missingCompletedInput(entry.activity, view);
@@ -1520,10 +1584,20 @@ export function App({
       const wanted = `${root}\n${gitParts.join("\n")}`;
       if (wanted !== lastGitWanted.current) {
         lastGitWanted.current = wanted;
+        const fullPaths = [...new Map(gitFullWanted.map((item) => [item.full.toLowerCase(), item])).values()];
         void fetchWorkingTreeDiff(root, [...new Set(gitWanted)])
-          .then((files) => {
+          .then(async (files) => {
             if (selectedIdRef.current !== id) return;
-            gitPatchCache.current = files ?? [];
+            const overlay = files ?? [];
+            // Rows the overlay left uncovered (not a repo, or an untracked
+            // miss) fall through to content-cache diffs on non-git projects.
+            const missing = fullPaths.filter((item) => findPatchFile(overlay, item.display) === null);
+            const cacheDiffs =
+              missing.length === 0
+                ? []
+                : await diffCachedFiles(root, contentCache.current, missing).catch(() => []);
+            if (selectedIdRef.current !== id) return;
+            gitPatchCache.current = [...overlay, ...cacheDiffs];
             bumpTurnPatches((version) => version + 1);
           })
           .catch(() => {
@@ -1533,6 +1607,17 @@ export function App({
     } else if (gitPatchCache.current.length > 0) {
       gitPatchCache.current = [];
       bumpTurnPatches((version) => version + 1);
+    }
+    // Snapshot Read-row contents for the fallback above: new paths only
+    // (deduped by root+paths), fire-and-forget with no version bump since
+    // snapshots alone change nothing visible.
+    if (root !== null && readWanted.length > 0) {
+      const unique = [...new Set(readWanted)].sort();
+      const key = `${root}\n${unique.join("\n")}`;
+      if (key !== lastSnapshotWanted.current) {
+        lastSnapshotWanted.current = key;
+        void snapshotFiles(root, unique, contentCache.current).catch(() => {});
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groups, openThreadId, client, selected, shell.projects, stateDir]);
@@ -2030,23 +2115,34 @@ export function App({
       };
     }
     // The new-thread project list needs no provider catalog either: every
-    // known project, with the effective (picked or inherited) one marked.
+    // known project, with the effective (picked or inherited) one marked,
+    // led by a row that creates a project from a local folder.
     if (picker === "project") {
       return {
         kind: "list",
         sections: [
           {
-            rows: shell.projects.map((project) => {
-              const root = typeof project.workspaceRoot === "string" ? project.workspaceRoot : "";
-              const shortRoot = root.replace(/\\/g, "/").split("/").pop() ?? null;
-              return {
-                key: `project:${project.id}`,
-                label: String(project.title ?? project.id),
-                ...(shortRoot === null || shortRoot.length === 0 ? {} : { meta: shortRoot }),
-                selected: project.id === effectiveProjectId,
-                onPick: () => pickCreatingProject(project.id),
-              };
-            }),
+            rows: [
+              {
+                key: "project:new",
+                label: "+ New project from local folder",
+                onPick: () => {
+                  setPickerFilter("");
+                  setPicker("project-new");
+                },
+              },
+              ...shell.projects.map((project) => {
+                const root = typeof project.workspaceRoot === "string" ? project.workspaceRoot : "";
+                const shortRoot = root.replace(/\\/g, "/").split("/").pop() ?? null;
+                return {
+                  key: `project:${project.id}`,
+                  label: String(project.title ?? project.id),
+                  ...(shortRoot === null || shortRoot.length === 0 ? {} : { meta: shortRoot }),
+                  selected: project.id === effectiveProjectId,
+                  onPick: () => pickCreatingProject(project.id),
+                };
+              }),
+            ],
           },
         ],
       };
@@ -2350,19 +2446,43 @@ export function App({
           {renderAttachmentStrip(tasksVisibleNow)}
           {resumeBanner === null ? null : (
             <box
-              style={{ flexDirection: "row", height: 1, flexShrink: 0, marginTop: 1 }}
+              style={{
+                flexDirection: "column",
+                flexShrink: 0,
+                marginTop: 1,
+                paddingLeft: 2,
+                paddingRight: 2,
+                paddingTop: 1,
+                paddingBottom: 1,
+              }}
               border={["top"]}
               borderColor={SURFACE.border}
             >
-              <text fg={COLOR.warn} selectable={false}>
-                {`Resume with less context · ${formatTokenCount(resumeBanner.usedTokens)} tokens from earlier `}
-              </text>
-              <text fg={COLOR.accent} selectable={false} onMouseDown={() => compactSession(() => setDismissedResumeKey(resumeBanner.key))}>
-                {`[compact] `}
-              </text>
-              <text fg={COLOR.faint} selectable={false} onMouseDown={() => setDismissedResumeKey(resumeBanner.key)}>
-                {`[dismiss]`}
-              </text>
+              <box style={{ flexDirection: "row", height: 1, flexShrink: 0, justifyContent: "space-between" }}>
+                <box style={{ flexDirection: "row", height: 1, flexShrink: 0 }}>
+                  <text fg={COLOR.warn} selectable={false}>{"◈ "}</text>
+                  <text fg={COLOR.bright} selectable={false}>{"Resume with less context"}</text>
+                </box>
+                <box style={{ flexDirection: "row", height: 1, flexShrink: 0 }}>
+                  <HoverButton
+                    label=" Compact "
+                    fg={COLOR.accent}
+                    onClick={() => compactSession(() => setDismissedResumeKey(resumeBanner.key))}
+                  />
+                  <text selectable={false}>{"  "}</text>
+                  <HoverButton
+                    label=" Keep full history "
+                    fg={COLOR.dim}
+                    hoverFg={COLOR.text}
+                    onClick={() => setDismissedResumeKey(resumeBanner.key)}
+                  />
+                </box>
+              </box>
+              <box style={{ flexDirection: "row", height: 1, flexShrink: 0 }}>
+                <text fg={COLOR.dim} selectable={false}>
+                  {`  ${formatTokenCount(resumeBanner.usedTokens)} tokens from earlier`}
+                </text>
+              </box>
             </box>
           )}
           {answerVisible ? (
@@ -2417,7 +2537,8 @@ export function App({
       {contextCardOpen && contextUsageDisplay !== null && threadState.contextUsage !== null ? (
         <ContextUsageCard
           usage={threadState.contextUsage}
-          width={Math.min(40, Math.max(28, width - SIDEBAR_WIDTH - 6))}
+          width={Math.min(40, Math.max(28, width - SIDEBAR_WIDTH - 6), chatWidth)}
+          right={Math.max(1, width - (SIDEBAR_WIDTH + CHAT_GUTTER + chatWidth))}
           onCompact={() =>
             compactSession(() => {
               markModalDismissed();
@@ -2509,6 +2630,25 @@ export function App({
           height={renameGeometry.height}
           onSubmit={submitCustomAnswer}
           onClose={() => setPicker(null)}
+        />
+      ) : picker === "project-new" ? (
+        <RenameModal
+          initialTitle={process.cwd()}
+          title="New project from local folder"
+          placeholder="Folder path"
+          hint="enter creates · esc back to projects"
+          maxLength={500}
+          screenWidth={width}
+          screenHeight={height}
+          left={pickerGeometry.left}
+          top={pickerGeometry.top}
+          width={pickerGeometry.width}
+          height={pickerGeometry.height}
+          onSubmit={submitProjectFolder}
+          onClose={() => {
+            setPickerFilter("");
+            setPicker("project");
+          }}
         />
       ) : (
         <PickerModal

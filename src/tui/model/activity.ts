@@ -153,6 +153,29 @@ function shortInputPath(input: Record<string, unknown>): string | null {
   return raw === null ? null : shortenPath(raw);
 }
 
+/**
+ * A row's file path before display shortening (`shortenPath` keeps the last
+ * two segments for headers, which no longer resolves on disk). Same
+ * precedence as the file/read branches of `describeActivity` — checkpoint
+ * file list, tool input, path-like title, `detail` echo — but unshortened,
+ * for disk reads (content-cache snapshots, overlay matching). Null when the
+ * row names no file at all.
+ */
+export function activityFilePath(activity: T3ThreadActivity): string | null {
+  const payload = asRecord(activity.payload) ?? {};
+  const data = asRecord(payload.data) ?? {};
+  const state = asRecord(data.state) ?? {};
+  const echoInput = parseDetailInput(asString(payload.detail));
+  const echoPath = detailFilePath(asString(payload.detail));
+  const input = asRecord(state.input) ?? asRecord(data.input) ?? echoInput ?? {};
+  const files = Array.isArray(data.files) ? data.files : [];
+  const firstFile = asString(asRecord(files[0])?.path);
+  const inputPath = asString(input.file_path) ?? asString(input.filePath);
+  const title = asString(payload.title) ?? asString(activity.summary) ?? "";
+  const titlePath = looksLikePath(title) ? title : null;
+  return firstFile ?? inputPath ?? titlePath ?? echoPath;
+}
+
 /** Titles double as paths on completed rows (`src\tui\app.tsx`) but are bare
     verbs while running (`edit`), so only treat them as paths with evidence. */
 function looksLikePath(value: string): boolean {
