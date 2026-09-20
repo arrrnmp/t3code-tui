@@ -180,13 +180,14 @@ class PromptQueue {
 }
 
 function toCliError(code: string, message: string, cause: unknown): CliError {
-  if (cause instanceof CliError) return cause;
+  // Auth patterns win even over SDK wrappers carrying the message.
   const text = cause instanceof Error ? cause.message : String(cause);
   if (isClaudeAuthErrorText(text)) {
     return new CliError("CLAUDE_AUTH_REQUIRED", claudeSignedOutMessage({ cwd: process.cwd() }), {
       cause,
     });
   }
+  if (cause instanceof CliError) return cause;
   return new CliError(code, `${message}: ${text.slice(0, 200)}`, { cause });
 }
 

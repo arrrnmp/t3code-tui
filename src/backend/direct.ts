@@ -18,6 +18,12 @@ import * as Effect from "effect/Effect";
 import { CliError } from "../errors.js";
 import type { ModelSelection, T3Thread } from "../types.js";
 import { ClaudeDriver } from "../providers/claude/driver.js";
+import { CodexDriver } from "../providers/codex/driver.js";
+import { GrokDriver } from "../providers/grok/driver.js";
+import type {
+  ProviderSendTurnInput,
+  ProviderSessionStartInput,
+} from "../providers/spi.js";
 import {
   completeTurn,
   failTurn,
@@ -38,7 +44,30 @@ import type {
 
 export interface DirectBackendOptions {
   readonly storeRoot?: string;
-  readonly createDriver?: () => ClaudeDriver;
+  readonly drivers?: {
+    readonly claude?: () => ClaudeDriver;
+    readonly codex?: () => CodexDriver;
+    readonly grok?: () => GrokDriver;
+  };
+}
+
+/** Structural driver surface the direct backend needs. All three drivers satisfy it. */
+export interface DirectDriver {
+  hasSession(threadId: string): Effect.Effect<boolean, CliError>;
+  startSession(input: ProviderSessionStartInput): Effect.Effect<unknown, CliError>;
+  sendTurn(input: ProviderSendTurnInput): Effect.Effect<{ threadId: string; turnId: string }, CliError>;
+  interruptTurn(threadId: string, turnId?: string): Effect.Effect<void, CliError>;
+  awaitTurn(
+    threadId: string,
+    turnId: string,
+    signal?: AbortSignal,
+  ): Promise<DirectTurnOutcome>;
+}
+
+export interface DirectTurnOutcome {
+  readonly status: "completed" | "failed" | "interrupted";
+  readonly text: string;
+  readonly error: string | null;
 }
 
 export function resolveStoreRoot(): string {
@@ -85,7 +114,7 @@ export function toCatalogThread(thread: StoredThread, turns: StoredTurn[]): T3Th
     session: {
       threadId: thread.id,
       status: running ? "running" : "idle",
-      providerName: "claude",
+      providerName: thread.modelSelection.instanceId,
       runtimeMode: thread.runtimeMode,
       activeTurnId: running?.id ?? null,
       lastError: null,
@@ -106,7 +135,7 @@ export function toCatalogThread(thread: StoredThread, turns: StoredTurn[]): T3Th
 
 export interface ExecuteDirectTurnArgs {
   readonly store: ThreadStore;
-  readonly driver: ClaudeDriver;
+  readonly driver: DirectDriver;
   readonly threadId: string;
   readonly storeTurnId: string;
   readonly prompt: string;
@@ -164,7 +193,7 @@ export async function executeDirectTurn(args: ExecuteDirectTurnArgs): Promise<vo
 export class DirectBackend implements Backend {
   readonly kind = "direct" as const;
   private storePromise: Promise<ThreadStore> | null = null;
-  private driver: ClaudeDriver | null = null;
+  private readonly drivers = new Map<string, DirectDriver>();
 
   constructor(private readonly options: DirectBackendOptions = {}) {}
 
@@ -176,9 +205,23 @@ export class DirectBackend implements Backend {
     return await this.storePromise;
   }
 
-  private driverFor(): ClaudeDriver {
-    if (!this.driver) this.driver = this.options.createDriver?.() ?? new ClaudeDriver();
-    return this.driver;
+  /** Route a model-selection instance id to its driver (shared per backend). */
+  private driverFor(instanceId: string): DirectDriver {
+    const key = instanceId.trim().toLowerCase();
+    const existing = this.drivers.get(key);
+    if (existing) return existing;
+    const factories = this.options.drivers ?? {};
+    let driver: DirectDriver | undefined;
+    if (key === "codex") driver = factories.codex?.() ?? new CodexDriver();
+    else if (key === "grok") driver = factories.grok?.() ?? new GrokDriver();
+    else if (key === "claude") driver = factories.claude?.() ?? new ClaudeDriver();
+    if (!driver) {
+      throw new CliError("PROVIDER_UNKNOWN", `No direct driver for provider "${instanceId}".`, {
+        details: { instanceId },
+      });
+    }
+    this.drivers.set(key, driver);
+    return driver;
   }
 
   async catalog(): Promise<BackendCatalog> {
@@ -205,6 +248,12 @@ export class DirectBackend implements Backend {
 
   async send(threadId: string, input: BackendSendInput): Promise<BackendSendResult> {
     const store = await this.store();
+    // Resolve the driver before touching the ledger: unknown providers and
+    // missing threads fail without recording a turn.
+    const preview = await inspectThread(store, threadId);
+    const instanceId =
+      input.modelSelection?.instanceId ?? preview.modelSelection.instanceId;
+    const driver = this.driverFor(instanceId);
     const sent = await sendTurn(store, threadId, {
       prompt: input.prompt,
       ...(input.ifBusy ? { ifBusy: input.ifBusy } : {}),
@@ -212,7 +261,6 @@ export class DirectBackend implements Backend {
       ...(input.wakeSettled !== undefined ? { wakeSettled: input.wakeSettled } : {}),
       ...(input.modelSelection ? { modelSelection: input.modelSelection } : {}),
     });
-    const driver = this.driverFor();
     const hasSession = await Effect.runPromise(driver.hasSession(threadId));
     if (!hasSession) {
       await Effect.runPromise(

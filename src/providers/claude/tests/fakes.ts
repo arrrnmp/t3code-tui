@@ -25,13 +25,27 @@ export class FakeQuery implements ClaudeQuery {
   usageProbeResponse: unknown = null;
   private readonly backlog: SDKMessage[];
   private readonly takers: Array<(result: IteratorResult<SDKMessage>) => void> = [];
+  private notifyPrompt: () => void = () => undefined;
+  private readonly promptGate = new Promise<void>((resolve) => {
+    this.notifyPrompt = resolve;
+  });
 
   constructor(
     initial: SDKMessage[],
     readonly options: ClaudeQueryOptions,
-    _prompt?: AsyncIterable<SDKUserMessage>,
+    prompt?: AsyncIterable<SDKUserMessage> | string,
   ) {
     this.backlog = [...initial];
+    // Like the live session, turn traffic only flows after a prompt. The
+    // gate latches: multi-turn scripts stay test-driven via push().
+    if (typeof prompt === "string" || prompt === undefined) this.notifyPrompt();
+    else void this.drainPrompt(prompt);
+  }
+
+  private async drainPrompt(prompt: AsyncIterable<SDKUserMessage>): Promise<void> {
+    for await (const _message of prompt) {
+      this.notifyPrompt();
+    }
   }
 
   /** Deliver one more message, exactly like the live CLI would. */
@@ -42,9 +56,12 @@ export class FakeQuery implements ClaudeQuery {
   }
 
   async *[Symbol.asyncIterator](): AsyncIterator<SDKMessage> {
+    let first = true;
     for (;;) {
       const next = this.backlog.shift();
       if (next) {
+        if (!first) await this.promptGate;
+        first = false;
         yield next;
         continue;
       }
