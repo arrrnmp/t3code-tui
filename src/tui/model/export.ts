@@ -27,20 +27,13 @@ export interface FormatThreadExportOptions {
 }
 
 /**
- * Token-saving caps: prompts and replies carry the substance another agent
- * needs to continue, so they get a generous budget; tool rows collapse to
- * one line each (the wire strips tool input anyway, and per-file +/- counts
- * already summarize edits). Truncation is always marked with the dropped
- * char count so the reader knows content was cut, not absent.
+ * Token-saving structure without losing content: prompts, replies, plans,
+ * and questions are always complete — detail is what lets another agent
+ * continue. Savings come from shape, not cuts: one line per tool call (the
+ * wire strips tool input anyway, and per-file +/- counts already summarize
+ * edits), plan checklists rendered once, no payload or output dumps, no
+ * diff bodies.
  */
-export const EXPORT_MAX_BODY_CHARS = 6000;
-export const EXPORT_MAX_TOOL_LINE_CHARS = 200;
-export const EXPORT_MAX_STATE_CHARS = 1200;
-
-function truncateMarked(value: string, max: number): string {
-  if (value.length <= max) return value;
-  return `${value.slice(0, max)}\n\n…(truncated ${value.length - max} chars)`;
-}
 
 /** First non-empty line, single-spaced, capped — turn headings. */
 function headLine(value: string, max = 100): string {
@@ -54,9 +47,10 @@ function shortTurnId(turnId: string | null): string {
 }
 
 /**
- * One tool call on one line: the verb plus the one argument that identifies
- * the call (command, path, pattern, query), with exit/duration/counts where
- * known. Never a payload or output dump.
+ * One tool call on one line: the verb plus the complete identifying detail
+ * (full command, path, pattern, query), with exit/duration/counts where
+ * known. Never a payload or output dump — but nothing is cut either:
+ * multi-line input folds to single-spaced text on the same line.
  */
 export function exportToolLine(entry: TimelineEntry): string | null {
   const activity = entry.activity;
@@ -66,18 +60,17 @@ export function exportToolLine(entry: TimelineEntry): string | null {
     view = describeActivity(activity);
   } catch {
     const summary = activity.summary.trim().replace(/\s+/gu, " ");
-    return summary.length > 0 ? summary.slice(0, EXPORT_MAX_TOOL_LINE_CHARS) : null;
+    return summary.length > 0 ? summary : null;
   }
-  const cap = (value: string): string =>
-    value.length <= EXPORT_MAX_TOOL_LINE_CHARS ? value : `${value.slice(0, EXPORT_MAX_TOOL_LINE_CHARS)}…`;
+  // Single-spaced but complete: folding whitespace keeps every character
+  // while holding the one-line-per-tool structure.
+  const full = (value: string): string => value.trim().replace(/\s+/gu, " ");
   switch (view.kind) {
     case "command": {
-      const first = view.command.split("\n")[0]?.trim() ?? "";
-      const extraLines = view.command.split("\n").length - 1;
+      const command = full(view.command);
       const exit = view.exit === null ? "" : view.exit === 0 ? " · exit 0" : ` · exit ${view.exit}`;
       const tail = view.running ? " · running" : "";
-      const more = extraLines > 0 ? ` · +${extraLines} lines` : "";
-      return cap(`$ ${first}${more}${exit}${tail}`);
+      return `$ ${command}${exit}${tail}`;
     }
     case "file": {
       const counts =
@@ -86,19 +79,19 @@ export function exportToolLine(entry: TimelineEntry): string | null {
           : "";
       const files = view.fileCount !== null ? ` · ${view.fileCount} files` : "";
       const tail = view.running ? " · running" : "";
-      return cap(`${view.verb} ${view.path}${counts}${files}${tail}`);
+      return `${view.verb} ${view.path}${counts}${files}${tail}`;
     }
     case "read": {
       const range = readRangeLabel(view.startLine, view.endLine);
       const tail = view.running ? " · running" : "";
-      return cap(`Read ${view.path}${range === null ? "" : ` ${range}`}${tail}`);
+      return `Read ${view.path}${range === null ? "" : ` ${range}`}${tail}`;
     }
     case "list":
-      return cap(`List ${view.path}${view.running ? " · running" : ""}`);
+      return `List ${view.path}${view.running ? " · running" : ""}`;
     case "grep": {
       const scope = view.scope === null ? "" : ` in ${view.scope}`;
       const tail = view.running ? " · running" : "";
-      return cap(`Grep "${view.pattern}"${scope}${tail}`);
+      return `Grep "${view.pattern}"${scope}${tail}`;
     }
     case "todos":
       // The live checklist renders once in "State to continue", never per row.
@@ -107,30 +100,30 @@ export function exportToolLine(entry: TimelineEntry): string | null {
       const taskType = view.taskType === null ? "" : ` · ${view.taskType}`;
       const model = view.model === null ? "" : ` · ${view.model}`;
       const tail = view.running ? " · running" : "";
-      return cap(`Task ${view.title} (${view.status}${taskType}${model})${tail}`);
+      return `Task ${view.title} (${view.status}${taskType}${model})${tail}`;
     }
     case "question": {
-      const detail = view.detail.trim().replace(/\s+/gu, " ");
+      const detail = full(view.detail);
       const tail = view.running ? " · running" : "";
-      return cap(`${view.title}${detail.length > 0 ? `: ${detail}` : ""}${tail}`);
+      return `${view.title}${detail.length > 0 ? `: ${detail}` : ""}${tail}`;
     }
     case "skill":
-      return cap(`Skill ${view.name}${view.running ? " · running" : ""}`);
+      return `Skill ${view.name}${view.running ? " · running" : ""}`;
     case "web": {
-      const query = view.query.trim().replace(/\s+/gu, " ");
+      const query = full(view.query);
       const tail = view.running ? " · running" : "";
-      return cap(`Web ${view.tool}: ${query}${tail}`);
+      return `Web ${view.tool}: ${query}${tail}`;
     }
     case "image":
-      return cap(`Saw image ${view.path}`);
+      return `Saw image ${view.path}`;
     case "tool": {
-      const detail = view.detail.trim().replace(/\s+/gu, " ");
+      const detail = full(view.detail);
       const tail = view.running ? " · running" : "";
-      return cap(`${view.tool}${detail.length > 0 ? `: ${detail}` : ""}${tail}`);
+      return `${view.tool}${detail.length > 0 ? `: ${detail}` : ""}${tail}`;
     }
     case "note": {
-      const text = view.text.trim().replace(/\s+/gu, " ");
-      return text.length > 0 ? cap(`Note: ${text}`) : null;
+      const text = full(view.text);
+      return text.length > 0 ? `Note: ${text}` : null;
     }
   }
 }
@@ -226,11 +219,12 @@ export function formatThreadExport(options: FormatThreadExportOptions): string {
   lines.push("");
 
   // State to continue: everything a fresh agent needs before the transcript.
+  // Prompts and replies are complete — never truncated.
   lines.push("## State to continue", "");
   const firstPrompt = groups.flatMap((group) => group.prompts).find((entry) => entry.text.trim().length > 0);
-  lines.push(`Goal: ${firstPrompt === undefined ? "_(no user prompt yet)_" : truncateMarked(firstPrompt.text.trim(), EXPORT_MAX_STATE_CHARS)}`, "");
+  lines.push(`Goal: ${firstPrompt === undefined ? "_(no user prompt yet)_" : firstPrompt.text.trim()}`, "");
   const lastReply = [...groups].reverse().map((group) => group.reply).find((reply) => reply !== null && reply !== undefined && reply.text.trim().length > 0);
-  lines.push(`Latest reply: ${lastReply === null || lastReply === undefined ? "_(none yet)_" : truncateMarked(lastReply.text.trim(), EXPORT_MAX_STATE_CHARS)}`, "");
+  lines.push(`Latest reply: ${lastReply === null || lastReply === undefined ? "_(none yet)_" : lastReply.text.trim()}`, "");
   if (pending.length > 0) {
     lines.push("Open questions (answer these first):");
     for (const request of pending) {
@@ -262,7 +256,7 @@ export function formatThreadExport(options: FormatThreadExportOptions): string {
       lines.push("### User", "");
       for (const prompt of group.prompts) {
         const text = prompt.text.trim();
-        lines.push(text.length > 0 ? truncateMarked(text, EXPORT_MAX_BODY_CHARS) : "_(empty prompt)_", "");
+        lines.push(text.length > 0 ? text : "_(empty prompt)_", "");
       }
     }
     const toolLines = group.work.flatMap((entry) => {
@@ -271,27 +265,27 @@ export function formatThreadExport(options: FormatThreadExportOptions): string {
       return line === null ? [] : [line];
     });
     // Intermediate assistant messages (between tool batches) carry reasoning
-    // the closing reply may not repeat — keep them with the work, truncated.
+    // the closing reply may not repeat — keep them with the work, complete.
     const workNotes = group.work.flatMap((entry) =>
       entry.kind !== "assistant" || entry.text.trim().length === 0 ? [] : [entry.text.trim()],
     );
     if (toolLines.length > 0 || workNotes.length > 0) {
       lines.push(`### Work (${toolLines.length} tool${toolLines.length === 1 ? "" : "s"})`, "");
       for (const line of toolLines) lines.push(`- ${line}`);
-      for (const note of workNotes) lines.push(`- note: ${truncateMarked(note.replace(/\s+/gu, " "), EXPORT_MAX_TOOL_LINE_CHARS)}`);
+      for (const note of workNotes) lines.push(`- note: ${note.replace(/\s+/gu, " ")}`);
       lines.push("");
     }
     lines.push("### Reply", "");
     const reply = group.reply?.text.trim() ?? "";
-    if (reply.length > 0) lines.push(truncateMarked(reply, EXPORT_MAX_BODY_CHARS), "");
+    if (reply.length > 0) lines.push(reply, "");
     else if (group.live !== null && group.live.text.trim().length > 0)
-      lines.push(`_(still running: ${truncateMarked(group.live.text.trim().replace(/\s+/gu, " "), EXPORT_MAX_TOOL_LINE_CHARS)})_`, "");
+      lines.push(`_(still running: ${group.live.text.trim().replace(/\s+/gu, " ")})_`, "");
     else lines.push("_(no reply)_", "");
     const files = filesLine(group.diff?.checkpoint ?? null);
     if (files !== null) lines.push(`Files: ${files}`, "");
     const proposed = group.proposedPlan?.proposedPlan ?? null;
     if (proposed !== null && proposed.planMarkdown.trim().length > 0) {
-      lines.push("### Proposed plan", "", "```md", truncateMarked(proposed.planMarkdown.trim(), EXPORT_MAX_BODY_CHARS), "```", "");
+      lines.push("### Proposed plan", "", "```md", proposed.planMarkdown.trim(), "```", "");
     }
   });
 

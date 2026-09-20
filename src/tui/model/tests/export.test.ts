@@ -106,6 +106,13 @@ describe("exportToolLine", () => {
     expect(line).toBe("$ bun run check · exit 0");
   });
 
+  it("keeps multi-line commands complete on one line", () => {
+    const line = exportToolLine(
+      toolEntry("c2", "turn-1", "tool.completed", commandPayload("for i in 1 2 3\ndo\n  echo $i\ndone", "")),
+    );
+    expect(line).toBe("$ for i in 1 2 3 do echo $i done · exit 0");
+  });
+
   it("renders file edits with counts and reads with ranges", () => {
     const edit = toolEntry("e1", "turn-1", "tool.completed", {
       itemType: "file_change",
@@ -203,12 +210,13 @@ describe("formatThreadExport", () => {
     expect(markdown).toContain("_(no reply)_");
   });
 
-  it("marks truncated bodies instead of dropping them silently", () => {
+  it("never truncates message bodies — long replies stay complete", () => {
+    const longReply = `x`.repeat(7000);
     const groups = [
       group({
         id: "turn-1",
         prompts: [userEntry("m1", "turn-1", "Go")],
-        reply: assistantEntry("m2", "turn-1", `x`.repeat(7000)),
+        reply: assistantEntry("m2", "turn-1", longReply),
       }),
     ];
     const markdown = formatThreadExport({
@@ -235,7 +243,8 @@ describe("formatThreadExport", () => {
       contextUsage: { usedTokens: 10_000, maxTokens: 200_000, totalProcessedTokens: null, cachedInputTokens: null, compactsAutomatically: null, autoCompactThreshold: null },
       exportedAt: "2026-09-16T03:00:00.000Z",
     });
-    expect(markdown).toContain("…(truncated 1000 chars)");
+    expect(markdown).toContain(longReply);
+    expect(markdown).not.toContain("truncated");
     expect(markdown).toContain("Open questions (answer these first):");
     expect(markdown).toContain("- Direction: Which way?");
     expect(markdown).toContain("- context: 10000/200000 tokens");
