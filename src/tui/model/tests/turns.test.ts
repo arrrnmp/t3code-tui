@@ -262,21 +262,51 @@ describe("groupTurns", () => {
     expect(groups[0]?.diff?.checkpoint?.checkpointTurnCount).toBe(5);
   });
 
-  it("splits turnId'd work out of a null-turn prompt group so the diff resolves", () => {
-    // Live user prompts carry a null turnId: without the split, the whole
-    // turn's work merges into the prompt's group while the checkpoint diff
-    // orphans into a work-less group of its own — leaving inline diffs with
-    // no turn to resolve against.
+  it("joins a null-turn prompt to its turn's group instead of orphaning it", () => {
+    // Live user prompts carry a null turnId (the server assigns the turn id
+    // once the turn starts) while the turn's work, reply, and checkpoint
+    // carry the real one. Splitting them orphans the prompt into a
+    // reply-less group and leaves the turn prompt-less — the prompt must
+    // flush forward into the turn's own group so tools and files stay with
+    // the request that caused them.
     const checkpoint = { turnId: "turn-7", checkpointTurnCount: 7, status: "ready", files: [] };
     const groups = groupTurns([
       entry({ id: "u1", kind: "user", text: "go", turnId: null }),
       entry({ id: "a1", kind: "activity", turnId: "turn-7" }),
+      entry({ id: "m1", kind: "assistant", text: "done.", streaming: false, turnId: "turn-7" }),
       entry({ id: "d7", kind: "turn-diff", turnId: "turn-7", checkpoint }),
     ]);
-    const host = groups.find((group) => group.diff?.checkpoint?.checkpointTurnCount === 7);
+    expect(groups).toHaveLength(1);
+    const host = groups[0];
     expect(host?.turnId).toBe("turn-7");
+    expect(host?.prompts.map((row) => row.id)).toEqual(["u1"]);
     expect(host?.work.map((row) => row.id)).toEqual(["a1"]);
-    expect(groups.find((group) => group.prompts.some((row) => row.id === "u1"))?.work).toEqual([]);
+    expect(host?.reply).toMatchObject({ id: "m1" });
+    expect(host?.diff?.checkpoint?.checkpointTurnCount).toBe(7);
+  });
+
+  it("keeps a trailing null-turn prompt in its own group when no turn follows", () => {
+    const groups = groupTurns([
+      entry({ id: "u1", kind: "user", text: "go", turnId: "turn-1" }),
+      entry({ id: "m1", kind: "assistant", text: "done.", streaming: false, turnId: "turn-1" }),
+      entry({ id: "u2", kind: "user", text: "next", turnId: null }),
+    ]);
+    expect(groups).toHaveLength(2);
+    expect(groups[1]?.turnId).toBeNull();
+    expect(groups[1]?.prompts.map((row) => row.id)).toEqual(["u2"]);
+    expect(groups[1]?.reply).toBeNull();
+  });
+
+  it("attaches consecutive null-turn prompts to the next turn in order", () => {
+    const groups = groupTurns([
+      entry({ id: "u1", kind: "user", text: "first", turnId: null }),
+      entry({ id: "u2", kind: "user", text: "second", turnId: null }),
+      entry({ id: "m1", kind: "assistant", text: "done.", streaming: false, turnId: "turn-9" }),
+    ]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.turnId).toBe("turn-9");
+    expect(groups[0]?.prompts.map((row) => row.id)).toEqual(["u1", "u2"]);
+    expect(groups[0]?.reply).toMatchObject({ id: "m1" });
   });
 });
 
