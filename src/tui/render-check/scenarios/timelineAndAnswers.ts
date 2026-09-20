@@ -98,6 +98,11 @@ export async function runTimelineAndAnswers(setup: TestRendererSetup): Promise<v
     await setup.mockMouse.click(header.x, header.y);
   });
   await setup.flush();
+  // The modal fades in over ~150ms: capture mid-fade and the translucent
+  // panel composites transcript borders into its title (reads as
+  // "Message┃actions"), so let the fade settle before asserting content.
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  await setup.flush();
   console.log("--- reply click past window (actions open) ---");
   const reopenedFrame = setup.captureCharFrame();
   console.log(reopenedFrame);

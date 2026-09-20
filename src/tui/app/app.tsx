@@ -293,10 +293,18 @@ export function App({
   /**
    * Boot gate: the app chrome stays hidden behind `<LoadingScreen>` until the
    * shell snapshot (thread list) and the picked thread's own snapshot have
-   * both landed. Declared up here so the keyboard handler below can swallow
-   * app bindings while booting — only the ctrl+c quit flow stays live.
+   * both landed. Latched — once true it never drops: thread switches and
+   * resyncs reset `threadState.synchronized` (which correctly re-holds the
+   * *transcript* placeholder below), but must never flash the whole app back
+   * to the loading screen. Declared up here so the keyboard handler below
+   * can swallow app bindings while booting — only the ctrl+c quit flow
+   * stays live.
    */
-  const bootReady = isBootReady(shell, openThreadId, threadState);
+  const [booted, setBooted] = useState(false);
+  useEffect(() => {
+    if (!booted && isBootReady(shell, openThreadId, threadState)) setBooted(true);
+  }, [booted, shell, openThreadId, threadState]);
+  const bootReady = booted;
   /** The model selection every picker/footer reads: while drafting a new
       thread this is the local override (once picked) or the source thread's
       own model, never a dispatch target. */
@@ -820,16 +828,20 @@ export function App({
   }, [sessionRunning]);
   const contextUsageDisplay = threadState.contextUsage === null ? null : formatContextUsage(threadState.contextUsage);
 
+  // Pane-OUTER width (borders included): the composer, tasks, and answer
+  // panels fill this exact slot edge-to-edge. Inner text budgets subtract
+  // their own chrome from it below — never shrink the slot itself, or the
+  // raised panels end short of the pane edge.
   const chatWidth = Math.max(
     20,
-    width - SIDEBAR_WIDTH - (diffPanel.expandedTurn === null ? 0 : diffPanel.diffWidth) - 2 - CHAT_GUTTER * 2,
+    width - SIDEBAR_WIDTH - (diffPanel.expandedTurn === null ? 0 : diffPanel.diffWidth) - CHAT_GUTTER * 2,
   );
   /** Toasts stay entirely inside one pane's own bounds, with a 1-col margin:
       the diff panel's while it is open, the chat/timeline pane's otherwise —
       never floating over the sidebar or straddling panes. */
   const toastGeometry = useMemo(() => {
     const chatLeft = SIDEBAR_WIDTH + CHAT_GUTTER;
-    const diffLeft = diffPanel.expandedTurn === null ? null : chatLeft + chatWidth + CHAT_GUTTER;
+    const diffLeft = diffPanel.expandedTurn === null ? null : chatLeft + chatWidth;
     const paneLeft = diffLeft ?? chatLeft;
     const paneWidth = diffLeft === null ? chatWidth : diffPanel.diffWidth;
     const paneRight = paneLeft + paneWidth;
@@ -1440,6 +1452,9 @@ export function App({
             </box>
           </box>
         ) : (
+        // One breathing column on each side of the chat stack: the pane
+        // sits off the sidebar and the terminal edge. Inner breathing
+        // comes from the scrollbox/composer padding instead.
         <box style={{ flexDirection: "column", flexGrow: 1, paddingLeft: CHAT_GUTTER, paddingRight: CHAT_GUTTER }}>
           {/* Post-boot thread switches (and resyncs) reset `threadState`
               before the new snapshot lands — hold a loading row instead of
