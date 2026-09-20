@@ -9,7 +9,7 @@
         "@opentui/react": "^0.5.11",
         "commander": "^14.0.1",
         "diff": "9.0.0",
-        "effect": "4.0.0-beta.78",
+        "effect": "4.0.0-rc.115",
         "react": "^19.3.0",
         "t3": "0.0.40",
       },
@@ -326,7 +326,7 @@
 
     "ee-first": ["ee-first@1.1.1", "", {}, "sha512-WMwm9LhRUo+WUaRN+vRuETqG89IgZphVSNkdFgeb6sS/E4OrDIN7t48CAewSHXc6C8lefD8KKfr5vY61brQlow=="],
 
-    "effect": ["effect@4.0.0-beta.78", "", { "dependencies": { "@standard-schema/spec": "1.1.0", "fast-check": "4.9.0", "find-my-way-ts": "0.1.6", "ini": "7.0.0", "kubernetes-types": "1.30.0", "msgpackr": "2.0.4", "multipasta": "0.2.8", "toml": "4.1.2", "uuid": "14.0.1", "yaml": "2.9.0" } }, "sha512-j79Rl9QpHwMz/ZJWLNpZoiVj9N7zHqiLKN5EcYd/A8J1oqejILWQLfc4HPlvqHqKC8SK55LJ+X4gy4ONJ+JpfQ=="],
+    "effect": ["effect@4.0.0-rc.115", "", {}, "sha512-ogYulZ5ffeOzrJqQrG0XOkDO5lKn2s9KNHhoxJy/6wKUkF0i12dlVXWA9TgsgQ+zV/JzizyG0+XMPepZEQX6vw=="],
 
     "emoji-regex": ["emoji-regex@10.6.0", "", {}, "sha512-toUI84YS5YmxW219erniWD0CIVOo46xGKColeNQRgOzDorgBi1v4D71/OFzgD9GO2UGKIv1C3Sp8DAn0+j5w7A=="],
 

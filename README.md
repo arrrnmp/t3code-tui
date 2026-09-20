@@ -289,4 +289,6 @@ The CLI uses T3's own `auth session issue` control plane to mint an administrati
 
 ## License
 
-AGPL-3.0-only. See [LICENSE](LICENSE).
+AGPL-3.0-only. See [LICENSE](LICENSE). Vendored third-party files are
+recorded in [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES); contributions use
+DCO sign-off (`Signed-off-by:` trailer).
