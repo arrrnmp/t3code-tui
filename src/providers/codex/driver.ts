@@ -69,6 +69,12 @@ export interface CodexDriverOptions {
 
 export type CodexTurnStatus = "completed" | "failed" | "interrupted";
 
+export interface CodexListedModel {
+  readonly id: string;
+  readonly name?: string | undefined;
+  readonly reasoningEfforts?: ReadonlyArray<string> | undefined;
+}
+
 export interface CodexTurnOutcome {
   readonly status: CodexTurnStatus;
   readonly text: string;
@@ -896,19 +902,34 @@ export class CodexDriver implements ProviderAdapter<CliError> {
     });
 
   /** Live model list; no allowlist — the server is the source of truth. */
-  async listModels(threadId: ThreadId): Promise<ReadonlyArray<{ id: string }>> {
+  async listModels(threadId: ThreadId): Promise<ReadonlyArray<CodexListedModel>> {
     const session = this.requireSession(threadId);
     const result = await session.peer.request(CODEX_METHODS.modelList, {});
     const record = asRecord(result);
+    // Local CLIs disagree on the envelope key: observed `models` and
+    // `items` during development, `data` on codex-cli 0.153.4 (paginated).
     const rawList = Array.isArray(result)
       ? result
-      : (record?.["models"] ?? record?.["items"] ?? []);
+      : (record?.["models"] ?? record?.["items"] ?? record?.["data"] ?? []);
     const list = Array.isArray(rawList) ? rawList : [];
-    const models: Array<{ id: string }> = [];
+    const models: Array<CodexListedModel> = [];
     for (const entry of list) {
       const item = asRecord(entry);
       const id = asString(item?.["id"]) ?? asString(item?.["model"]) ?? asString(item?.["slug"]);
-      if (id) models.push({ id });
+      if (!id) continue;
+      const name = asString(item?.["displayName"]) ?? asString(item?.["name"]) ?? id;
+      const efforts = asRecord(item)?.["supportedReasoningEfforts"];
+      const reasoningEfforts = Array.isArray(efforts)
+        ? efforts.flatMap((effort) => {
+          const value = asString(asRecord(effort)?.["reasoningEffort"]);
+          return value ? [value] : [];
+        })
+        : [];
+      models.push({
+        id,
+        ...(name !== id ? { name } : {}),
+        ...(reasoningEfforts.length > 0 ? { reasoningEfforts } : {}),
+      });
     }
     return models;
   }

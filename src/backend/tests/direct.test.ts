@@ -16,6 +16,8 @@ import { CodexDriver } from "../../providers/codex/driver.js";
 import { FakeCodexTransport } from "../../providers/codex/tests/fakes.js";
 import { GrokDriver } from "../../providers/grok/driver.js";
 import { FakeGrokTransport } from "../../providers/grok/tests/fakes.js";
+import { OpenCodeDriver } from "../../providers/opencode/driver.js";
+import { FakeOpencodeTransport } from "../../providers/opencode/tests/fakes.js";
 import { openThreadStore } from "../../threads/store.js";
 import { createThread, readThread } from "../../threads/threads.js";
 import { createBackend, isBackendKind, resolveBackendKind } from "../backend.js";
@@ -232,6 +234,41 @@ describe("DirectBackend", () => {
     expect(
       read.messages.filter((message) => message.role === "assistant").map((message) => message.text),
     ).toEqual(["answer"]);
+  });
+
+  it("routes opencode/<provider> threads to the shared opencode driver", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "t3code-direct-"));
+    cleanup.push(() => rm(root, { recursive: true, force: true }));
+    const store = await openThreadStore(root);
+    const thread = await createThread(store, {
+      projectId: "project-1",
+      title: "OpenCode thread",
+      modelSelection: { instanceId: "opencode/anthropic", model: "anthropic/claude-opus-4-6" },
+      env: { mode: "local", path: root, branch: null },
+    });
+    const transport = new FakeOpencodeTransport();
+    const backend = new DirectBackend({
+      storeRoot: root,
+      drivers: { opencode: () => new OpenCodeDriver({ transport }) },
+    });
+    const sent = await backend.send(thread.id, { prompt: "do it" });
+    expect(sent.delivery).toBe("started");
+    const server = transport.servers[0]!;
+    await server.push({
+      type: "message.part.updated",
+      properties: {
+        sessionID: "opencode-session-1",
+        part: { id: "p-1", type: "text", text: "answer" },
+      },
+    });
+    await server.push({ type: "session.idle", properties: { sessionID: "opencode-session-1" } });
+    await waitForTurn(store, thread.id);
+    const read = await readThread(store, thread.id);
+    expect(
+      read.messages.filter((message) => message.role === "assistant").map((message) => message.text),
+    ).toEqual(["answer"]);
+    const inspected = await backend.inspectThread(thread.id);
+    expect(inspected.thread.session).toMatchObject({ providerName: "opencode/anthropic" });
   });
 
   it("rejects unknown providers without recording a turn", async () => {

@@ -11,6 +11,8 @@ export interface FakeCodexScript {
   readonly threadId?: string;
   readonly rateLimits?: unknown;
   readonly models?: unknown[];
+  /** Serve the model list under the paginated `data` envelope (codex-cli ≥0.153 shape). */
+  readonly modelsEnvelope?: "models" | "data";
   readonly failRequests?: Record<string, string>;
 }
 
@@ -52,8 +54,19 @@ export class FakeCodexServer {
       case "thread/compact/start":
       case "config/mcpServer/reload":
         return {};
-      case "model/list":
-        return { models: this.script.models ?? [{ id: "gpt-test" }] };
+      case "model/list": {
+        const models = this.script.models ?? [{ id: "gpt-test" }];
+        if (this.script.modelsEnvelope === "data") {
+          return {
+            data: models.map((model) => ({
+              ...(typeof model === "object" && model !== null ? model : { id: String(model) }),
+              displayName: "GPT-5.6-Terra",
+              supportedReasoningEfforts: [{ reasoningEffort: "low" }, { reasoningEffort: "medium" }],
+            })),
+          };
+        }
+        return { models };
+      }
       case "thread/rollback":
       case "thread/revert":
         return { threadId: this.script.threadId ?? "codex-thread-1", turns: [] };

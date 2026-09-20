@@ -262,6 +262,19 @@ describe("codex driver compaction, rollback, models", () => {
     await expect(driver.listModels("thread-1")).resolves.toEqual([{ id: "gpt-a" }, { id: "gpt-b" }]);
   });
 
+  it("reads the paginated data envelope with display names and efforts", async () => {
+    const transport = new FakeCodexTransport({ models: [{ id: "gpt-5.6-terra" }], modelsEnvelope: "data" });
+    const driver = new CodexDriver({ transport });
+    await Effect.runPromise(driver.startSession(START));
+    await expect(driver.listModels("thread-1")).resolves.toEqual([
+      {
+        id: "gpt-5.6-terra",
+        name: "GPT-5.6-Terra",
+        reasoningEfforts: ["low", "medium"],
+      },
+    ]);
+  });
+
   it("rewrites limit errors with reset times", async () => {
     const resetsAt = Math.floor(Date.now() / 1000) + 5400;
     const transport = new FakeCodexTransport({

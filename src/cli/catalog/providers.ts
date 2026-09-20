@@ -1,4 +1,6 @@
+import { resolveBackendKind } from "../../backend/backend.js";
 import { discoverRuntime } from "../infra/runtime.js";
+import { buildDirectProviders } from "./direct.js";
 import { withWsRpc } from "./t3ws.js";
 import {
   extractProviders,
@@ -9,6 +11,25 @@ import {
 import type { CliConfig } from "../../types.js";
 
 export async function listProviders(config: CliConfig, options: { refresh?: boolean }) {
+  // Direct backends never touch the T3 server: no runtime discovery (which
+  // would boot the desktop), no WS RPC. Envelopes keep their shape; only
+  // the values say `direct` instead of naming a T3 origin/version.
+  if (resolveBackendKind() === "direct") {
+    return {
+      runtime: {
+        origin: "direct",
+        stateDir: null,
+        runtimeStatePath: null,
+        settingsPath: null,
+        environmentId: "direct",
+        serverVersion: "direct",
+        capabilities: {},
+      },
+      auth: { source: "path" as const, version: null },
+      refreshed: true,
+      providers: await buildDirectProviders(),
+    };
+  }
   const runtime = await discoverRuntime(config, { startDesktopIfNeeded: true });
   return await withWsRpc(runtime, config, async (call, invocation) => {
     // `server.refreshProviders` reports fresh provider/model status but carries

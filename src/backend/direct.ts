@@ -20,6 +20,7 @@ import type { ModelSelection, T3Thread } from "../types.js";
 import { ClaudeDriver } from "../providers/claude/driver.js";
 import { CodexDriver } from "../providers/codex/driver.js";
 import { GrokDriver } from "../providers/grok/driver.js";
+import { OpenCodeDriver } from "../providers/opencode/driver.js";
 import type {
   ProviderSendTurnInput,
   ProviderSessionStartInput,
@@ -48,6 +49,7 @@ export interface DirectBackendOptions {
     readonly claude?: () => ClaudeDriver;
     readonly codex?: () => CodexDriver;
     readonly grok?: () => GrokDriver;
+    readonly opencode?: () => OpenCodeDriver;
   };
 }
 
@@ -207,7 +209,10 @@ export class DirectBackend implements Backend {
 
   /** Route a model-selection instance id to its driver (shared per backend). */
   private driverFor(instanceId: string): DirectDriver {
-    const key = instanceId.trim().toLowerCase();
+    // `opencode/<provider>` catalog entries share one driver (and its
+    // per-cwd servers); the provider address travels in the model slug.
+    const rawKey = instanceId.trim().toLowerCase();
+    const key = rawKey === "opencode" || rawKey.startsWith("opencode/") ? "opencode" : rawKey;
     const existing = this.drivers.get(key);
     if (existing) return existing;
     const factories = this.options.drivers ?? {};
@@ -215,6 +220,7 @@ export class DirectBackend implements Backend {
     if (key === "codex") driver = factories.codex?.() ?? new CodexDriver();
     else if (key === "grok") driver = factories.grok?.() ?? new GrokDriver();
     else if (key === "claude") driver = factories.claude?.() ?? new ClaudeDriver();
+    else if (key === "opencode") driver = factories.opencode?.() ?? new OpenCodeDriver();
     if (!driver) {
       throw new CliError("PROVIDER_UNKNOWN", `No direct driver for provider "${instanceId}".`, {
         details: { instanceId },
