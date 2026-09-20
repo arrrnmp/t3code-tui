@@ -17,6 +17,20 @@ export async function runCommandPalette(setup: TestRendererSetup): Promise<void>
   console.log("--- palette copy branch ---");
   console.log(setup.captureCharFrame());
 
+  // The Export row narrows by filter (no coordinates, so the rows above must
+  // not move), then esc closes and the palette reopens fresh for the delete
+  // steps below.
+  for (const char of ["e", "x", "p", "o", "r", "t"]) {
+    await act(async () => setup.mockInput.pressKey(char));
+    await setup.flush();
+  }
+  console.log("--- palette export filtered ---");
+  console.log(setup.captureCharFrame());
+  await act(async () => setup.mockInput.pressEscape());
+  await setup.flush();
+  await act(async () => setup.mockInput.pressKey("p", { ctrl: true }));
+  await setup.flush();
+
   // Typing narrows the filter down to the delete action (one round trip per
   // letter: a synchronous burst would reuse a stale filter closure and only
   // the last letter would survive).

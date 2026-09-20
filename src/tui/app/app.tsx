@@ -44,6 +44,8 @@ import {
   applyThreadFrame,
   detectUsageLimit,
   emptyThreadState,
+  latestPlan,
+  pendingUserInputRequests,
   timeline,
   resumeCompactionKey,
   shouldOfferResumeCompaction,
@@ -69,6 +71,7 @@ import { useDiffPanel } from "../features/diffpanel/useDiffPanel.js";
 import { useComposer } from "../features/composer/useComposer.js";
 import { useProviderCatalog } from "../features/pickers/useProviderCatalog.js";
 import { useThreadCreation } from "./hooks/useThreadCreation.js";
+import { useThreadExport } from "./hooks/useThreadExport.js";
 import { useThreadOps } from "./hooks/useThreadOps.js";
 import type { PickerName } from "../features/pickers/pickerTypes.js";
 
@@ -429,6 +432,43 @@ export function App({
     setFocus,
     setThreadState,
     setThreadResync,
+  });
+
+  /**
+   * Command-palette "Export thread" source data: the live plan checklist,
+   * unanswered agent questions, and context usage feed the handover file's
+   * "State to continue" section; the file lands in the thread project's
+   * workspace root (else the launch directory).
+   */
+  const exportPlan = useMemo(() => latestPlan(threadState), [threadState]);
+  const exportPending = useMemo(() => pendingUserInputRequests(threadState), [threadState]);
+  const exportProject = useMemo(() => {
+    const project = shell.projects.find((candidate) => candidate.id === selected?.projectId) ?? null;
+    if (project === null) return null;
+    return {
+      title: String(project.title ?? project.id),
+      workspaceRoot: typeof project.workspaceRoot === "string" ? project.workspaceRoot : null,
+    };
+  }, [shell.projects, selected]);
+  const exportDir =
+    exportProject?.workspaceRoot === null || exportProject?.workspaceRoot === undefined
+      ? null
+      : exportProject.workspaceRoot;
+  const { exportThread } = useThreadExport({
+    thread: selected,
+    openThreadId,
+    project: exportProject,
+    groups,
+    plan: exportPlan,
+    pending: exportPending,
+    contextUsage: threadState.contextUsage,
+    exportDir,
+    fallbackDir: cwd,
+    clipboard,
+    toasts,
+    paletteReturnFocus,
+    closePicker,
+    setError,
   });
 
   useEffect(() => {
@@ -878,7 +918,7 @@ export function App({
    * Modal bodies: the model list across providers plus a provider shortcut
    * section, one section per effort descriptor of the current model, every
    * turn that produced file changes for the diff-turn picker, or the
-   * command palette's copy/thread/jump sections.
+   * command palette's copy/thread/export/jump sections.
    */
   const pickerBody: PickerBody = useMemo(() => {
     if (picker === null) return { kind: "list", sections: [] };
@@ -1050,6 +1090,18 @@ export function App({
                     disabled: true,
                     onPick: () => {},
                   },
+            ],
+          },
+          {
+            header: "Export",
+            rows: [
+              {
+                key: "thread:export",
+                label: "Export thread to markdown",
+                ...(entries.length === 0
+                  ? { meta: "no turns yet", disabled: true, onPick: () => {} }
+                  : { meta: `${groups.length} turn${groups.length === 1 ? "" : "s"}`, onPick: exportThread }),
+              },
             ],
           },
           ...(jumpRows.length === 0 ? [] : [{ header: "Jump to message", rows: jumpRows }]),
