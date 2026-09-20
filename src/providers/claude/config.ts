@@ -53,21 +53,25 @@ export interface ExecutableResolutionEnv {
   readonly isFile?: (filePath: string) => boolean;
 }
 
-function defaultPathDirs(env: NodeJS.ProcessEnv): string[] {
+function defaultPathDirs(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): string[] {
   const raw = env.PATH ?? env.Path ?? "";
-  return raw.split(path.delimiter).filter((dir) => dir.length > 0);
+  // The platform override governs path semantics so win32 emulation works on
+  // posix hosts (and vice versa); never use the host `path.delimiter` here.
+  const delimiter = platform === "win32" ? ";" : ":";
+  return raw.split(delimiter).filter((dir) => dir.length > 0);
 }
 
 function findOnPath(
   command: string,
   env: NodeJS.ProcessEnv,
   isFile: (filePath: string) => boolean,
+  platform: NodeJS.Platform,
 ): string | null {
   if (command.includes("/") || command.includes("\\")) {
     return isFile(command) ? command : null;
   }
   const exts = (env.PATHEXT ?? ".EXE").split(";").filter((ext) => ext.length > 0);
-  for (const dir of defaultPathDirs(env)) {
+  for (const dir of defaultPathDirs(env, platform)) {
     for (const ext of ["", ...exts]) {
       const candidate = path.win32.join(dir, `${command}${ext}`);
       if (isFile(candidate)) return candidate;
@@ -90,7 +94,7 @@ export function resolveClaudeExecutable(
   const platform = overrides.platform ?? process.platform;
   if (platform !== "win32") return binaryPath;
   const isFile = overrides.isFile ?? existsSync;
-  const resolved = findOnPath(binaryPath, env, isFile) ?? binaryPath;
+  const resolved = findOnPath(binaryPath, env, isFile, platform) ?? binaryPath;
   if (!WINDOWS_SHIM_EXTENSIONS.has(path.win32.extname(resolved).toLowerCase())) {
     return resolved;
   }
