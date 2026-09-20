@@ -39,8 +39,16 @@ export function useComposer(
   const editingExternallyRef = useRef(false);
   editingExternallyRef.current = editingExternally;
 
-  const draft = openThreadId === null ? "" : (drafts[openThreadId] ?? "");
-  const pending = openThreadId === null ? [] : (pendings[openThreadId] ?? []);
+  /**
+   * Draft key while there is no open thread (fresh install, zero threads):
+   * the creating view still needs a place to stash the prompt, so it drafts
+   * under a stable ephemeral key instead of dropping keystrokes. Once the
+   * first thread is created the subscription selects it and the draft moves
+   * with `openThreadId` like every other thread switch.
+   */
+  const draftKey = openThreadId ?? "__creating__";
+  const draft = drafts[draftKey] ?? "";
+  const pending = pendings[draftKey] ?? [];
 
   const copyDraft = () => {
     if (draft.trim().length === 0) return;
@@ -63,7 +71,7 @@ export function useComposer(
   };
 
   const setDraft = (value: string) => {
-    if (openThreadId !== null) writeDraft(openThreadId, value);
+    writeDraft(draftKey, value);
   };
 
   /** Clears a thread's draft *and* tells the composer to force-sync its
@@ -87,8 +95,7 @@ export function useComposer(
   };
 
   const setPending = (next: ImageAttachmentUpload[] | ((current: ImageAttachmentUpload[]) => ImageAttachmentUpload[])) => {
-    if (openThreadId === null) return;
-    const id = openThreadId;
+    const id = draftKey;
     if (typeof next === "function") {
       setPendings((current) => {
         const resolved = (next as (current: ImageAttachmentUpload[]) => ImageAttachmentUpload[])(current[id] ?? []);
@@ -113,9 +120,9 @@ export function useComposer(
     return ids;
   }, [drafts, pendings]);
 
-  /** Changes on thread switch (via `openThreadId`) and on every explicit
+  /** Changes on thread switch (via `draftKey`) and on every explicit
       clear (via the counter) — never on ordinary typing. */
-  const composerResetKey = `${openThreadId ?? "none"}:${composerResetCounter}`;
+  const composerResetKey = `${draftKey}:${composerResetCounter}`;
 
   /**
    * Opens the draft in the preferred external editor (explicit `$VISUAL` /
@@ -127,8 +134,8 @@ export function useComposer(
    * force-syncs via the reset counter.
    */
   const editDraftExternally = () => {
-    if (openThreadId === null || editingExternallyRef.current) return;
-    const id = openThreadId;
+    if (editingExternallyRef.current) return;
+    const id = draftKey;
     const seed = drafts[id] ?? "";
     setEditingExternally(true);
     void (async () => {

@@ -79,7 +79,10 @@ export function useProviderCatalog(params: {
   }, [client]);
 
   const openModelPicker = () => {
-    if (selected === null) {
+    // Drafting a new thread stores the pick locally (`creatingModelSelection`)
+    // with nothing to dispatch against, so it needs no source thread — a
+    // fresh install with zero threads lands here with `selected === null`.
+    if (selected === null && !creating) {
       setError("no open thread to set the model for");
       return;
     }
@@ -91,7 +94,7 @@ export function useProviderCatalog(params: {
   };
 
   const openEffortPicker = () => {
-    if (selected === null) {
+    if (selected === null && !creating) {
       setError("no open thread to set the effort for");
       return;
     }
@@ -164,7 +167,7 @@ export function useProviderCatalog(params: {
   };
 
   const openPermissionPicker = () => {
-    if (selected === null) {
+    if (selected === null && !creating) {
       setError("no open thread to set permissions for");
       return;
     }

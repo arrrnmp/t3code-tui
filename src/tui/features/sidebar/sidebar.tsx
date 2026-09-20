@@ -1,9 +1,10 @@
 import { useHover } from "../../hooks/useHover.js";
 import { MonitoringBackdrop } from "../../ui/backdrop.js";
 import type { SidebarGroup, SidebarMode, SidebarSections, SidebarThread } from "../../model/sidebar.js";
+import { threadSortTime } from "../../model/shell.js";
 import { COLOR, MARKER, pulseColor, rule, spread, STATUS_COLOR, SURFACE, truncate } from "../../theme.js";
 
-/** Freshness window: updated inside it, a non-open card glows like new activity. */
+/** Freshness window: sent or finished inside it, a non-open card glows like new activity. */
 const FRESH_MS = 120_000;
 
 /**
@@ -85,10 +86,12 @@ function ActiveCard({
     : row.status === "running"
       ? pulseColor(now, COLOR.accent, COLOR.bright, 1800)
       : pulseColor(now, COLOR.danger, COLOR.bright, 1400);
-  // Freshness: touched in the last couple minutes, the card glows — bright
-  // title plus an accent age — until it settles back into the dim list.
-  const updatedMs = Date.parse(row.thread.updatedAt ?? "");
-  const fresh = !Number.isNaN(updatedMs) && now - updatedMs < FRESH_MS;
+  // Freshness: sent or finished in the last couple minutes, the card glows
+  // — bright title plus an accent age — until it settles back into the dim
+  // list. Keyed on the same stable timestamp as the sidebar order, never
+  // `updatedAt`, so a running thread doesn't glow permanently off its own
+  // tool calls.
+  const fresh = now - threadSortTime(row.thread) < FRESH_MS;
   const titleFg = open || fresh ? COLOR.bright : COLOR.text;
   const ageFg = fresh ? COLOR.accent : COLOR.dim;
   const body = width - 2;

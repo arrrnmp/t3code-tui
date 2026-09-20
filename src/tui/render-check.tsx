@@ -1,7 +1,10 @@
 import { testRender } from "@opentui/react/test-utils";
 
 import { App, client } from "./render-check/fixtures.js";
+import { runBootGate } from "./render-check/scenarios/bootGate.js";
 import { runSidebarAndQuit } from "./render-check/scenarios/sidebarAndQuit.js";
+import { runModelPicker } from "./render-check/scenarios/modelPicker.js";
+import { runSidebarStability } from "./render-check/scenarios/sidebarStability.js";
 import { runPermissions } from "./render-check/scenarios/permissions.js";
 import { runDiffPanel } from "./render-check/scenarios/diffPanel.js";
 import { runCommandPalette } from "./render-check/scenarios/commandPalette.js";
@@ -32,7 +35,10 @@ const setup = await testRender(<App client={client} onQuit={() => {}} launchView
   exitOnCtrlC: false,
 });
 
+await runBootGate();
 await runSidebarAndQuit(setup);
+await runModelPicker(setup);
+await runSidebarStability(setup);
 await runPermissions(setup);
 await runDiffPanel(setup);
 await runCommandPalette(setup);

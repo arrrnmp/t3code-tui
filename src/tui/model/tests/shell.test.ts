@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { T3Thread } from "../../../types.js";
-import { isSettledThread, threadStatus } from "../shell.js";
+import { isSettledThread, threadSortTime, threadStatus } from "../shell.js";
 
 function thread(overrides: Partial<T3Thread> = {}): T3Thread {
   return {
@@ -38,6 +38,51 @@ describe("isSettledThread", () => {
 
   it("is active with neither signal", () => {
     expect(isSettledThread(thread())).toBe(false);
+  });
+});
+
+describe("threadSortTime", () => {
+  const NOW = Date.parse("2026-09-16T03:30:00.000Z");
+  const ago = (ms: number) => new Date(NOW - ms).toISOString();
+
+  it("pins a running turn to the user's send time, ignoring tool-call touches", () => {
+    expect(
+      threadSortTime(
+        thread({
+          updatedAt: ago(5_000),
+          latestUserMessageAt: ago(10 * 60_000),
+          latestTurn: {
+            turnId: "turn-1",
+            state: "running",
+            requestedAt: ago(10 * 60_000),
+            startedAt: ago(10 * 60_000),
+            completedAt: null,
+            assistantMessageId: null,
+          },
+        }),
+      ),
+    ).toBe(Date.parse(ago(10 * 60_000)));
+  });
+
+  it("bumps a thread up once its turn reaches a terminal state", () => {
+    const finished = thread({
+      updatedAt: ago(5_000),
+      latestUserMessageAt: ago(10 * 60_000),
+      latestTurn: {
+        turnId: "turn-1",
+        state: "completed",
+        requestedAt: ago(10 * 60_000),
+        startedAt: ago(10 * 60_000),
+        completedAt: ago(5_000),
+        assistantMessageId: null,
+      },
+    });
+    expect(threadSortTime(finished)).toBe(Date.parse(ago(5_000)));
+  });
+
+  it("falls back through the turn request to creation", () => {
+    expect(threadSortTime(thread({ createdAt: ago(60_000) }))).toBe(Date.parse(ago(60_000)));
+    expect(threadSortTime(thread({}))).toBe(0);
   });
 });
 

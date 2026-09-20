@@ -64,18 +64,23 @@ export function useThreadCreation(params: {
 
   /**
    * New thread in the effective project (the picked override, else the open
-   * thread's), inheriting the source's model and modes. The id is
+   * thread's, else the first known project for a zero-thread workspace),
+   * inheriting the source's model and modes when there is a source. The id is
    * client-generated so the thread can open immediately; the subscription
    * fills it in once the server projects both commands.
    */
   const createThread = (text: string) => {
     const trimmed = text.trim();
-    if (trimmed.length === 0 || selected === null) return;
+    if (trimmed.length === 0) return;
+    // Zero threads (fresh install): no source to inherit from — the picked
+    // project/model/modes (or the workspace fallbacks below) are the whole
+    // selection.
     const source = selected;
+    const draftKey = source?.id ?? "__creating__";
     // The picked project wins over the source thread's — that is the whole
     // point of `creatingProjectId`. Without a resolvable project there is
     // nothing to create under.
-    const projectId = creatingProjectId ?? source.projectId;
+    const projectId = creatingProjectId ?? source?.projectId ?? shellProjects[0]?.id ?? null;
     if (projectId === undefined || projectId === null) {
       setError("pick a project for the new thread first");
       return;
@@ -86,15 +91,16 @@ export function useThreadCreation(params: {
         setError(built.error.slice(0, 120));
         return;
       }
-      if (selected === null) return;
       const nowIso = new Date().toISOString();
       const threadId = crypto.randomUUID();
       const title = threadTitle(parsed.text);
-      const interactionMode = source.interactionMode ?? "default";
+      const interactionMode = source?.interactionMode ?? "default";
       // The local override picked while drafting wins over whatever the
       // source thread carries — that's the whole point of `creatingModelSelection`.
-      const modelSelection = creatingModelSelection ?? source.modelSelection;
-      const runtimeMode = creatingRuntimeMode ?? source.runtimeMode ?? "full-access";
+      // With no source thread the override (or nothing, letting the server
+      // fall back to the project default) is the whole selection.
+      const modelSelection = creatingModelSelection ?? source?.modelSelection;
+      const runtimeMode = creatingRuntimeMode ?? source?.runtimeMode ?? "full-access";
       const create = {
         type: "thread.create",
         commandId: crypto.randomUUID(),
@@ -104,7 +110,7 @@ export function useThreadCreation(params: {
         ...(modelSelection === undefined ? {} : { modelSelection }),
         runtimeMode,
         interactionMode,
-        branch: source.branch ?? null,
+        branch: source?.branch ?? null,
         worktreePath: null,
         createdAt: nowIso,
       };
@@ -132,8 +138,8 @@ export function useThreadCreation(params: {
           setError(String(cause).slice(0, 120));
           return;
         }
-        resetDraft(source.id);
-        writePending(source.id, []);
+        resetDraft(draftKey);
+        writePending(draftKey, []);
         setCreating(false);
         setCreatingModelSelection(null);
         setCreatingRuntimeMode(null);
@@ -144,13 +150,13 @@ export function useThreadCreation(params: {
     });
   };
 
-  /** Starts drafting a new thread in the open thread's project. Reachable
-      from the sidebar's "+" button — no keybinding. */
+  /** Starts drafting a new thread in the open thread's project (or, with no
+      open thread, in the picked/first project). Reachable from the sidebar's
+      "+" button — no keybinding. */
   const startNewThread = () => {
-    if (selected === null) {
-      setError("no open thread to inherit the project from");
-      return;
-    }
+    // No source thread (zero-thread workspace): already drafting from
+    // scratch — just reset the overrides so the button stays idempotent
+    // instead of erroring.
     setCreatingModelSelection(null);
     setCreatingRuntimeMode(null);
     setCreatingProjectId(null);

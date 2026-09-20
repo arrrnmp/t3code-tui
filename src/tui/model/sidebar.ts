@@ -1,5 +1,5 @@
 import type { T3Project, T3Thread } from "../../types.js";
-import { threadStatus, type ShellState, type ThreadStatus } from "./shell.js";
+import { threadSortTime, threadStatus, type ShellState, type ThreadStatus } from "./shell.js";
 
 export interface SidebarThread {
   thread: T3Thread;
@@ -134,8 +134,12 @@ export interface SidebarOptions {
   collapsedProjects?: ReadonlySet<string>;
 }
 
+/**
+ * Newest user turn (or finished turn) first — never `updatedAt`, so running
+ * threads hold their slots instead of leapfrogging on every tool call.
+ */
 function byRecency(left: T3Thread, right: T3Thread): number {
-  return threadTime(right) - threadTime(left);
+  return threadSortTime(right) - threadSortTime(left);
 }
 
 /** Project ids with live threads, most recently active first. */
@@ -151,11 +155,11 @@ export function orderedProjectIds(state: ShellState): string[] {
 }
 
 /**
- * Active threads always sort by latest activity first — grouping never
- * reorders them. `flat` is one recency list, `grouped` clusters that same
- * order under collapsible project headers (newest project first), and
- * `project` filters to a single project. Settled threads stay in one
- * recency-ordered list for the bottom section.
+ * Active threads always sort by latest user turn (or finished turn) first —
+ * grouping never reorders them. `flat` is one such list, `grouped` clusters
+ * that same order under collapsible project headers (newest project first),
+ * and `project` filters to a single project. Settled threads stay in one
+ * equally ordered list for the bottom section.
  */
 export function buildSidebarSections(state: ShellState, options: SidebarOptions): SidebarSections {
   const mode = options.mode ?? "flat";
@@ -186,7 +190,7 @@ export function buildSidebarSections(state: ShellState, options: SidebarOptions)
       perProject.set(thread.projectId, rows);
     }
     groups = [...perProject.entries()]
-      .sort(([, left], [, right]) => threadTime(right[0]!) - threadTime(left[0]!))
+      .sort(([, left], [, right]) => threadSortTime(right[0]!) - threadSortTime(left[0]!))
       .map(([id, rows]) => {
         const projectTitle = projects.get(id)?.title ?? "unknown project";
         return {

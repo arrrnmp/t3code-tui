@@ -84,8 +84,9 @@ export function useThreadOps(params: {
    * Deletes the open thread behind a two-step confirm (first pick arms).
    * `thread.delete` has only ever been used as create-rollback, so a
    * rejection permanently disables the row for the session instead of
-   * retrying. Refuses the last remaining thread — reopening from zero is
-   * unwired, and stranding the UI there would be worse than refusing.
+   * retrying. Deleting the last thread lands in the creating view, which is
+   * fully wired for a zero-thread workspace (project/model pickers plus draft
+   * all work without a source thread).
    */
   const deleteThread = () => {
     if (openThreadId === null || selected === null) {
@@ -101,20 +102,19 @@ export function useThreadOps(params: {
       return;
     }
     const id = openThreadId;
-    const remaining = shellThreads.filter(
-      (thread) => thread.id !== id && thread.archivedAt === null && thread.deletedAt == null,
-    );
-    if (remaining.length === 0) {
-      setDeleteArmed(false);
-      setError("cannot delete the last thread");
-      return;
-    }
     const fallback = activeThreadIds.find((threadId) => threadId !== id) ?? null;
     void client
       .dispatch({ type: "thread.delete", commandId: crypto.randomUUID(), threadId: id })
       .then(() => {
         toasts.push("thread-deleted", "info", "Thread deleted", COPY_TOAST_MS);
         closePicker("chat");
+        if (fallback === null) {
+          setCreatingModelSelection(null);
+          setCreatingRuntimeMode(null);
+          setCreatingProjectId(null);
+          setCreating(true);
+          setFocus("composer");
+        }
         setOpenThreadId(fallback);
       })
       .catch((cause: unknown) => {
@@ -179,10 +179,9 @@ export function useThreadOps(params: {
 
   /**
    * Archives the open thread (`thread.archive`), moving selection to the
-   * next thread like delete does. Refuses the last visible thread — there
-   * is no unarchive path in this UI, so stranding the view there would be
-   * unrecoverable without the desktop app. Also refuses while drafting,
-   * for the same reason as delete.
+   * next thread like delete does. Archiving the last visible thread lands in
+   * the creating view (same zero-thread path as delete). Also refuses while
+   * drafting, for the same reason as delete.
    */
   const archiveThread = () => {
     if (openThreadId === null || selected === null) {
@@ -194,19 +193,19 @@ export function useThreadOps(params: {
       return;
     }
     const id = openThreadId;
-    const remaining = shellThreads.filter(
-      (thread) => thread.id !== id && thread.archivedAt === null && thread.deletedAt == null,
-    );
-    if (remaining.length === 0) {
-      setError("cannot archive the last thread");
-      return;
-    }
     const fallback = activeThreadIds.find((threadId) => threadId !== id) ?? null;
     void client
       .dispatch({ type: "thread.archive", commandId: crypto.randomUUID(), threadId: id })
       .then(() => {
         toasts.push("thread-archived", "info", "Thread archived", COPY_TOAST_MS);
         closePicker("chat");
+        if (fallback === null) {
+          setCreatingModelSelection(null);
+          setCreatingRuntimeMode(null);
+          setCreatingProjectId(null);
+          setCreating(true);
+          setFocus("composer");
+        }
         setOpenThreadId(fallback);
       })
       .catch((cause: unknown) => setError(String(cause).slice(0, 120)));

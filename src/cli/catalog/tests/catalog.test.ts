@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { extractProviders, selectModel, selectProvider } from "../catalog.js";
+import { extractProviders, offerableModels, offerableProviders, selectModel, selectProvider } from "../catalog.js";
 
 function configFixture(settings?: unknown) {
   return {
@@ -237,6 +237,50 @@ describe("extractProviders", () => {
     expect(() => extractProviders({ providers: [{ driver: "codex" }] })).toThrowError(
       expect.objectContaining({ code: "T3_CONTRACT_CHANGED" }),
     );
+  });
+});
+
+describe("offerableProviders / offerableModels", () => {
+  it("hides disabled instances even when they still report models", () => {
+    const providers = extractProviders({
+      providers: [
+        { instanceId: "claudeAgent", driver: "claudeAgent", enabled: true, installed: true, models: [] },
+        {
+          instanceId: "grok",
+          driver: "grok",
+          enabled: false,
+          installed: true,
+          models: [{ slug: "grok-code", name: "Grok Code" }],
+        },
+      ],
+    });
+
+    expect(offerableProviders(providers).map((provider) => provider.instanceId)).toEqual(["claudeAgent"]);
+  });
+
+  it("skips hidden models but keeps the current one marked", () => {
+    const providers = extractProviders({
+      settings: { providerModelPreferences: { claudeAgent: { hiddenModels: ["claude-old"] } } },
+      providers: [
+        {
+          instanceId: "claudeAgent",
+          driver: "claudeAgent",
+          enabled: true,
+          installed: true,
+          models: [
+            { slug: "claude-opus-5", name: "Claude Opus 5" },
+            { slug: "claude-old", name: "Claude Old" },
+          ],
+        },
+      ],
+    });
+    const claude = selectProvider(providers, "claudeAgent");
+
+    expect(offerableModels(claude).map((model) => model.slug)).toEqual(["claude-opus-5"]);
+    expect(offerableModels(claude, "claude-old").map((model) => model.slug)).toEqual([
+      "claude-opus-5",
+      "claude-old",
+    ]);
   });
 });
 

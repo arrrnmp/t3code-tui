@@ -29,12 +29,96 @@ function shellWith(threads: T3Thread[]): ShellState {
 }
 
 describe("buildSidebarSections", () => {
-  it("sorts active threads by latest activity first", () => {
+  it("sorts active threads by latest user turn, not latest server touch", () => {
     const sections = buildSidebarSections(
-      shellWith([thread("old", { updatedAt: ago(3_600_000) }), thread("new", { updatedAt: ago(60_000) })]),
+      shellWith([
+        thread("old", { updatedAt: ago(5_000), latestUserMessageAt: ago(3_600_000) }),
+        thread("new", { updatedAt: ago(3_600_000), latestUserMessageAt: ago(60_000) }),
+      ]),
       { settledExpanded: false, settledLimit: 10, now: NOW },
     );
     expect(sections.active.map((row) => row.thread.id)).toEqual(["new", "old"]);
+  });
+
+  it("holds running threads on their send order through tool-call touches", () => {
+    const running = (id: string, sentAgoMs: number, touchedAgoMs: number) =>
+      thread(id, {
+        updatedAt: ago(touchedAgoMs),
+        latestUserMessageAt: ago(sentAgoMs),
+        session: {
+          threadId: id,
+          status: "running",
+          providerName: null,
+          runtimeMode: "full-access",
+          activeTurnId: `turn-${id}`,
+          lastError: null,
+          updatedAt: ago(touchedAgoMs),
+        },
+        latestTurn: {
+          turnId: `turn-${id}`,
+          state: "running",
+          requestedAt: ago(sentAgoMs),
+          startedAt: ago(sentAgoMs),
+          completedAt: null,
+          assistantMessageId: null,
+        },
+      });
+    // "first" was sent earlier but a tool call just touched it — it must not
+    // leapfrog "second".
+    const sections = buildSidebarSections(
+      shellWith([running("first", 10 * 60_000, 5_000), running("second", 5 * 60_000, 60_000)]),
+      { settledExpanded: false, settledLimit: 10, now: NOW },
+    );
+    expect(sections.active.map((row) => row.thread.id)).toEqual(["second", "first"]);
+  });
+
+  it("moves a thread up when its turn finishes", () => {
+    const running = (id: string, sentAgoMs: number) =>
+      thread(id, {
+        updatedAt: ago(5_000),
+        latestUserMessageAt: ago(sentAgoMs),
+        session: {
+          threadId: id,
+          status: "running",
+          providerName: null,
+          runtimeMode: "full-access",
+          activeTurnId: `turn-${id}`,
+          lastError: null,
+          updatedAt: ago(5_000),
+        },
+        latestTurn: {
+          turnId: `turn-${id}`,
+          state: "running",
+          requestedAt: ago(sentAgoMs),
+          startedAt: ago(sentAgoMs),
+          completedAt: null,
+          assistantMessageId: null,
+        },
+      });
+    const before = buildSidebarSections(
+      shellWith([running("first", 10 * 60_000), running("second", 5 * 60_000)]),
+      { settledExpanded: false, settledLimit: 10, now: NOW },
+    );
+    expect(before.active.map((row) => row.thread.id)).toEqual(["second", "first"]);
+
+    const finished = thread("first", {
+      updatedAt: ago(5_000),
+      latestUserMessageAt: ago(10 * 60_000),
+      latestTurn: {
+        turnId: "turn-first",
+        state: "completed",
+        requestedAt: ago(10 * 60_000),
+        startedAt: ago(10 * 60_000),
+        completedAt: ago(5_000),
+        assistantMessageId: null,
+      },
+    });
+    const after = buildSidebarSections(shellWith([finished, running("second", 5 * 60_000)]), {
+      settledExpanded: false,
+      settledLimit: 10,
+      now: NOW,
+    });
+    expect(after.active.map((row) => row.thread.id)).toEqual(["first", "second"]);
   });
 
   it("ages running threads from the turn start, not the last message", () => {

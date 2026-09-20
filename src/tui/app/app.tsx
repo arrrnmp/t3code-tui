@@ -16,6 +16,7 @@ import { AnswerPanel } from "../features/answerpanel/answerpanel.js";
 import { dispatchErrorMessage } from "../../errors.js";
 import type { ModelSelection, RuntimeMode } from "../../types.js";
 import { compatibleRuntimeMode } from "../../cli/catalog/permissions.js";
+import { offerableModels, offerableProviders } from "../../cli/catalog/catalog.js";
 import {
   attachmentFromBytes,
   buildImageAttachments,
@@ -28,6 +29,8 @@ import { formatContextUsage, formatTokenCount, groupTurns } from "../model/turns
 import { markModalDismissed } from "../model/modalDismiss.js";
 import { Sidebar } from "../features/sidebar/sidebar.js";
 import { MonitoringBackdrop } from "../ui/backdrop.js";
+import { LoadingScreen } from "../ui/loadingscreen.js";
+import { bootLoadingStage, isBootReady } from "../model/readiness.js";
 import { HoverButton } from "../ui/hoverbutton.js";
 import { openExternal } from "../../cli/infra/platformOpen.js";
 import { formatDuration } from "../model/turns.js";
@@ -287,6 +290,13 @@ export function App({
     () => shell.threads.find((thread) => thread.id === openThreadId) ?? null,
     [shell.threads, openThreadId],
   );
+  /**
+   * Boot gate: the app chrome stays hidden behind `<LoadingScreen>` until the
+   * shell snapshot (thread list) and the picked thread's own snapshot have
+   * both landed. Declared up here so the keyboard handler below can swallow
+   * app bindings while booting — only the ctrl+c quit flow stays live.
+   */
+  const bootReady = isBootReady(shell, openThreadId, threadState);
   /** The model selection every picker/footer reads: while drafting a new
       thread this is the local override (once picked) or the source thread's
       own model, never a dispatch target. */
@@ -597,6 +607,12 @@ export function App({
     }
     // While `$EDITOR` owns the terminal the TUI must not act on keys.
     if (editingExternallyRef.current) {
+      return;
+    }
+    // Boot gate: no app bindings until the first snapshots land — the chrome
+    // they act on isn't mounted yet. Ctrl+C still falls through to the quit
+    // flow below so a stalled boot can always exit.
+    if (!bootReady && !(key.name === "c" && key.ctrl)) {
       return;
     }
     // Alt+E opens the draft externally. `meta` is Alt; ctrl+E stays free for
@@ -960,10 +976,6 @@ export function App({
                 label: "New thread",
                 ...(selected === null ? {} : { meta: projectTitle }),
                 onPick: () => {
-                  if (selected === null) {
-                    setError("no open thread to start from");
-                    return;
-                  }
                   startNewThread();
                   closePicker("composer");
                 },
@@ -972,10 +984,6 @@ export function App({
                 key: "thread:new-project",
                 label: "New thread in project…",
                 onPick: () => {
-                  if (selected === null) {
-                    setError("no open thread to start from");
-                    return;
-                  }
                   if (!creating) {
                     setCreatingModelSelection(null);
                     setCreatingRuntimeMode(null);
@@ -1146,15 +1154,26 @@ export function App({
     }
     const current = effectiveModelSelection;
     // A thread that hasn't started yet has no provider to lock to — offer
-    // every provider, grouped into sections so browsing them stays sane.
+    // every *enabled* provider, grouped into sections so browsing them stays
+    // sane. Disabled instances still report their models over getConfig, but
+    // selecting them fails, so they are hidden (same as the desktop picker).
+    // Hidden models (`providerModelPreferences`) are skipped except the
+    // current one, which stays marked so a since-hidden selection still reads.
     if (creating) {
       return {
         kind: "list",
-        sections: providers
-          .filter((provider) => provider.models.length > 0)
+        sections: offerableProviders(providers)
           .map((provider) => ({
+            provider,
+            models: offerableModels(
+              provider,
+              provider.instanceId === current?.instanceId ? current?.model : undefined,
+            ),
+          }))
+          .filter(({ models }) => models.length > 0)
+          .map(({ provider, models }) => ({
             header: provider.displayName ?? provider.instanceId,
-            rows: provider.models.map((model) => ({
+            rows: models.map((model) => ({
               key: `${provider.instanceId}:${model.slug}`,
               label: model.name,
               selected: current?.instanceId === provider.instanceId && current?.model === model.slug,
@@ -1164,13 +1183,16 @@ export function App({
       };
     }
     // An open thread already has a live session on one provider — there is
-    // no in-picker provider switch, so only that provider's models are offered.
+    // no in-picker provider switch, so only that provider's models are offered
+    // (even when the instance has since been disabled — the thread is already
+    // on it). Hidden models are skipped except the current one.
     const provider = providers.find((candidate) => candidate.instanceId === current?.instanceId);
+    const offered = provider === undefined ? [] : offerableModels(provider, current?.model);
     return {
       kind: "list",
       sections: [
         {
-          rows: (provider?.models ?? []).map((model) => ({
+          rows: offered.map((model) => ({
             key: `${provider?.instanceId}:${model.slug}`,
             label: model.name,
             selected: current?.model === model.slug,
@@ -1242,6 +1264,12 @@ export function App({
   };
   const escapeComposer = () => {
     if (creating) {
+      // Zero-thread workspace: there is no transcript to cancel back to,
+      // so esc stays in the creating view instead of stranding the UI.
+      if (selected === null) {
+        setFocus("chat");
+        return;
+      }
       setCreating(false);
       setCreatingModelSelection(null);
       setCreatingRuntimeMode(null);
@@ -1301,6 +1329,11 @@ export function App({
 
   return (
     <box style={{ flexDirection: "column", flexGrow: 1, backgroundColor: SURFACE.base }}>
+      {/* Boot gate: sidebar + transcript stay hidden until both snapshots
+          land — an empty shell is otherwise indistinguishable from "no
+          threads". Toasts, the quit confirm, and pickers below stay mounted
+          so boot errors and ctrl+c still surface over the loading screen. */}
+      {bootReady ? (
       <box style={{ flexDirection: "row", flexGrow: 1 }}>
         <Sidebar
           sections={sections}
@@ -1408,6 +1441,10 @@ export function App({
           </box>
         ) : (
         <box style={{ flexDirection: "column", flexGrow: 1, paddingLeft: CHAT_GUTTER, paddingRight: CHAT_GUTTER }}>
+          {/* Post-boot thread switches (and resyncs) reset `threadState`
+              before the new snapshot lands — hold a loading row instead of
+              flashing an empty transcript that reads as "no messages". */}
+          {threadState.synchronized ? (
           <Timeline
             groups={groups}
             title={selected === null ? "no thread" : String(selected.title ?? selected.id)}
@@ -1431,6 +1468,11 @@ export function App({
             now={now}
             turnStartedAt={selected?.latestTurn?.startedAt ?? selected?.latestTurn?.requestedAt ?? null}
           />
+          ) : (
+            <box style={{ flexDirection: "column", flexGrow: 1, alignItems: "center", justifyContent: "center" }}>
+              <text fg={COLOR.dim} selectable={false}>{"loading transcript…"}</text>
+            </box>
+          )}
           {/* One blank row between each visible bottom block: every block
               below carries marginTop 1 and nothing else adds gaps. */}
           {tasksVisibleNow && plan !== null ? <TasksPanel plan={plan} width={chatWidth} /> : null}
@@ -1527,6 +1569,9 @@ export function App({
           />
         )}
       </box>
+      ) : (
+        <LoadingScreen stage={bootLoadingStage(shell)} />
+      )}
       {contextCardOpen && contextUsageDisplay !== null && threadState.contextUsage !== null ? (
         <ContextUsageCard
           usage={threadState.contextUsage}

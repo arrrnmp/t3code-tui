@@ -20,6 +20,10 @@ function thread(
     archivedAt: null,
     branch: "main",
     updatedAt: ago(ageMs),
+    // The sidebar orders on the user-turn time, so the mock carries it like
+    // the server does — pinned to the same age keeps every existing frame's
+    // order untouched.
+    latestUserMessageAt: ago(ageMs),
     modelSelection: { instanceId: "claudeAgent", model: "claude-opus-5" },
     session: { status: "idle", lastError: null },
     ...extra,
@@ -477,6 +481,10 @@ const threadFrames = [
       },
     },
   },
+  // The real server closes the replay with a completion marker (requested via
+  // `requestCompletionMarker`) — the boot gate waits on it, so the mock must
+  // send it too or the harness would sit on the loading screen forever.
+  { kind: "synchronized" },
 ];
 
 /**
@@ -485,6 +493,18 @@ const threadFrames = [
  * question arriving long after mount) without polluting earlier frames.
  */
 export const emitLiveRef: { current: ((item: unknown) => void) | null } = { current: null };
+
+/**
+ * Same on-demand injection for shell frames (thread rows): lets a scenario
+ * push a tool-call touch or a turn completion mid-run and assert the sidebar
+ * order holds or moves, respectively.
+ */
+export const emitShellRef: { current: ((item: unknown) => void) | null } = { current: null };
+
+/** Frozen copy of the opening shell snapshot, for restoring rows a scenario rewrote. */
+export function originalShellSnapshot(): unknown {
+  return structuredClone(shellFrames[0]);
+}
 
 /** A `user-input.requested` activity frame for the answer-flow steps. */
 export function userInputRequestedFrame(requestId: string): unknown {
@@ -524,7 +544,10 @@ export function userInputRequestedFrame(requestId: string): unknown {
 export const client: TuiClient = {
   subscribeShell(_options, onItem) {
     for (const frame of shellFrames) onItem(frame);
-    return () => {};
+    emitShellRef.current = (item: unknown) => onItem(item);
+    return () => {
+      emitShellRef.current = null;
+    };
   },
   subscribeThread(threadId, _options, onItem) {
     // Any thread but the running one reports an idle session, so the
@@ -534,13 +557,14 @@ export const client: TuiClient = {
       threadId === "t-now"
         ? threadFrames
         : threadFrames.map((frame) => {
-            if (frame.kind !== "snapshot") return frame;
+            if (frame.kind !== "snapshot" || !("snapshot" in frame)) return frame;
+            const snapshot = frame.snapshot as { thread: Record<string, unknown> };
             return {
               ...frame,
               snapshot: {
-                ...frame.snapshot,
+                ...snapshot,
                 thread: {
-                  ...frame.snapshot.thread,
+                  ...snapshot.thread,
                   session: { threadId, status: "idle", lastError: null },
                 },
               },
@@ -557,6 +581,9 @@ export const client: TuiClient = {
   },
   async getConfig() {
     return {
+      // Hidden-model preference: `claude-old` stays dispatchable but must
+      // not be offered by the picker (same source as the desktop picker).
+      settings: { providerModelPreferences: { claudeAgent: { hiddenModels: ["claude-old"] } } },
       providers: [
         {
           instanceId: "claudeAgent",
@@ -566,7 +593,10 @@ export const client: TuiClient = {
           installed: true,
           status: "ready",
           auth: { status: "authenticated" },
-          models: [{ slug: "claude-opus-5", name: "Claude Opus 5", isCustom: false, isDefault: true }],
+          models: [
+            { slug: "claude-opus-5", name: "Claude Opus 5", isCustom: false, isDefault: true },
+            { slug: "claude-old", name: "Claude Old", isCustom: false },
+          ],
           skills: [
             // A long description that would crowd out a short name if the
             // row ever budgeted width to the description first.
@@ -580,6 +610,20 @@ export const client: TuiClient = {
             { name: "xlsx", shortDescription: "Spreadsheet tools.", enabled: true },
             { name: "agent-only-skill", enabled: true, userInvocable: false },
           ],
+        },
+        // Disabled instance that still reports models over getConfig (the
+        // fresh-install case from the issue): the picker must hide it, since
+        // selecting it fails.
+        {
+          instanceId: "grok",
+          driver: "grok",
+          displayName: "Grok",
+          enabled: false,
+          installed: true,
+          status: "disabled",
+          auth: { status: "unauthenticated" },
+          models: [{ slug: "grok-code", name: "Grok Code", isCustom: false }],
+          skills: [],
         },
       ],
     };

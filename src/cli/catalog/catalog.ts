@@ -264,6 +264,26 @@ export function extractProviders(response: unknown): ProviderSummary[] {
   return providers.map((provider) => extractProvider(provider, root?.settings));
 }
 
+/**
+ * Providers the model picker may offer: only `enabled` instances. A disabled
+ * provider still lists its models over `server.getConfig` (same as the CLI's
+ * `models list`), but selecting it fails — offering it would show Claude/Grok
+ * rows on a fresh install where they were never enabled.
+ */
+export function offerableProviders(providers: readonly ProviderSummary[]): ProviderSummary[] {
+  return providers.filter((provider) => provider.enabled === true);
+}
+
+/**
+ * Models the picker may offer on one provider: everything except the user's
+ * hidden (`providerModelPreferences.hiddenModels`) slugs. The currently
+ * selected slug stays visible even when hidden so a thread on a since-hidden
+ * model still shows its row marked.
+ */
+export function offerableModels(provider: ProviderSummary, currentSlug?: string): ModelSummary[] {
+  return provider.models.filter((model) => !model.isHidden || model.slug === currentSlug);
+}
+
 export function selectProvider(providers: readonly ProviderSummary[], instanceId: string): ProviderSummary {
   const found = providers.find((provider) => provider.instanceId === instanceId);
   if (!found) {

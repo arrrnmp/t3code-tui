@@ -65,6 +65,30 @@ export function applyShellFrame(state: ShellState, frame: unknown): ShellState {
 export type ThreadStatus = "active" | "running" | "settled" | "snoozed" | "blocked";
 
 /**
+ * Stable sidebar ordering key: when the latest user turn was sent (or when
+ * the latest turn finished). Deliberately ignores `updatedAt`, which the
+ * server bumps on every tool call — sorting on it makes concurrent running
+ * threads leapfrog each other for the top slot on each streamed chunk.
+ * While a turn is in flight the order stays pinned to the user's send time;
+ * once the turn reaches a terminal state its completion bumps the thread up.
+ */
+export function threadSortTime(thread: T3Thread): number {
+  const turn = thread.latestTurn;
+  const candidates = [thread.latestUserMessageAt, turn?.requestedAt];
+  if (turn !== undefined && turn !== null && turn.state !== "running" && turn.completedAt !== null) {
+    candidates.push(turn.completedAt);
+  }
+  candidates.push(thread.createdAt);
+  let latest = 0;
+  for (const candidate of candidates) {
+    if (typeof candidate !== "string") continue;
+    const value = Date.parse(candidate);
+    if (!Number.isNaN(value) && value > latest) latest = value;
+  }
+  return latest;
+}
+
+/**
  * Sticky settlement: the server may project `settledAt` without
  * `settledOverride` (or a stale override in either direction), so both are
  * consulted. An explicit `unsettledAt` later than `settledAt` — or an
@@ -100,6 +124,6 @@ export function visibleThreads(state: ShellState): T3Thread[] {
     .sort((left, right) => {
       const byStatus = rank[threadStatus(left, now)] - rank[threadStatus(right, now)];
       if (byStatus !== 0) return byStatus;
-      return String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? ""));
+      return threadSortTime(right) - threadSortTime(left);
     });
 }
