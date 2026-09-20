@@ -5,7 +5,8 @@ import { describe, expect, it } from "vitest";
 import { CliError } from "../../errors.js";
 import { discoverRuntime } from "../../cli/infra/runtime.js";
 import { testHarness } from "../../cli/testing/harness.js";
-import { createBackend, T3Backend } from "../t3.js";
+import { createBackend } from "../backend.js";
+import { T3Backend } from "../t3.js";
 
 async function seededBackend() {
   const harness = await testHarness();
@@ -57,12 +58,21 @@ describe("T3Backend facade", () => {
     expect((error as CliError).code).toBe("THREAD_NOT_FOUND");
   });
 
-  it("creates the t3 backend from the factory and rejects unknown kinds", async () => {
+  it("creates backends from the factory and rejects unknown kinds", async () => {
     const harness = await testHarness();
     const runtime = await discoverRuntime(harness.config, { startDesktopIfNeeded: false });
     expect(createBackend("t3", runtime, harness.config)).toBeInstanceOf(T3Backend);
     expect(() =>
-      createBackend("direct" as never, runtime, harness.config),
+      createBackend("cursor" as never, runtime, harness.config),
     ).toThrowError(CliError);
+  });
+
+  it("sends a turn through the T3 server with message-id verification", async () => {
+    const { harness, backend } = await seededBackend();
+    const sent = await backend.send("thread-existing", { prompt: "Hello direct" });
+    expect(sent.threadId).toBe("thread-existing");
+    expect(sent.delivery).toBe("started");
+    expect(sent.messageId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(harness.commands.map((command) => command.type)).toEqual(["thread.turn.start"]);
   });
 });

@@ -6,7 +6,6 @@
  * introduces the seam that direct provider backends will plug into.
  * See DECOUPLE.md §15.1.
  */
-import { CliError } from "../errors.js";
 import type { CliConfig, T3Runtime } from "../types.js";
 import { T3Api, withT3Api } from "../cli/infra/api.js";
 import { T3ThreadApi } from "../cli/threads/threadApi.js";
@@ -14,6 +13,8 @@ import type {
   Backend,
   BackendCatalog,
   BackendKind,
+  BackendSendInput,
+  BackendSendResult,
   BackendThreadDetail,
 } from "./backend.js";
 
@@ -40,15 +41,23 @@ export class T3Backend implements Backend {
       return await this.threadApi(api).inspect(threadId);
     });
   }
-}
 
-export function createBackend(
-  kind: BackendKind,
-  runtime: T3Runtime,
-  config: CliConfig,
-): Backend {
-  if (kind === "t3") return new T3Backend(runtime, config);
-  throw new CliError("BACKEND_UNKNOWN", `Unknown backend kind: ${String(kind)}.`, {
-    details: { kind },
-  });
+  /**
+   * Dispatch-then-verify, exactly the atomic part of the T3 send flow.
+   * Busy/settled preflights stay in the CLI layer until cutover (they were
+   * never atomic server-side anyway).
+   */
+  async send(threadId: string, input: BackendSendInput): Promise<BackendSendResult> {
+    return await withT3Api(this.runtime, this.config, async (api) => {
+      const adapter = this.threadApi(api);
+      const inspected = await adapter.inspect(threadId);
+      const command = adapter.buildTurnStart(inspected.thread, input.prompt);
+      const sent = await adapter.dispatchTurn(command);
+      return {
+        threadId,
+        messageId: sent.verification.messageId,
+        delivery: "started" as const,
+      };
+    });
+  }
 }
