@@ -61,11 +61,13 @@ export class FakeOpencodeServerConnection implements OpencodeServerConnection {
   async promptAsync(input: {
     sessionID: string;
     model?: { providerID: string; modelID: string };
+    messageID?: string;
     parts: ReadonlyArray<OpencodeTextPart>;
   }): Promise<{ messageID: string }> {
     this.failChecked("session.promptAsync");
     this.calls.push({ method: "session.promptAsync", args: input });
-    return { messageID: "opencode-message-1" };
+    // Like the real 204 endpoint, the id is caller-assigned.
+    return { messageID: input.messageID ?? "opencode-message-1" };
   }
 
   async abortSession(sessionID: string): Promise<void> {

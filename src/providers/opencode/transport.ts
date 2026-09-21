@@ -11,6 +11,7 @@
  * servers, version gate before use.
  */
 import { spawn, type ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import net from "node:net";
 
 import { createOpencodeClient } from "@opencode-ai/sdk/v2";
@@ -53,6 +54,7 @@ export interface OpencodeServerConnection {
   promptAsync(input: {
     sessionID: string;
     model?: { providerID: string; modelID: string };
+    messageID?: string;
     parts: ReadonlyArray<OpencodeTextPart>;
   }): Promise<{ messageID: string }>;
   abortSession(sessionID: string): Promise<void>;
@@ -156,21 +158,22 @@ class LiveOpencodeServerConnection implements OpencodeServerConnection {
   async promptAsync(input: {
     sessionID: string;
     model?: { providerID: string; modelID: string };
+    messageID?: string;
     parts: ReadonlyArray<OpencodeTextPart>;
   }): Promise<{ messageID: string }> {
-    const data = unwrap(
+    // promptAsync answers 204 with an empty body ("Prompt accepted") —
+    // the message id is caller-assigned, passed in and echoed back.
+    const messageID = input.messageID ?? randomUUID();
+    unwrap(
       await this.client.session.promptAsync({
         sessionID: input.sessionID,
+        messageID,
         ...(input.model ? { model: input.model } : {}),
         parts: input.parts.map((part) => ({ type: "text" as const, text: part.text })),
       }),
       "session.promptAsync",
     );
-    const id = asRecord(data)?.id ?? asRecord(data)?.messageID;
-    if (typeof id !== "string" || id.length === 0) {
-      throw new CliError("OPENCODE_REQUEST_FAILED", "OpenCode session.promptAsync did not return a message id.", {});
-    }
-    return { messageID: id };
+    return { messageID };
   }
 
   async abortSession(sessionID: string): Promise<void> {
