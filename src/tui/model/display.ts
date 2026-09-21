@@ -88,3 +88,22 @@ export function displayEffort(
   const preferred = strings.find((option) => /effort|reasoning|thinking/i.test(option.id)) ?? strings[0];
   return preferred === undefined ? null : preferred.value;
 }
+
+/**
+ * Knob label shown when the model has effort descriptors but nothing is
+ * picked yet (no explicit option, no catalog default): the first
+ * descriptor's label (e.g. `Effort`). Keeps the footer chip — the only
+ * affordance that opens the effort picker — visible instead of hiding
+ * the knob entirely. Null when the model has no descriptors.
+ */
+export function effortPlaceholder(
+  providers: readonly ProviderSummary[] | null,
+  selection: ModelSelection | undefined,
+): string | null {
+  if (selection === undefined) return null;
+  const model = providers
+    ?.find((provider) => provider.instanceId === selection.instanceId)
+    ?.models.find((candidate) => candidate.slug === selection.model);
+  const descriptor = model?.efforts.find((effort) => effort.choices.length > 0) ?? null;
+  return descriptor?.label ?? null;
+}

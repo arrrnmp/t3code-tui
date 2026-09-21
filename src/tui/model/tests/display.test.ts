@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { ProviderSummary } from "../../../cli/catalog/catalog.js";
-import { displayEffort, displayModelName, isTerminalTooSmall, prettifyModelSlug } from "../display.js";
+import { displayEffort, displayModelName, effortPlaceholder, isTerminalTooSmall, prettifyModelSlug } from "../display.js";
 
 function providers(): ProviderSummary[] {
   return [
@@ -145,6 +145,50 @@ describe("displayEffort", () => {
 
   it("falls back to the isDefault choice when currentValue is null (Claude's driver)", () => {
     expect(displayEffort(providers(), { instanceId: "claudeAgent", model: "claude-opus-5" })).toBe("High");
+  });
+});
+
+describe("effortPlaceholder", () => {
+  it("returns the knob label when descriptors exist but nothing is picked", () => {
+    const unset: ProviderSummary[] = [
+      {
+        ...providers()[0]!,
+        models: [
+          {
+            ...providers()[0]!.models[0]!,
+            efforts: [
+              {
+                id: "effort",
+                label: "Effort",
+                choices: [{ id: "low", label: "Low", isDefault: null }],
+                currentValue: null,
+              },
+            ],
+          },
+        ],
+      },
+    ];
+    expect(
+      effortPlaceholder(unset, { instanceId: "opencode", model: "opencode/muse-spark-1.3-contributor-free" }),
+    ).toBe("Effort");
+    // Models.dev entries carry no defaults, so the footer would hide the
+    // knob entirely without the placeholder.
+    expect(
+      displayEffort(unset, { instanceId: "opencode", model: "opencode/muse-spark-1.3-contributor-free" }),
+    ).toBeNull();
+  });
+
+  it("returns null without descriptors or selection", () => {
+    const noEffortProviders: ProviderSummary[] = [
+      {
+        ...providers()[0]!,
+        models: [{ ...providers()[0]!.models[0]!, efforts: [] }],
+      },
+    ];
+    expect(
+      effortPlaceholder(noEffortProviders, { instanceId: "opencode", model: "opencode/muse-spark-1.3-contributor-free" }),
+    ).toBeNull();
+    expect(effortPlaceholder(providers(), undefined)).toBeNull();
   });
 });
 

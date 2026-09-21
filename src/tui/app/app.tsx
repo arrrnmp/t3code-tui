@@ -793,6 +793,7 @@ export function App({
     providersError,
     model,
     effort,
+    effortPlaceholder,
     permission,
     permissionChoices,
     currentSkills,
@@ -1430,7 +1431,7 @@ export function App({
                 placeholder={composerPlaceholder}
                 model={model}
                 modelColor={modelColor}
-                effort={effort}
+                effort={effort ?? effortPlaceholder}
                 permission={permission}
                 flushTop={pending.length > 0}
                 submitVerb="creates"
@@ -1547,7 +1548,7 @@ export function App({
             placeholder={composerPlaceholder}
             model={model}
             modelColor={modelColor}
-            effort={effort}
+            effort={effort ?? effortPlaceholder}
             permission={permission}
             flushTop={pending.length > 0}
             submitVerb="sends"

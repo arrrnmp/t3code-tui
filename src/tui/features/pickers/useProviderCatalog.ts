@@ -7,7 +7,7 @@ import {
   runtimeModeChoicesForProvider,
 } from "../../../cli/catalog/permissions.js";
 import type { ModelSelection, ProviderOptionSelection, RuntimeMode } from "../../../types.js";
-import { displayEffort, displayModelName } from "../../model/display.js";
+import { displayEffort, displayModelName, effortPlaceholder } from "../../model/display.js";
 import { providerColor } from "../../theme.js";
 import type { TuiClient } from "../../app/app.js";
 import type { PickerName } from "./pickerTypes.js";
@@ -209,6 +209,8 @@ export function useProviderCatalog(params: {
   // composer footer. The timeline subtitle and status bar carry status only.
   const model = displayModelName(providers, effectiveModelSelection);
   const effort = displayEffort(providers, effectiveModelSelection);
+  const effortPlaceholderLabel =
+    effort === null ? effortPlaceholder(providers, effectiveModelSelection) : null;
 
   /** The open thread's own provider — undefined until the catalog has
       loaded at least once. Backs both the `$` skill picker and the
@@ -237,6 +239,7 @@ export function useProviderCatalog(params: {
     providersError,
     model,
     effort,
+    effortPlaceholder: effortPlaceholderLabel,
     permission,
     permissionChoices,
     currentSkills,
