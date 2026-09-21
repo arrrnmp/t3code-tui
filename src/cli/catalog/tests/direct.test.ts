@@ -46,20 +46,34 @@ describe("buildDirectProviders", () => {
       env: { PATH: "/nonexistent" },
       modelsDev: async () => MODELS_DEV,
     });
-    for (const instanceId of ["claude", "codex", "grok"]) {
+    for (const instanceId of ["claudeAgent", "codex", "grok"]) {
       const provider = providers.find((entry) => entry.instanceId === instanceId);
       expect(provider?.installed).toBe(false);
       expect(provider?.enabled).toBe(false);
       expect(provider?.status).toBe("not installed");
-      expect(provider?.models).toEqual([]);
     }
+    expect(providers.find((entry) => entry.instanceId === "codex")?.models).toEqual([]);
     const anthropic = providers.find((entry) => entry.instanceId === "opencode/anthropic");
     expect(anthropic?.installed).toBe(false);
+    expect(anthropic?.enabled).toBe(false);
     expect(anthropic?.models.map((model) => model.slug)).toEqual([
       "anthropic/claude-opus-4-6",
       "anthropic/plain",
     ]);
     expect(anthropic?.status).toBe("not installed");
+  });
+
+  it("lists pinned claude models with effort descriptors", async () => {
+    const dir = binDir(["claude"]);
+    const providers = await buildDirectProviders({
+      env: { PATH: dir },
+      modelsDev: async () => ({ catalog: [], source: "live" }),
+    });
+    const claude = providers.find((entry) => entry.instanceId === "claudeAgent");
+    expect(claude?.enabled).toBe(true);
+    expect(claude?.models.length).toBeGreaterThan(0);
+    const opus = claude?.models.find((model) => model.slug === "claude-opus-4-6");
+    expect(opus?.efforts.map((effort) => effort.id)).toContain("effort");
   });
 
   it("lists native models live and attaches codex efforts", async () => {
@@ -94,12 +108,13 @@ describe("buildDirectProviders", () => {
     const codex = providers.find((entry) => entry.instanceId === "codex");
     expect(codex?.models).toEqual([]);
     expect(codex?.authStatus).toBe("unauthenticated");
+    expect(codex?.enabled).toBe(false);
     expect(codex?.status).toContain("codex login");
     expect(providers.find((entry) => entry.instanceId === "grok")?.models.length).toBe(1);
   });
 
-  it("reports stored oauth and env api-key auth on opencode entries", async () => {
-    const providers = await buildDirectProviders({
+  it("enables only opencode entries with a credential", async () => {
+    const live = await buildDirectProviders({
       env: {
         PATH: binDir(["opencode"]),
         ANTHROPIC_API_KEY: "k",
@@ -107,18 +122,30 @@ describe("buildDirectProviders", () => {
       },
       modelsDev: async () => MODELS_DEV,
     });
-    const anthropic = providers.find((entry) => entry.instanceId === "opencode/anthropic");
+    const anthropic = live.find((entry) => entry.instanceId === "opencode/anthropic");
     expect(anthropic?.installed).toBe(true);
+    expect(anthropic?.enabled).toBe(true);
     expect(anthropic?.status).toBe("models.dev snapshot");
     expect(anthropic?.authStatus).toBe("oauth");
     expect(anthropic?.models[0]?.efforts[0]?.choices.map((choice) => choice.id)).toEqual(["low", "high"]);
     expect(anthropic?.models[1]?.efforts).toEqual([]);
 
     const keyed = await buildDirectProviders({
-      env: { PATH: "/nonexistent", ANTHROPIC_API_KEY: "k" },
+      env: { PATH: binDir(["opencode"]), ANTHROPIC_API_KEY: "k" },
       modelsDev: async () => MODELS_DEV,
     });
-    expect(keyed.find((entry) => entry.instanceId === "opencode/anthropic")?.authStatus).toBe("api-key");
+    const keyedAnthropic = keyed.find((entry) => entry.instanceId === "opencode/anthropic");
+    expect(keyedAnthropic?.authStatus).toBe("api-key");
+    expect(keyedAnthropic?.enabled).toBe(true);
+
+    const bare = await buildDirectProviders({
+      env: { PATH: binDir(["opencode"]) },
+      modelsDev: async () => MODELS_DEV,
+    });
+    const bareAnthropic = bare.find((entry) => entry.instanceId === "opencode/anthropic");
+    expect(bareAnthropic?.authStatus).toBeNull();
+    expect(bareAnthropic?.enabled).toBe(false);
+    expect(bareAnthropic?.status).toBe("not configured");
   });
 
   it("keeps selectProvider/selectModel error codes on direct output", async () => {

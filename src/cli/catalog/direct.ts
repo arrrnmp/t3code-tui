@@ -24,6 +24,7 @@ import * as Effect from "effect/Effect";
 
 import { CodexDriver, type CodexListedModel } from "../../providers/codex/driver.js";
 import { GrokDriver } from "../../providers/grok/driver.js";
+import { claudeCatalogModels } from "../../providers/claude/catalog.js";
 import {
   effortValuesOf,
   loadModelsDevCatalog,
@@ -171,6 +172,7 @@ async function listNative(
     const authFailure = /not logged in|unauthorized|401|auth|login/i.test(message);
     return {
       ...base,
+      enabled: authFailure ? false : installed,
       authStatus: authFailure ? "unauthenticated" : null,
       status: message,
     };
@@ -206,16 +208,25 @@ function opencodeProviders(
   const stored = readStoredAuthTypes(env);
   return loaded.catalog.map((provider: ModelsDevProvider) => {
     const keyEnvs = presentApiKeyEnvs(provider, env);
+    const credential = storedAuthStatus(provider.id, stored) ?? (keyEnvs.length > 0 ? "api-key" : null);
+    // The picker only offers usable providers: an opencode entry without
+    // any credential (no stored OAuth, no env key) is listed but disabled.
+    // `providers list` still shows all 200+ for discovery.
+    const enabled = installed && credential !== null;
     return {
       instanceId: `opencode/${provider.id}`,
       driver: "opencode",
       displayName: provider.name,
-      enabled: installed,
+      enabled,
       installed,
-      status: installed
-        ? (loaded.source === "live" ? null : `models.dev ${loaded.source}`)
-        : "not installed",
-      authStatus: storedAuthStatus(provider.id, stored) ?? (keyEnvs.length > 0 ? "api-key" : null),
+      status: !installed
+        ? "not installed"
+        : !enabled
+          ? "not configured"
+          : loaded.source === "live"
+            ? null
+            : `models.dev ${loaded.source}`,
+      authStatus: credential,
       models: provider.models.map((model) => ({
         ...baseModel(model.id, model.name),
         efforts: opencodeEfforts(model),
@@ -235,24 +246,41 @@ function opencodeProviders(
 export async function buildDirectProviders(options: DirectCatalogOptions = {}): Promise<ProviderSummary[]> {  const env = options.env ?? process.env;
   const opencodeInstalled = binaryOnPath("opencode", env);
 
-  const [claude, codex, grok, modelsDev] = await Promise.all([
-    Promise.resolve<ProviderSummary>({
-      instanceId: "claude",
-      driver: "claude",
-      displayName: "Claude Code",
-      enabled: binaryOnPath("claude", env),
-      installed: binaryOnPath("claude", env),
-      status: binaryOnPath("claude", env) ? null : "not installed",
-      authStatus: null,
-      models: [],
-      supportedRuntimeModes: null,
-      usageLimits: null,
-      skills: [],
-    }),
+  const [claudeInstalled, codex, grok, modelsDev] = await Promise.all([
+    Promise.resolve(binaryOnPath("claude", env)),
     listNative("codex", "Codex", "codex", options, env, (model, reasoningEfforts) => ({ ...model, efforts: codexEfforts(reasoningEfforts) })),
     listNative("grok", "Grok", "grok", options, env, (model) => model),
     (options.modelsDev ?? loadModelsDevCatalog)().catch((): LoadedModelsDevCatalog => ({ catalog: [], source: "empty" })),
   ]);
+
+  // Claude has no list API; the pinned manifest is the catalog. The
+  // instance id matches T3's (`claudeAgent`) so migrated threads and the
+  // manifest's provider key resolve without translation.
+  const claude: ProviderSummary = {
+    instanceId: "claudeAgent",
+    driver: "claude",
+    displayName: "Claude Code",
+    enabled: claudeInstalled,
+    installed: claudeInstalled,
+    status: claudeInstalled ? null : "not installed",
+    authStatus: null,
+    models: claudeCatalogModels().map((model) => ({
+      slug: model.slug,
+      name: model.name,
+      isCustom: false,
+      isDefault: model.isDefault,
+      isHidden: false,
+      efforts: model.efforts.map((effort) => ({
+        id: effort.id,
+        label: effort.label,
+        choices: effort.choices.map((choice) => ({ id: choice.id, label: choice.label, isDefault: choice.isDefault })),
+        currentValue: effort.currentValue,
+      })),
+    })),
+    supportedRuntimeModes: null,
+    usageLimits: null,
+    skills: [],
+  };
 
   return [claude, codex, grok, ...opencodeProviders(modelsDev, env, opencodeInstalled)];
 }

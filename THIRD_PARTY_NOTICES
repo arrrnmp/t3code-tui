@@ -60,6 +60,22 @@ stays AGPL-3.0-only. Never relicense vendored files; never strip notices.
 - Upstream MIT license: copyright (c) 2025 opencode; permission text is
   the standard MIT text quoted at the bottom of this file.
 
+### 3. T3 bundled model manifest (data) — MIT, (c) 2026 T3 Tools Inc.
+
+- Upstream: `t3code` (local `upstream/` reference),
+  `apps/server/src/provider/model-manifest.json` at the pinned checkout
+  (manifest `updatedAt: 2026-09-12T00:41:55Z`).
+- Vendored as: `src/providers/claude/claude-manifest.json`, byte-identical.
+- Only the `claudeAgent` provider's models are read (slugs, names, chat
+  default, select-type option descriptors from profile capabilities);
+  the `antigravity` provider is ignored — that surface was dropped in
+  DECOUPLE.md §7. Parsed defensively in
+  `src/providers/claude/catalog.ts` (own code); the Agent SDK exposes no
+  model-listing API, so without this pin the Claude catalog entry would
+  carry zero models.
+- Upstream MIT license: copyright (c) 2026 T3 Tools Inc.; permission text
+  is the standard MIT text quoted at the bottom of this file.
+
 ---
 
 Standard MIT license text (applies to entries above once vendoring lands;
