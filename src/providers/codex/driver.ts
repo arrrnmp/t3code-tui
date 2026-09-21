@@ -418,7 +418,7 @@ export class CodexDriver implements ProviderAdapter<CliError> {
         }
         return null;
       };
-      const effort = optionValue(["reasoningEffort", "effort"]);
+      const effort = optionValue(["reasoningEffort", "effort"]) ?? "medium";
       const serviceTier = optionValue(["serviceTier", "tier"]);
       const turn: TranscriptTurn = {
         id: randomUUID(),

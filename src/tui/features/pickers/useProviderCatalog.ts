@@ -7,7 +7,7 @@ import {
   runtimeModeChoicesForProvider,
 } from "../../../cli/catalog/permissions.js";
 import type { ModelSelection, ProviderOptionSelection, RuntimeMode } from "../../../types.js";
-import { displayEffort, displayModelName, effortPlaceholder } from "../../model/display.js";
+import { defaultEffortChoice, displayEffort, displayModelName, isEffortDescriptor } from "../../model/display.js";
 import { providerColor } from "../../theme.js";
 import type { TuiClient } from "../../app/app.js";
 import type { PickerName } from "./pickerTypes.js";
@@ -149,10 +149,21 @@ export function useProviderCatalog(params: {
         typeof option.value === "boolean" ||
         catalogModel?.efforts.some((effort) => effort.id === option.id) === true,
     );
+    // Enforced effort default: effort knobs missing from the kept options
+    // land on the descriptor default, so sends carry a real value and the
+    // footer never reads blank. Non-effort descriptors stay unset.
+    const defaults: ProviderOptionSelection[] = [];
+    for (const descriptor of catalogModel?.efforts ?? []) {
+      if (!isEffortDescriptor(descriptor.id)) continue;
+      if (kept.some((option) => option.id === descriptor.id)) continue;
+      const value = defaultEffortChoice(descriptor);
+      if (value !== null) defaults.push({ id: descriptor.id, value });
+    }
+    const options = [...kept, ...defaults];
     setThreadModel({
       instanceId: choice.instanceId,
       model: choice.model,
-      ...(kept.length > 0 ? { options: kept } : {}),
+      ...(options.length > 0 ? { options } : {}),
     });
   };
 
@@ -209,8 +220,6 @@ export function useProviderCatalog(params: {
   // composer footer. The timeline subtitle and status bar carry status only.
   const model = displayModelName(providers, effectiveModelSelection);
   const effort = displayEffort(providers, effectiveModelSelection);
-  const effortPlaceholderLabel =
-    effort === null ? effortPlaceholder(providers, effectiveModelSelection) : null;
 
   /** The open thread's own provider — undefined until the catalog has
       loaded at least once. Backs both the `$` skill picker and the
@@ -239,7 +248,6 @@ export function useProviderCatalog(params: {
     providersError,
     model,
     effort,
-    effortPlaceholder: effortPlaceholderLabel,
     permission,
     permissionChoices,
     currentSkills,

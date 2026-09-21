@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { ProviderSummary } from "../../../cli/catalog/catalog.js";
-import { displayEffort, displayModelName, effortPlaceholder, isTerminalTooSmall, prettifyModelSlug } from "../display.js";
+import { defaultEffortChoice, displayEffort, displayModelName, isEffortDescriptor, isTerminalTooSmall, prettifyModelSlug } from "../display.js";
 
 function providers(): ProviderSummary[] {
   return [
@@ -146,10 +146,8 @@ describe("displayEffort", () => {
   it("falls back to the isDefault choice when currentValue is null (Claude's driver)", () => {
     expect(displayEffort(providers(), { instanceId: "claudeAgent", model: "claude-opus-5" })).toBe("High");
   });
-});
 
-describe("effortPlaceholder", () => {
-  it("returns the knob label when descriptors exist but nothing is picked", () => {
+  it("falls back to the enforced default when nothing is picked and no catalog default exists", () => {
     const unset: ProviderSummary[] = [
       {
         ...providers()[0]!,
@@ -160,7 +158,11 @@ describe("effortPlaceholder", () => {
               {
                 id: "effort",
                 label: "Effort",
-                choices: [{ id: "low", label: "Low", isDefault: null }],
+                choices: [
+                  { id: "low", label: "Low", isDefault: null },
+                  { id: "medium", label: "Medium", isDefault: null },
+                  { id: "high", label: "High", isDefault: null },
+                ],
                 currentValue: null,
               },
             ],
@@ -168,27 +170,32 @@ describe("effortPlaceholder", () => {
         ],
       },
     ];
-    expect(
-      effortPlaceholder(unset, { instanceId: "opencode", model: "opencode/muse-spark-1.3-contributor-free" }),
-    ).toBe("Effort");
-    // Models.dev entries carry no defaults, so the footer would hide the
-    // knob entirely without the placeholder.
+    // Medium, not blank — the knob is always populated now.
     expect(
       displayEffort(unset, { instanceId: "opencode", model: "opencode/muse-spark-1.3-contributor-free" }),
-    ).toBeNull();
+    ).toBe("Medium");
+  });
+});
+
+describe("defaultEffortChoice", () => {
+  it("prefers medium, else the middle choice", () => {
+    const ids = (values: string[]) => ({
+      id: "effort",
+      label: "Effort",
+      choices: values.map((id) => ({ id, label: id, isDefault: null })),
+      currentValue: null,
+    });
+    expect(defaultEffortChoice(ids(["low", "medium", "high"]))).toBe("medium");
+    expect(defaultEffortChoice(ids(["low", "high", "max"]))).toBe("high");
+    expect(defaultEffortChoice(ids(["only"]))).toBe("only");
+    expect(defaultEffortChoice(ids([]))).toBeNull();
   });
 
-  it("returns null without descriptors or selection", () => {
-    const noEffortProviders: ProviderSummary[] = [
-      {
-        ...providers()[0]!,
-        models: [{ ...providers()[0]!.models[0]!, efforts: [] }],
-      },
-    ];
-    expect(
-      effortPlaceholder(noEffortProviders, { instanceId: "opencode", model: "opencode/muse-spark-1.3-contributor-free" }),
-    ).toBeNull();
-    expect(effortPlaceholder(providers(), undefined)).toBeNull();
+  it("recognizes effort descriptor ids only", () => {
+    expect(isEffortDescriptor("reasoningEffort")).toBe(true);
+    expect(isEffortDescriptor("effort")).toBe(true);
+    expect(isEffortDescriptor("thinking")).toBe(true);
+    expect(isEffortDescriptor("contextWindow")).toBe(false);
   });
 });
 

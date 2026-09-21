@@ -119,6 +119,30 @@ describe("codex driver turns", () => {
       approvalPolicy: "untrusted",
     });
   });
+
+  it("enforces medium effort unless overridden", async () => {
+    const transport = new FakeCodexTransport();
+    const driver = new CodexDriver({ transport });
+    await Effect.runPromise(driver.startSession(START));
+    await Effect.runPromise(driver.sendTurn({ threadId: "thread-1", prompt: "hi" }));
+    expect(transport.sessions[0]!.server.requestsTo("turn/start")[0]!.params).toMatchObject({
+      effort: "medium",
+    });
+
+    const transport2 = new FakeCodexTransport();
+    const driver2 = new CodexDriver({ transport: transport2 });
+    await Effect.runPromise(driver2.startSession(START));
+    await Effect.runPromise(
+      driver2.sendTurn({
+        threadId: "thread-1",
+        prompt: "hi",
+        modelSelection: { instanceId: "codex", model: "gpt-5.4", options: [{ id: "reasoningEffort", value: "high" }] },
+      }),
+    );
+    expect(transport2.sessions[0]!.server.requestsTo("turn/start")[0]!.params).toMatchObject({
+      effort: "high",
+    });
+  });
 });
 
 describe("codex driver approvals", () => {

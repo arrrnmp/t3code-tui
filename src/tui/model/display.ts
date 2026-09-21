@@ -1,4 +1,5 @@
 import type { ProviderSummary } from "../../cli/catalog/catalog.js";
+import type { EffortDescriptor } from "../../cli/catalog/catalog.js";
 import type { ModelSelection } from "../../types.js";
 
 /**
@@ -49,16 +50,35 @@ export function displayModelName(
 }
 
 /**
+ * Whether a descriptor id is an effort knob (as opposed to display-only
+ * selects like a context window). Defaults attach and resolve only on
+ * these; anything else stays unset until explicitly picked.
+ */
+export function isEffortDescriptor(id: string): boolean {
+  return /effort|reasoning|thinking/i.test(id);
+}
+
+/**
+ * Enforced default for one effort descriptor: `medium` when offered,
+ * else the middle choice (median-ish for ordered low→high lists), else
+ * null. The footer and the pick flow resolve through this so the knob
+ * never reads blank and sends carry a real value.
+ */
+export function defaultEffortChoice(descriptor: EffortDescriptor): string | null {
+  if (descriptor.choices.some((choice) => choice.id === "medium")) return "medium";
+  const middle = descriptor.choices[Math.floor((descriptor.choices.length - 1) / 2)];
+  return middle?.id ?? null;
+}
+
+/**
  * The effort knob (e.g. `xhigh`) rides on `modelSelection.options`. Resolve
- * its display label through the model's select-type effort descriptors,
- * falling back to that descriptor's default when the selection carries no
- * explicit choice — switching models (or drafting a new thread) often drops
- * the previous option because its id doesn't exist on the new model, and the
- * effort knob should show that model's default instead of going blank. The
- * default itself falls back from `currentValue` to the choice flagged
- * `isDefault` — some drivers (Claude) never populate `currentValue` at all,
- * only the per-choice flag. Otherwise show the raw selected value. Boolean
- * flags are never effort.
+ * its display label through the model's select-type effort descriptors:
+ * explicit choice first, then the catalog default (`currentValue`, then
+ * the `isDefault` flag — some drivers never populate `currentValue`),
+ * then the enforced default above. Switching models (or drafting a new
+ * thread) often drops the previous option because its id doesn't exist on
+ * the new model; the enforced default keeps the knob populated instead of
+ * going blank. Boolean flags are never effort.
  */
 export function displayEffort(
   providers: readonly ProviderSummary[] | null,
@@ -75,11 +95,16 @@ export function displayEffort(
   if (model !== undefined) {
     for (const effort of model.efforts) {
       const explicit = strings.find((option) => option.id === effort.id)?.value;
-      const fallback = effort.currentValue ?? effort.choices.find((choice) => choice.isDefault === true)?.id ?? null;
-      const pickedValue = explicit ?? fallback;
-      if (pickedValue === null) continue;
-      const choice = effort.choices.find((candidate) => candidate.id === pickedValue);
-      return choice?.label ?? pickedValue;
+      if (explicit !== undefined) {
+        const choice = effort.choices.find((candidate) => candidate.id === explicit);
+        return choice?.label ?? explicit;
+      }
+      const fallback = effort.currentValue ??
+        effort.choices.find((choice) => choice.isDefault === true)?.id ??
+        (isEffortDescriptor(effort.id) ? defaultEffortChoice(effort) : null);
+      if (fallback === null) continue;
+      const choice = effort.choices.find((candidate) => candidate.id === fallback);
+      return choice?.label ?? fallback;
     }
     return null;
   }
@@ -87,23 +112,4 @@ export function displayEffort(
   if (strings.length === 0) return null;
   const preferred = strings.find((option) => /effort|reasoning|thinking/i.test(option.id)) ?? strings[0];
   return preferred === undefined ? null : preferred.value;
-}
-
-/**
- * Knob label shown when the model has effort descriptors but nothing is
- * picked yet (no explicit option, no catalog default): the first
- * descriptor's label (e.g. `Effort`). Keeps the footer chip — the only
- * affordance that opens the effort picker — visible instead of hiding
- * the knob entirely. Null when the model has no descriptors.
- */
-export function effortPlaceholder(
-  providers: readonly ProviderSummary[] | null,
-  selection: ModelSelection | undefined,
-): string | null {
-  if (selection === undefined) return null;
-  const model = providers
-    ?.find((provider) => provider.instanceId === selection.instanceId)
-    ?.models.find((candidate) => candidate.slug === selection.model);
-  const descriptor = model?.efforts.find((effort) => effort.choices.length > 0) ?? null;
-  return descriptor?.label ?? null;
 }
