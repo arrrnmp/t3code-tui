@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   effortValuesOf,
+  isFreeModel,
   loadModelsDevCatalog,
   parseModelsDevCatalog,
   presentApiKeyEnvs,
@@ -21,8 +22,9 @@ const FIXTURE = {
       "anthropic/claude-opus-4-6": {
         name: "Claude Opus 4.6",
         reasoning_options: [{ type: "effort", values: ["low", "medium", "high"] }, { type: "toggle" }],
+        cost: { input: 5, output: 25 },
       },
-      "anthropic/plain": { name: "Plain" },
+      "anthropic/plain": { name: "Plain", cost: { input: 0, output: 0 } },
     },
   },
   broken: null,
@@ -56,6 +58,16 @@ describe("effortValuesOf", () => {
     expect(opus && effortValuesOf(opus)).toEqual(["low", "medium", "high"]);
     const plain = catalog.flatMap((provider) => provider.models).find((model) => model.id === "anthropic/plain");
     expect(plain && effortValuesOf(plain)).toEqual([]);
+  });
+});
+
+describe("isFreeModel", () => {
+  it("matches opencode's zero-input-cost rule and never missing data", () => {
+    const catalog = parseModelsDevCatalog(FIXTURE);
+    const models = catalog.flatMap((provider) => provider.models);
+    expect(isFreeModel(models.find((model) => model.id === "anthropic/plain")!)).toBe(true);
+    expect(isFreeModel(models.find((model) => model.id === "anthropic/claude-opus-4-6")!)).toBe(false);
+    expect(isFreeModel({ id: "x", name: "X", reasoningOptions: [], cost: null })).toBe(false);
   });
 });
 

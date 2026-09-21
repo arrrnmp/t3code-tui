@@ -32,8 +32,8 @@ const MODELS_DEV = {
       name: "Anthropic",
       env: ["ANTHROPIC_API_KEY"],
       models: [
-        { id: "anthropic/claude-opus-4-6", name: "Claude Opus 4.6", reasoningOptions: [{ type: "effort", values: ["low", "high"] }] },
-        { id: "anthropic/plain", name: "Plain", reasoningOptions: [] },
+        { id: "anthropic/claude-opus-4-6", name: "Claude Opus 4.6", reasoningOptions: [{ type: "effort", values: ["low", "high"] }], cost: { input: 5, output: 25 } },
+        { id: "anthropic/plain", name: "Plain", reasoningOptions: [], cost: { input: 0, output: 0 } },
       ],
     },
   ],
@@ -131,34 +131,36 @@ describe("buildDirectProviders", () => {
       storeRoot: tmpStore(),
       modelsDev: async () => MODELS_DEV,
     });
-    const opencode = live.filter((entry) => entry.instanceId === "opencode");
-    expect(opencode).toHaveLength(1);
-    const entry = opencode[0]!;
-    expect(entry.driver).toBe("opencode");
-    expect(entry.installed).toBe(true);
-    expect(entry.enabled).toBe(true);
-    expect(entry.status).toBe("models.dev snapshot");
-    expect(entry.authStatus).toBe("oauth");
-    // Source ids keep their slash; bare ids gain the provider prefix.
-    expect(entry.models.map((model) => model.slug)).toEqual(["anthropic/claude-opus-4-6", "anthropic/plain"]);
-    expect(entry.models[0]?.efforts[0]?.choices.map((choice) => choice.id)).toEqual(["low", "high"]);
-    expect(entry.models[1]?.efforts).toEqual([]);
+    // Categorized per-provider entry (credentialed: everything) …
+    const section = live.find((entry) => entry.instanceId === "opencode/anthropic");
+    expect(section?.enabled).toBe(true);
+    expect(section?.status).toBe("models.dev snapshot");
+    expect(section?.authStatus).toBe("oauth");
+    expect(section?.models.map((model) => model.slug)).toEqual([
+      "anthropic/claude-opus-4-6",
+      "anthropic/plain",
+    ]);
+    // … plus the hidden compat shell for T3 addressing.
+    const compat = live.find((entry) => entry.instanceId === "opencode");
+    expect(compat?.enabled).toBe(false);
+    expect(compat?.models.map((model) => model.slug)).toEqual([
+      "anthropic/claude-opus-4-6",
+      "anthropic/plain",
+    ]);
+    expect(compat?.models.every((model) => model.isHidden)).toBe(true);
+  });
 
-    const keyed = await buildDirectProviders({
-      env: { PATH: binDir(["opencode"]), ANTHROPIC_API_KEY: "k" },
-      storeRoot: tmpStore(),
-      modelsDev: async () => MODELS_DEV,
-    });
-    expect(keyed.find((entry) => entry.instanceId === "opencode")?.authStatus).toBe("api-key");
-
-    const bare = await buildDirectProviders({
+  it("shows free models only on keyless providers", async () => {
+    const providers = await buildDirectProviders({
       env: { PATH: binDir(["opencode"]) },
       storeRoot: tmpStore(),
       modelsDev: async () => MODELS_DEV,
     });
-    const bareEntry = bare.find((entry) => entry.instanceId === "opencode");
-    expect(bareEntry?.authStatus).toBeNull();
-    expect(bareEntry?.enabled).toBe(true);
+    const section = providers.find((entry) => entry.instanceId === "opencode/anthropic");
+    expect(section?.enabled).toBe(true);
+    expect(section?.authStatus).toBeNull();
+    expect(section?.status).toBe("free models only (set ANTHROPIC_API_KEY for all 2)");
+    expect(section?.models.map((model) => model.slug)).toEqual(["anthropic/plain"]);
   });
 
   it("prefixes bare source ids with their provider", async () => {
@@ -167,7 +169,7 @@ describe("buildDirectProviders", () => {
       storeRoot: tmpStore(),
       modelsDev: async () => ({
         catalog: [
-          { id: "zen", name: "Zen", env: ["ZEN_KEY"], models: [{ id: "bare-model", name: "Bare", reasoningOptions: [] }] },
+          { id: "zen", name: "Zen", env: ["ZEN_KEY"], models: [{ id: "bare-model", name: "Bare", reasoningOptions: [], cost: null }] },
         ],
         source: "live" as const,
       }),

@@ -29,6 +29,7 @@ import { resolveStoreRoot } from "../../threads/store.js";
 import { ensureImportedFromT3, isModelHidden, loadModelPrefs } from "../../catalog/prefs.js";
 import {
   effortValuesOf,
+  isFreeModel,
   loadModelsDevCatalog,
   presentApiKeyEnvs,
   readStoredAuthTypes,
@@ -196,49 +197,97 @@ function opencodeEfforts(model: ModelsDevModel): EffortDescriptor[] {
 }
 
 /**
- * The single `opencode` instance (T3 parity): every models.dev model in
- * one catalog entry, addressed `provider/model` exactly like T3's
- * favorites and migrated threads (`opencode/muse-spark-...`,
- * `github-copilot/claude-haiku-4.5`). Source ids without a slash are
- * prefixed with their provider. `enabled` is install state — readiness
- * is per credential and reported in `authStatus`, failing clearly at
- * send time like both references.
+ * Per-provider `opencode/<id>` entries: categorized, browsable sections.
+ * Credentialed providers list everything; keyless ones list only their
+ * zero-cost models (the free tier the picker is for) with `enabled` kept
+ * true — picking one without its key fails clearly at send time, like
+ * both references. `enabled` otherwise follows install state, with
+ * auth-pattern failures disabling (same rule as native entries).
  */
-function opencodeInstance(
+function opencodeProviders(
   loaded: LoadedModelsDevCatalog,
   env: NodeJS.ProcessEnv,
   installed: boolean,
-  isHidden: (slug: string) => boolean,
-): ProviderSummary {
+  isHidden: (instanceId: string, slug: string) => boolean,
+): ProviderSummary[] {
   const stored = readStoredAuthTypes(env);
-  const oauth = Object.values(stored).some((type) => type === "oauth");
-  const keyed = loaded.catalog.some((provider) => presentApiKeyEnvs(provider, env).length > 0);
-  const models = loaded.catalog.flatMap((provider: ModelsDevProvider) =>
-    provider.models.map((model) => {
-      const slug = model.id.includes("/") ? model.id : `${provider.id}/${model.id}`;
-      return {
-        slug,
-        name: model.name,
-        isCustom: false,
-        isDefault: null as boolean | null,
-        isHidden: isHidden(slug),
+  return loaded.catalog.map((provider: ModelsDevProvider) => {
+    const keyEnvs = presentApiKeyEnvs(provider, env);
+    const storedType = stored[provider.id];
+    const credential = storedType === "oauth"
+      ? "oauth"
+      : storedType === "api"
+        ? "api-key"
+        : typeof storedType === "string"
+          ? storedType
+          : keyEnvs.length > 0
+            ? "api-key"
+            : null;
+    const free = provider.models.filter(isFreeModel);
+    const models = credential !== null ? provider.models : free;
+    const keyHint = provider.env.length > 0 ? provider.env[0] : null;
+    return {
+      instanceId: `opencode/${provider.id}`,
+      driver: "opencode",
+      displayName: provider.name,
+      enabled: installed,
+      installed,
+      status: !installed
+        ? "not installed"
+        : credential === null && keyHint !== null
+          ? `free models only (set ${keyHint} for all ${provider.models.length})`
+          : credential === null
+            ? "free models only"
+            : loaded.source === "live"
+              ? null
+              : `models.dev ${loaded.source}`,
+      authStatus: credential,
+      models: models.map((model) => ({
+        ...baseModel(slugOf(provider, model), model.name),
+        isHidden: isHidden(`opencode/${provider.id}`, slugOf(provider, model)),
         efforts: opencodeEfforts(model),
-      };
-    }),
-  );
+      })),
+      supportedRuntimeModes: null,
+      usageLimits: null,
+      skills: [],
+    };
+  });
+}
+
+/** T3 addressing: source ids keep their slash, bare ids gain the provider. */
+function slugOf(provider: ModelsDevProvider, model: ModelsDevModel): string {
+  return model.id.includes("/") ? model.id : `${provider.id}/${model.id}`;
+}
+
+/**
+ * The single `opencode` instance (T3 parity): every models.dev model with
+ * T3 addressing, ALL marked hidden. Invisible in the creating-picker (its
+ * section drops for having zero offerable models) but resolvable for
+ * migrated threads, favorites, effort lookups, and `selectProvider` —
+ * the raw find paths ignore `isHidden`, only the pickers filter on it.
+ */
+function opencodeCompatInstance(
+  loaded: LoadedModelsDevCatalog,
+  installed: boolean,
+): ProviderSummary {
   return {
     instanceId: "opencode",
     driver: "opencode",
     displayName: "OpenCode",
-    enabled: installed,
+    // Compat shell, not a pickable provider: disabled so it never offers
+    // rows, while selectProvider and the raw model lookups (migrated
+    // threads, favorites, effort labels) keep resolving through it.
+    enabled: false,
     installed,
-    status: !installed
-      ? "not installed"
-      : loaded.source === "live"
-        ? null
-        : `models.dev ${loaded.source}`,
-    authStatus: oauth ? "oauth" : keyed ? "api-key" : null,
-    models,
+    status: !installed ? "not installed" : loaded.source === "live" ? null : `models.dev ${loaded.source}`,
+    authStatus: null,
+    models: loaded.catalog.flatMap((provider: ModelsDevProvider) =>
+      provider.models.map((model) => ({
+        ...baseModel(slugOf(provider, model), model.name),
+        isHidden: true,
+        efforts: opencodeEfforts(model),
+      })),
+    ),
     supportedRuntimeModes: null,
     usageLimits: null,
     skills: [],
@@ -296,7 +345,10 @@ export async function buildDirectProviders(options: DirectCatalogOptions = {}): 
     skills: [],
   };
 
-  const opencode = opencodeInstance(modelsDev, env, opencodeInstalled, (slug) => isModelHidden(prefs, "opencode", slug));
+  const opencode = opencodeProviders(modelsDev, env, opencodeInstalled, (instanceId, slug) =>
+    isModelHidden(prefs, instanceId, slug),
+  );
+  const compat = opencodeCompatInstance(modelsDev, opencodeInstalled);
 
   const markHidden = (provider: ProviderSummary): ProviderSummary => ({
     ...provider,
@@ -306,7 +358,7 @@ export async function buildDirectProviders(options: DirectCatalogOptions = {}): 
     })),
   });
 
-  return [claude, markHidden(codex), markHidden(grok), opencode];
+  return [claude, markHidden(codex), markHidden(grok), ...opencode, compat];
 }
 
 /**

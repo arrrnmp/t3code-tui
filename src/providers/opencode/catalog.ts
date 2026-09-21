@@ -41,10 +41,24 @@ export interface ModelsDevReasoningOption {
   readonly values?: ReadonlyArray<string> | undefined;
 }
 
+export interface ModelsDevModelCost {
+  readonly input: number | null;
+  readonly output: number | null;
+}
+
 export interface ModelsDevModel {
   readonly id: string;
   readonly name: string;
   readonly reasoningOptions: ReadonlyArray<ModelsDevReasoningOption>;
+  readonly cost: ModelsDevModelCost | null;
+}
+
+/**
+ * Zero-cost model (opencode's own `Free` label rule: `cost.input === 0`).
+ * Missing cost data never reads as free.
+ */
+export function isFreeModel(model: ModelsDevModel): boolean {
+  return model.cost !== null && model.cost.input === 0 && model.cost.output === 0;
 }
 
 export interface ModelsDevProvider {
@@ -85,6 +99,17 @@ function parseReasoningOption(raw: unknown): ModelsDevReasoningOption | null {
   return { type, values: names };
 }
 
+function parseCost(raw: unknown): ModelsDevModelCost | null {
+  const entry = asRecord(raw);
+  if (!entry) return null;
+  const number = (value: unknown): number | null =>
+    typeof value === "number" && Number.isFinite(value) ? value : null;
+  const input = number(entry.input);
+  const output = number(entry.output);
+  if (input === null && output === null) return null;
+  return { input, output };
+}
+
 function parseModel(id: string, raw: unknown): ModelsDevModel | null {
   const entry = asRecord(raw);
   if (!entry) return null;
@@ -96,7 +121,7 @@ function parseModel(id: string, raw: unknown): ModelsDevModel | null {
       return parsed ? [parsed] : [];
     })
     : [];
-  return { id, name, reasoningOptions };
+  return { id, name, reasoningOptions, cost: parseCost(entry.cost) };
 }
 
 function parseProvider(id: string, raw: unknown): ModelsDevProvider | null {
