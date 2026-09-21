@@ -250,6 +250,8 @@ t3code projects resolve --cwd .
 t3code projects ensure --cwd . --project-policy create
 t3code providers list
 t3code models list --provider claudeAgent
+t3code models hide --provider opencode --model opencode/muse-spark-1.3-contributor-free
+t3code models show --provider opencode --model opencode/muse-spark-1.3-contributor-free
 t3code efforts list --provider claudeAgent --model claude-sonnet-5
 t3code threads create --stdin
 t3code threads list --status active --cwd .
@@ -271,7 +273,9 @@ Every command supports human-readable output. `--json` produces `{ "ok": true, "
 
 ## Providers, models, and efforts
 
-`providers list`, `models list`, and `efforts list` probe live sources on every call with no server in the loop: native surfaces through ephemeral driver sessions (failures degrade into each entry's `status` instead of failing the listing), and the long tail from the pinned models.dev catalog plus local API-key presence and stored OAuth state. Use them to pick valid `--provider`, `--model`, and `--thinking-effort` values before a handover instead of guessing — unknown ids fail with `PROVIDER_NOT_FOUND` / `MODEL_NOT_FOUND` and list what exists. Choices marked `*` in human output are the model's defaults.
+`providers list`, `models list`, and `efforts list` probe live sources on every call with no server in the loop: native surfaces (`claudeAgent`, `codex`, `grok`) through ephemeral driver sessions (failures degrade into each entry's `status` instead of failing the listing), and one `opencode` instance carrying the whole models.dev catalog (slugs are `provider/model`, matching migrated threads) plus local API-key presence and stored OAuth state. Use them to pick valid `--provider`, `--model`, and `--thinking-effort` values before a handover instead of guessing — unknown ids fail with `PROVIDER_NOT_FOUND` / `MODEL_NOT_FOUND` and list what exists. Choices marked `*` in human output are the model's defaults.
+
+`models hide` / `models show` curate the pickers: hidden models stay usable when named explicitly and stay visible on threads already running them — they only leave the model picker lists. On first run the hidden set, ordering, and favorites are imported from the T3 desktop's saved preferences when present.
 
 `models list` never reports `hidden` on this backend — there is no picker-preference store yet, so everything reads visible.
 

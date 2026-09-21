@@ -25,6 +25,8 @@ import * as Effect from "effect/Effect";
 import { CodexDriver, type CodexListedModel } from "../../providers/codex/driver.js";
 import { GrokDriver } from "../../providers/grok/driver.js";
 import { claudeCatalogModels } from "../../providers/claude/catalog.js";
+import { resolveStoreRoot } from "../../threads/store.js";
+import { ensureImportedFromT3, isModelHidden, loadModelPrefs } from "../../catalog/prefs.js";
 import {
   effortValuesOf,
   loadModelsDevCatalog,
@@ -80,6 +82,7 @@ function grokLister(): NativeModelLister {
 export interface DirectCatalogOptions {
   readonly env?: NodeJS.ProcessEnv;
   readonly workingDirectory?: string;
+  readonly storeRoot?: string;
   readonly listers?: Partial<Record<"codex" | "grok", () => NativeModelLister>>;
   readonly modelsDev?: () => Promise<LoadedModelsDevCatalog>;
 }
@@ -192,64 +195,54 @@ function opencodeEfforts(model: ModelsDevModel): EffortDescriptor[] {
   }];
 }
 
-function storedAuthStatus(providerId: string, stored: Record<string, string>): string | null {
-  const type = stored[providerId];
-  if (type === "oauth") return "oauth";
-  if (type === "api") return "api-key";
-  if (typeof type === "string") return type;
-  return null;
-}
-
 /**
- * How to enable a credential-less provider, using its own key names.
- * `xai`/`openai` additionally offer the subscription path through our
- * vendored OAuth plugins once connected in opencode itself.
+ * The single `opencode` instance (T3 parity): every models.dev model in
+ * one catalog entry, addressed `provider/model` exactly like T3's
+ * favorites and migrated threads (`opencode/muse-spark-...`,
+ * `github-copilot/claude-haiku-4.5`). Source ids without a slash are
+ * prefixed with their provider. `enabled` is install state — readiness
+ * is per credential and reported in `authStatus`, failing clearly at
+ * send time like both references.
  */
-export function enablementHint(provider: ModelsDevProvider): string {
-  const keys = provider.env.length > 0 ? `set ${provider.env.join(" or ")}` : "add an API key";
-  const login =
-    provider.id === "xai" || provider.id === "openai" ? " or run `opencode auth login` for the subscription" : "";
-  return `not configured (${keys}${login})`;
-}
-
-function opencodeProviders(
+function opencodeInstance(
   loaded: LoadedModelsDevCatalog,
   env: NodeJS.ProcessEnv,
   installed: boolean,
-): ProviderSummary[] {
+  isHidden: (slug: string) => boolean,
+): ProviderSummary {
   const stored = readStoredAuthTypes(env);
-  return loaded.catalog.map((provider: ModelsDevProvider) => {
-    const keyEnvs = presentApiKeyEnvs(provider, env);
-    const credential = storedAuthStatus(provider.id, stored) ?? (keyEnvs.length > 0 ? "api-key" : null);
-    // The picker only offers usable providers: an opencode entry without
-    // any credential (no stored OAuth, no env key) is listed but disabled.
-    // `providers list` still shows all 200+ for discovery. Enablement
-    // happens in opencode itself (`opencode auth login`, API keys) — the
-    // status below says exactly how for each provider.
-    const enabled = installed && credential !== null;
-    return {
-      instanceId: `opencode/${provider.id}`,
-      driver: "opencode",
-      displayName: provider.name,
-      enabled,
-      installed,
-      status: !installed
-        ? "not installed"
-        : !enabled
-          ? enablementHint(provider)
-          : loaded.source === "live"
-            ? null
-            : `models.dev ${loaded.source}`,
-      authStatus: credential,
-      models: provider.models.map((model) => ({
-        ...baseModel(model.id, model.name),
+  const oauth = Object.values(stored).some((type) => type === "oauth");
+  const keyed = loaded.catalog.some((provider) => presentApiKeyEnvs(provider, env).length > 0);
+  const models = loaded.catalog.flatMap((provider: ModelsDevProvider) =>
+    provider.models.map((model) => {
+      const slug = model.id.includes("/") ? model.id : `${provider.id}/${model.id}`;
+      return {
+        slug,
+        name: model.name,
+        isCustom: false,
+        isDefault: null as boolean | null,
+        isHidden: isHidden(slug),
         efforts: opencodeEfforts(model),
-      })),
-      supportedRuntimeModes: null,
-      usageLimits: null,
-      skills: [],
-    };
-  });
+      };
+    }),
+  );
+  return {
+    instanceId: "opencode",
+    driver: "opencode",
+    displayName: "OpenCode",
+    enabled: installed,
+    installed,
+    status: !installed
+      ? "not installed"
+      : loaded.source === "live"
+        ? null
+        : `models.dev ${loaded.source}`,
+    authStatus: oauth ? "oauth" : keyed ? "api-key" : null,
+    models,
+    supportedRuntimeModes: null,
+    usageLimits: null,
+    skills: [],
+  };
 }
 
 /**
@@ -257,14 +250,21 @@ function opencodeProviders(
  * every failure degrades into its entry's `status`, never a throw — a
  * broken Codex login must not hide the working Claude install.
  */
-export async function buildDirectProviders(options: DirectCatalogOptions = {}): Promise<ProviderSummary[]> {  const env = options.env ?? process.env;
+export async function buildDirectProviders(options: DirectCatalogOptions = {}): Promise<ProviderSummary[]> {
+  const env = options.env ?? process.env;
   const opencodeInstalled = binaryOnPath("opencode", env);
+  const storeRoot = options.storeRoot ?? resolveStoreRoot();
 
-  const [claudeInstalled, codex, grok, modelsDev] = await Promise.all([
+  const [claudeInstalled, codex, grok, modelsDev, prefs] = await Promise.all([
     Promise.resolve(binaryOnPath("claude", env)),
     listNative("codex", "Codex", "codex", options, env, (model, reasoningEfforts) => ({ ...model, efforts: codexEfforts(reasoningEfforts) })),
     listNative("grok", "Grok", "grok", options, env, (model) => model),
     (options.modelsDev ?? loadModelsDevCatalog)().catch((): LoadedModelsDevCatalog => ({ catalog: [], source: "empty" })),
+    // One-time T3 curation import, then our own prefs (hidden models feed
+    // the pickers through `isHidden` below).
+    ensureImportedFromT3(storeRoot, env)
+      .catch(() => false)
+      .then(() => loadModelPrefs(storeRoot)),
   ]);
 
   // Claude has no list API; the pinned manifest is the catalog. The
@@ -283,7 +283,7 @@ export async function buildDirectProviders(options: DirectCatalogOptions = {}): 
       name: model.name,
       isCustom: false,
       isDefault: model.isDefault,
-      isHidden: false,
+      isHidden: isModelHidden(prefs, "claudeAgent", model.slug),
       efforts: model.efforts.map((effort) => ({
         id: effort.id,
         label: effort.label,
@@ -296,7 +296,17 @@ export async function buildDirectProviders(options: DirectCatalogOptions = {}): 
     skills: [],
   };
 
-  return [claude, codex, grok, ...opencodeProviders(modelsDev, env, opencodeInstalled)];
+  const opencode = opencodeInstance(modelsDev, env, opencodeInstalled, (slug) => isModelHidden(prefs, "opencode", slug));
+
+  const markHidden = (provider: ProviderSummary): ProviderSummary => ({
+    ...provider,
+    models: provider.models.map((model) => ({
+      ...model,
+      isHidden: isModelHidden(prefs, provider.instanceId, model.slug),
+    })),
+  });
+
+  return [claude, markHidden(codex), markHidden(grok), opencode];
 }
 
 /**

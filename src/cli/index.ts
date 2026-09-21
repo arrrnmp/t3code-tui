@@ -30,6 +30,7 @@ import {
   listEfforts,
   listModels,
   listProviders,
+  setModelHidden,
 } from "./catalog/providers.js";
 import type { ProviderUsageLimits } from "./catalog/catalog.js";
 import {
@@ -840,6 +841,30 @@ models
         ),
       );
       writeSuccess(result, context, lines.length > 0 ? lines.join("\n") : "No models.");
+    }),
+  );
+models
+  .command("hide")
+  .description("Hide a model slug from the pickers (still usable when named explicitly).")
+  .requiredOption("--provider <instance-id>", "Provider instance id.")
+  .requiredOption("--model <slug>", "Model slug.")
+  .action((options: { provider: string; model: string }) =>
+    action(async () => {
+      const context = await commandContext();
+      const result = await setModelHidden(context.config, { ...options, hidden: true });
+      writeSuccess(result, context, `Hid ${result.model.slug} on ${result.provider.instanceId}.`);
+    }),
+  );
+models
+  .command("show")
+  .description("Show a hidden model slug in the pickers again.")
+  .requiredOption("--provider <instance-id>", "Provider instance id.")
+  .requiredOption("--model <slug>", "Model slug.")
+  .action((options: { provider: string; model: string }) =>
+    action(async () => {
+      const context = await commandContext();
+      const result = await setModelHidden(context.config, { ...options, hidden: false });
+      writeSuccess(result, context, `Showing ${result.model.slug} on ${result.provider.instanceId}.`);
     }),
   );
 

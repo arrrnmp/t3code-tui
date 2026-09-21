@@ -40,10 +40,15 @@ const MODELS_DEV = {
   source: "snapshot" as const,
 };
 
+function tmpStore(): string {
+  return fs.mkdtempSync(path.join(os.tmpdir(), "t3code-catalog-"));
+}
+
 describe("buildDirectProviders", () => {
   it("marks missing binaries as not installed without spawning anything", async () => {
     const providers = await buildDirectProviders({
       env: { PATH: "/nonexistent" },
+      storeRoot: tmpStore(),
       modelsDev: async () => MODELS_DEV,
     });
     for (const instanceId of ["claudeAgent", "codex", "grok"]) {
@@ -53,20 +58,21 @@ describe("buildDirectProviders", () => {
       expect(provider?.status).toBe("not installed");
     }
     expect(providers.find((entry) => entry.instanceId === "codex")?.models).toEqual([]);
-    const anthropic = providers.find((entry) => entry.instanceId === "opencode/anthropic");
-    expect(anthropic?.installed).toBe(false);
-    expect(anthropic?.enabled).toBe(false);
-    expect(anthropic?.models.map((model) => model.slug)).toEqual([
+    const opencode = providers.find((entry) => entry.instanceId === "opencode");
+    expect(opencode?.installed).toBe(false);
+    expect(opencode?.enabled).toBe(false);
+    expect(opencode?.models.map((model) => model.slug)).toEqual([
       "anthropic/claude-opus-4-6",
       "anthropic/plain",
     ]);
-    expect(anthropic?.status).toBe("not installed");
+    expect(opencode?.status).toBe("not installed");
   });
 
   it("lists pinned claude models with effort descriptors", async () => {
     const dir = binDir(["claude"]);
     const providers = await buildDirectProviders({
       env: { PATH: dir },
+      storeRoot: tmpStore(),
       modelsDev: async () => ({ catalog: [], source: "live" }),
     });
     const claude = providers.find((entry) => entry.instanceId === "claudeAgent");
@@ -84,6 +90,7 @@ describe("buildDirectProviders", () => {
         codex: fakeLister([{ id: "gpt-5.4" }]),
         grok: fakeLister([{ id: "grok-4-1" }]),
       },
+      storeRoot: tmpStore(),
       modelsDev: async () => ({ catalog: [], source: "live" }),
     });
     const codex = providers.find((entry) => entry.instanceId === "codex");
@@ -103,6 +110,7 @@ describe("buildDirectProviders", () => {
         codex: fakeLister([], "Not logged in. Run codex login"),
         grok: fakeLister([{ id: "grok-4-1" }]),
       },
+      storeRoot: tmpStore(),
       modelsDev: async () => ({ catalog: [], source: "live" }),
     });
     const codex = providers.find((entry) => entry.instanceId === "codex");
@@ -113,59 +121,70 @@ describe("buildDirectProviders", () => {
     expect(providers.find((entry) => entry.instanceId === "grok")?.models.length).toBe(1);
   });
 
-  it("enables only opencode entries with a credential", async () => {
+  it("merges all models.dev providers into one T3-addressed opencode instance", async () => {
     const live = await buildDirectProviders({
       env: {
         PATH: binDir(["opencode"]),
         ANTHROPIC_API_KEY: "k",
         OPENCODE_AUTH_CONTENT: JSON.stringify({ anthropic: { type: "oauth" } }),
       },
+      storeRoot: tmpStore(),
       modelsDev: async () => MODELS_DEV,
     });
-    const anthropic = live.find((entry) => entry.instanceId === "opencode/anthropic");
-    expect(anthropic?.installed).toBe(true);
-    expect(anthropic?.enabled).toBe(true);
-    expect(anthropic?.status).toBe("models.dev snapshot");
-    expect(anthropic?.authStatus).toBe("oauth");
-    expect(anthropic?.models[0]?.efforts[0]?.choices.map((choice) => choice.id)).toEqual(["low", "high"]);
-    expect(anthropic?.models[1]?.efforts).toEqual([]);
+    const opencode = live.filter((entry) => entry.instanceId === "opencode");
+    expect(opencode).toHaveLength(1);
+    const entry = opencode[0]!;
+    expect(entry.driver).toBe("opencode");
+    expect(entry.installed).toBe(true);
+    expect(entry.enabled).toBe(true);
+    expect(entry.status).toBe("models.dev snapshot");
+    expect(entry.authStatus).toBe("oauth");
+    // Source ids keep their slash; bare ids gain the provider prefix.
+    expect(entry.models.map((model) => model.slug)).toEqual(["anthropic/claude-opus-4-6", "anthropic/plain"]);
+    expect(entry.models[0]?.efforts[0]?.choices.map((choice) => choice.id)).toEqual(["low", "high"]);
+    expect(entry.models[1]?.efforts).toEqual([]);
 
     const keyed = await buildDirectProviders({
       env: { PATH: binDir(["opencode"]), ANTHROPIC_API_KEY: "k" },
+      storeRoot: tmpStore(),
       modelsDev: async () => MODELS_DEV,
     });
-    const keyedAnthropic = keyed.find((entry) => entry.instanceId === "opencode/anthropic");
-    expect(keyedAnthropic?.authStatus).toBe("api-key");
-    expect(keyedAnthropic?.enabled).toBe(true);
+    expect(keyed.find((entry) => entry.instanceId === "opencode")?.authStatus).toBe("api-key");
 
     const bare = await buildDirectProviders({
       env: { PATH: binDir(["opencode"]) },
+      storeRoot: tmpStore(),
       modelsDev: async () => MODELS_DEV,
     });
-    const bareAnthropic = bare.find((entry) => entry.instanceId === "opencode/anthropic");
-    expect(bareAnthropic?.authStatus).toBeNull();
-    expect(bareAnthropic?.enabled).toBe(false);
-    expect(bareAnthropic?.status).toBe("not configured (set ANTHROPIC_API_KEY)");
+    const bareEntry = bare.find((entry) => entry.instanceId === "opencode");
+    expect(bareEntry?.authStatus).toBeNull();
+    expect(bareEntry?.enabled).toBe(true);
   });
 
-  it("hints the subscription login for xai and openai", async () => {
-    const { enablementHint } = await import("../direct.js");
-    expect(enablementHint({ id: "xai", name: "xAI", env: ["XAI_API_KEY"], models: [] })).toBe(
-      "not configured (set XAI_API_KEY or run `opencode auth login` for the subscription)",
-    );
-    expect(enablementHint({ id: "other", name: "Other", env: [], models: [] })).toBe(
-      "not configured (add an API key)",
-    );
+  it("prefixes bare source ids with their provider", async () => {
+    const providers = await buildDirectProviders({
+      env: { PATH: binDir(["opencode"]) },
+      storeRoot: tmpStore(),
+      modelsDev: async () => ({
+        catalog: [
+          { id: "zen", name: "Zen", env: ["ZEN_KEY"], models: [{ id: "bare-model", name: "Bare", reasoningOptions: [] }] },
+        ],
+        source: "live" as const,
+      }),
+    });
+    const entry = providers.find((item) => item.instanceId === "opencode");
+    expect(entry?.models.map((model) => model.slug)).toEqual(["zen/bare-model"]);
   });
 
   it("keeps selectProvider/selectModel error codes on direct output", async () => {
     const providers = await buildDirectProviders({
       env: { PATH: "/nonexistent" },
+      storeRoot: tmpStore(),
       modelsDev: async () => MODELS_DEV,
     });
     expect(() => selectProvider(providers, "nope")).toThrowError(expect.objectContaining({ code: "PROVIDER_NOT_FOUND" }));
-    const anthropic = selectProvider(providers, "opencode/anthropic");
-    expect(() => selectModel(anthropic, "nope")).toThrowError(expect.objectContaining({ code: "MODEL_NOT_FOUND" }));
-    expect(selectModel(anthropic, "anthropic/plain").name).toBe("Plain");
+    const opencode = selectProvider(providers, "opencode");
+    expect(() => selectModel(opencode, "nope")).toThrowError(expect.objectContaining({ code: "MODEL_NOT_FOUND" }));
+    expect(selectModel(opencode, "anthropic/plain").name).toBe("Plain");
   });
 });
