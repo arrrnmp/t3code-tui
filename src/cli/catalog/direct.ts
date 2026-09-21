@@ -200,6 +200,18 @@ function storedAuthStatus(providerId: string, stored: Record<string, string>): s
   return null;
 }
 
+/**
+ * How to enable a credential-less provider, using its own key names.
+ * `xai`/`openai` additionally offer the subscription path through our
+ * vendored OAuth plugins once connected in opencode itself.
+ */
+export function enablementHint(provider: ModelsDevProvider): string {
+  const keys = provider.env.length > 0 ? `set ${provider.env.join(" or ")}` : "add an API key";
+  const login =
+    provider.id === "xai" || provider.id === "openai" ? " or run `opencode auth login` for the subscription" : "";
+  return `not configured (${keys}${login})`;
+}
+
 function opencodeProviders(
   loaded: LoadedModelsDevCatalog,
   env: NodeJS.ProcessEnv,
@@ -211,7 +223,9 @@ function opencodeProviders(
     const credential = storedAuthStatus(provider.id, stored) ?? (keyEnvs.length > 0 ? "api-key" : null);
     // The picker only offers usable providers: an opencode entry without
     // any credential (no stored OAuth, no env key) is listed but disabled.
-    // `providers list` still shows all 200+ for discovery.
+    // `providers list` still shows all 200+ for discovery. Enablement
+    // happens in opencode itself (`opencode auth login`, API keys) — the
+    // status below says exactly how for each provider.
     const enabled = installed && credential !== null;
     return {
       instanceId: `opencode/${provider.id}`,
@@ -222,7 +236,7 @@ function opencodeProviders(
       status: !installed
         ? "not installed"
         : !enabled
-          ? "not configured"
+          ? enablementHint(provider)
           : loaded.source === "live"
             ? null
             : `models.dev ${loaded.source}`,

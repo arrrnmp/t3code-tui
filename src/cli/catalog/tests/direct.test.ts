@@ -145,7 +145,17 @@ describe("buildDirectProviders", () => {
     const bareAnthropic = bare.find((entry) => entry.instanceId === "opencode/anthropic");
     expect(bareAnthropic?.authStatus).toBeNull();
     expect(bareAnthropic?.enabled).toBe(false);
-    expect(bareAnthropic?.status).toBe("not configured");
+    expect(bareAnthropic?.status).toBe("not configured (set ANTHROPIC_API_KEY)");
+  });
+
+  it("hints the subscription login for xai and openai", async () => {
+    const { enablementHint } = await import("../direct.js");
+    expect(enablementHint({ id: "xai", name: "xAI", env: ["XAI_API_KEY"], models: [] })).toBe(
+      "not configured (set XAI_API_KEY or run `opencode auth login` for the subscription)",
+    );
+    expect(enablementHint({ id: "other", name: "Other", env: [], models: [] })).toBe(
+      "not configured (add an API key)",
+    );
   });
 
   it("keeps selectProvider/selectModel error codes on direct output", async () => {
