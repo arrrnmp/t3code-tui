@@ -44,6 +44,7 @@ import {
   opencodeSignedOutMessage,
   type OpencodeSettings,
 } from "./config.js";
+import { providerEnvNames, readStoredAuthTypes } from "./catalog.js";
 import {
   SpawnOpencodeTransport,
   type OpencodeServerConnection,
@@ -55,7 +56,12 @@ export interface OpenCodeDriverOptions {
   readonly settings?: Partial<OpencodeSettings>;
   readonly env?: NodeJS.ProcessEnv;
   readonly transport?: OpencodeTransport;
+  /** Silence budget per turn before it fails loudly (default 10 minutes, mirroring the Grok watchdog). */
+  readonly stallTimeoutMs?: number;
 }
+
+/** Default `stallTimeoutMs`: a turn with zero provider events for this long is failed, never left running. */
+export const OPENCODE_STALL_TIMEOUT_MS = 10 * 60 * 1000;
 
 export type OpenCodeTurnStatus = "completed" | "failed" | "interrupted";
 
@@ -172,6 +178,8 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
   private readonly settings: OpencodeSettings;
   private readonly baseEnv: NodeJS.ProcessEnv;
   private readonly transport: OpencodeTransport;
+  private readonly stallTimeoutMs: number;
+  private readonly stallTimers = new Map<TurnId, ReturnType<typeof setTimeout>>();
   private readonly sessions = new Map<ThreadId, OpenCodeSession>();
   private readonly connections = new Map<string, Promise<OpencodeServerConnection>>();
   private readonly pumps = new Map<string, { controller: AbortController; done: Promise<void> }>();
@@ -181,6 +189,7 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
     this.settings = normalizeOpencodeSettings(options.settings);
     this.baseEnv = options.env ?? process.env;
     this.transport = options.transport ?? new SpawnOpencodeTransport();
+    this.stallTimeoutMs = options.stallTimeoutMs ?? OPENCODE_STALL_TIMEOUT_MS;
   }
 
   get streamEvents(): Stream.Stream<ProviderRuntimeEvent> {
@@ -294,13 +303,47 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
       };
       session.turns.set(turn.id, turn);
       const connection = await this.connectionFor(session);
-      await connection.promptAsync({
-        sessionID: session.nativeSessionId,
-        ...(model ? { model } : {}),
-        parts: [{ type: "text", text: input.prompt }],
-      });
+      try {
+        await this.requireProviderCredential(model);
+        await connection.promptAsync({
+          sessionID: session.nativeSessionId,
+          ...(model ? { model } : {}),
+          parts: [{ type: "text", text: input.prompt }],
+        });
+      } catch (cause) {
+        this.clearStallTimer(turn.id);
+        session.turns.delete(turn.id);
+        throw cause;
+      }
+      this.armStallTimer(session, turn);
       return { threadId: input.threadId, turnId: turn.id };
     });
+
+  /**
+   * Credential preflight: the server accepts credential-less prompts
+   * with 204 and then emits nothing (the sync endpoint 500s instead),
+   * stranding the turn `running` until the stall watchdog fires. Fail
+   * fast with the exact setup step instead. Unknown providers and
+   * server-default sends skip the check — the server decides those.
+   */
+  private async requireProviderCredential(model: { providerID: string; modelID: string } | null): Promise<void> {
+    if (!model) return;
+    const envNames = await providerEnvNames(model.providerID);
+    if (envNames === null) return;
+    const stored = readStoredAuthTypes(this.baseEnv);
+    if (stored[model.providerID] !== undefined) return;
+    if (envNames.some((name) => (this.baseEnv[name] ?? "").trim().length > 0)) return;
+    const how = envNames.length > 0
+      ? `set ${envNames.join(" or ")}`
+      : "add an API key";
+    const login = model.providerID === "xai" || model.providerID === "openai" || model.providerID === "opencode"
+      ? " or run `opencode auth login`"
+      : "";
+    throw new CliError(
+      "OPENCODE_AUTH_REQUIRED",
+      `No credential for provider "${model.providerID}" (${how}${login}).`,
+    );
+  }
 
   readonly interruptTurn = (threadId: ThreadId, _turnId?: TurnId): Effect.Effect<void, CliError> =>
     this.attempt("OPENCODE_TURN_FAILED", `Could not interrupt the turn on thread ${threadId}`, async () => {
@@ -677,6 +720,7 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
   private settleOpenTurn(session: OpenCodeSession, status: OpenCodeTurnStatus, detail: string): void {
     const open = this.openTurn(session);
     if (open) {
+      this.clearStallTimer(open.id);
       open.status = status;
       open.error = status === "completed" ? null : detail;
       if (status !== "completed") open.text = open.text || detail;
@@ -691,6 +735,39 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
         error: open?.error ?? null,
       });
     }
+  }
+
+  private clearStallTimer(turnId: TurnId): void {
+    const timer = this.stallTimers.get(turnId);
+    if (timer) {
+      clearTimeout(timer);
+      this.stallTimers.delete(turnId);
+    }
+  }
+
+  /**
+   * Silence watchdog: the server can accept a prompt and then emit
+   * nothing at all (observed with unauthenticated async prompts — 204
+   * followed by zero events, where the sync endpoint 500s). Without
+   * this the turn reads `running` forever.
+   */
+  private armStallTimer(session: OpenCodeSession, turn: OpenCodeTurn): void {
+    this.clearStallTimer(turn.id);
+    const timer = setTimeout(() => {
+      this.stallTimers.delete(turn.id);
+      const current = this.sessions.get(session.threadId);
+      if (!current || current.closed) return;
+      const open = current.turns.get(turn.id);
+      if (!open || open.status !== "running") return;
+      this.settleOpenTurn(
+        current,
+        "failed",
+        `No response from the provider for ${Math.round(this.stallTimeoutMs / 60000)} minutes — ` +
+          "the turn was failed. Check authentication and network, then retry.",
+      );
+    }, this.stallTimeoutMs);
+    (timer as { unref?: () => void }).unref?.();
+    this.stallTimers.set(turn.id, timer);
   }
 
   private async rejectParked(session: OpenCodeSession, detail: string): Promise<void> {

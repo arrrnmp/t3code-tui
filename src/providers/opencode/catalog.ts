@@ -170,6 +170,26 @@ export function presentApiKeyEnvs(provider: ModelsDevProvider, env: NodeJS.Proce
   return provider.env.filter((name) => (env[name] ?? "").trim().length > 0);
 }
 
+let snapshotCatalogCache: ModelsDevCatalog | null = null;
+
+/**
+ * Required API-key env names for one models.dev provider id, from the
+ * pinned snapshot. Null when the provider is unknown (custom servers,
+ * newer catalog) — callers must let the server decide then, never block.
+ */
+export async function providerEnvNames(providerID: string): Promise<ReadonlyArray<string> | null> {
+  if (!snapshotCatalogCache) {
+    try {
+      const snapshot = (await import("./models-snapshot.json")).default as unknown;
+      snapshotCatalogCache = parseModelsDevCatalog(snapshot);
+    } catch {
+      return null;
+    }
+  }
+  const found = snapshotCatalogCache.find((provider) => provider.id.toLowerCase() === providerID.toLowerCase());
+  return found ? [...found.env] : null;
+}
+
 export function resolveModelsDevUrl(env: NodeJS.ProcessEnv = process.env): string {
   const override = env.OPENCODE_MODELS_URL?.trim();
   return override && override.length > 0 ? override : MODELS_DEV_DEFAULT_URL;

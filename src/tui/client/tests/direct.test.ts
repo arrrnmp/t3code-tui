@@ -195,7 +195,7 @@ describe("DirectConnection subscriptions", () => {
     const transport = new FakeOpencodeTransport();
     const connection = new DirectConnection({
       storeRoot: harness.root,
-      drivers: { opencode: () => new OpenCodeDriver({ transport }) },
+      drivers: { opencode: () => new OpenCodeDriver({ transport, env: { ANTHROPIC_API_KEY: "test-key" } }) },
       shellPollMs: 30,
       threadPollMs: 30,
     });

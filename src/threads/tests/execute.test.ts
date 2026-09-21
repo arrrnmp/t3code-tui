@@ -55,7 +55,7 @@ describe("executeTurn", () => {
         },
       ],
     });
-    const driver = new OpenCodeDriver({ transport });
+    const driver = new OpenCodeDriver({ transport, env: { ANTHROPIC_API_KEY: "test-key" } });
     await Effect.runPromise(driver.startSession({ threadId: thread.id, workingDirectory: root }));
     const seen: ProviderRuntimeEvent[] = [];
     const running = executeTurn({
@@ -108,7 +108,7 @@ describe("executeTurn", () => {
     ).sendTurn(store, thread.id, { prompt: "do it" });
 
     const transport = new FakeOpencodeTransport({ failMethods: { "session.promptAsync": "nope" } });
-    const failing = new OpenCodeDriver({ transport });
+    const failing = new OpenCodeDriver({ transport, env: { ANTHROPIC_API_KEY: "test-key" } });
     await Effect.runPromise(failing.startSession({ threadId: thread.id, workingDirectory: root }));
     await executeTurn({
       store,

@@ -78,7 +78,7 @@ describe("opencode driver", () => {
 
   function start(script: ConstructorParameters<typeof FakeOpencodeTransport>[0] = {}) {
     const transport = new FakeOpencodeTransport(script);
-    const driver = new OpenCodeDriver({ transport });
+    const driver = new OpenCodeDriver({ transport, env: { ANTHROPIC_API_KEY: "test-key" } });
     drivers.push(driver);
     return { transport, driver };
   }
@@ -293,5 +293,67 @@ describe("opencode driver", () => {
     expect(await Effect.runPromise(driver.hasSession("thread-1"))).toBe(false);
     await Effect.runPromise(driver.stopAll());
     expect(transport.servers.every((server) => server.disposed)).toBe(true);
+  });
+
+  it("fails fast without a provider credential", async () => {
+    const transport = new FakeOpencodeTransport();
+    const driver = new OpenCodeDriver({ transport, env: {} });
+    drivers.push(driver);
+    await Effect.runPromise(
+      driver.startSession({
+        threadId: "thread-1",
+        workingDirectory: "/repo",
+        modelSelection: { instanceId: "opencode", model: "opencode/muse-spark-1.3-contributor-free" },
+      }),
+    );
+    await expect(
+      Effect.runPromise(driver.sendTurn({ threadId: "thread-1", prompt: "hi" })),
+    ).rejects.toMatchObject({ code: "OPENCODE_AUTH_REQUIRED" });
+    expect(transport.servers[0]?.callsTo("session.promptAsync")).toHaveLength(0);
+  });
+
+  it("passes the preflight with an env key or an unknown provider", async () => {
+    const transport = new FakeOpencodeTransport();
+    const driver = new OpenCodeDriver({ transport, env: { OPENCODE_API_KEY: "k" } });
+    drivers.push(driver);
+    await Effect.runPromise(
+      driver.startSession({
+        threadId: "thread-1",
+        workingDirectory: "/repo",
+        modelSelection: { instanceId: "opencode", model: "opencode/muse-spark-1.3-contributor-free" },
+      }),
+    );
+    const sent = await Effect.runPromise(driver.sendTurn({ threadId: "thread-1", prompt: "hi" }));
+    expect(sent.turnId).toMatch(/^turn-/);
+
+    const transport2 = new FakeOpencodeTransport();
+    const driver2 = new OpenCodeDriver({ transport: transport2, env: {} });
+    drivers.push(driver2);
+    await Effect.runPromise(
+      driver2.startSession({
+        threadId: "thread-9",
+        workingDirectory: "/repo",
+        modelSelection: { instanceId: "opencode", model: "custom-provider/custom-model" },
+      }),
+    );
+    const sent2 = await Effect.runPromise(driver2.sendTurn({ threadId: "thread-9", prompt: "hi" }));
+    expect(sent2.turnId).toMatch(/^turn-/);
+  });
+
+  it("fails silent turns on the stall watchdog", async () => {
+    const transport = new FakeOpencodeTransport();
+    const driver = new OpenCodeDriver({ transport, env: { OPENCODE_API_KEY: "k" }, stallTimeoutMs: 60 });
+    drivers.push(driver);
+    await Effect.runPromise(
+      driver.startSession({
+        threadId: "thread-1",
+        workingDirectory: "/repo",
+        modelSelection: { instanceId: "opencode", model: "opencode/muse-spark-1.3-contributor-free" },
+      }),
+    );
+    const sent = await Effect.runPromise(driver.sendTurn({ threadId: "thread-1", prompt: "hi" }));
+    const outcome = await driver.awaitTurn("thread-1", sent.turnId);
+    expect(outcome.status).toBe("failed");
+    expect(outcome.error).toContain("No response from the provider");
   });
 });
