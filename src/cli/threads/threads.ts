@@ -1,18 +1,34 @@
+/**
+ * Threads CLI over the own store. Same envelopes, same guards, same error
+ * codes as the T3 era — only the transport changed: ledger reads replace
+ * snapshot GETs, store ops replace dispatch-then-poll (acceptance is
+ * synchronous, so `dispatch` is always null and `verification` is
+ * synthesized with `accepted: true`), and provider runs continue in the
+ * background through `executeTurn`.
+ */
 import { randomUUID } from "node:crypto";
 
-import { withT3Api } from "../infra/api.js";
+import * as Effect from "effect/Effect";
+
 import { CliError } from "../../errors.js";
-import { openThread } from "../infra/open.js";
-import { discoverRuntime } from "../infra/runtime.js";
-import { resolveWorkspace } from "../infra/workspace.js";
-import { activeProjects, projectForWorkspace } from "../projects/projects.js";
-import type { WorkspaceOptions } from "../projects/projects.js";
+import { listStoredProjects } from "../../projects/projects.js";
+import { openThreadStore, resolveStoreRoot, ThreadStore } from "../../threads/store.js";
 import {
-  asModelSelection,
-  defaultModelSelectionForVersion,
-  resolveModelSelection,
-} from "../shared/selection.js";
-import { T3ThreadApi, type ThreadSettlementState } from "./threadApi.js";
+  archiveThread as archiveStoredThread,
+  createThread as createStoredThread,
+  inspectThread as inspectStoredThread,
+  interruptTurn as interruptStoredTurn,
+  listThreads as listStoredThreads,
+  readThread as readStoredThread,
+  sendTurn as sendStoredTurn,
+  settleThread as settleStoredThread,
+  snoozeThread as snoozeStoredThread,
+  unsettleThread as unsettleStoredThread,
+  unsnoozeThread as unsnoozeStoredThread,
+} from "../../threads/threads.js";
+import { delegationForChild } from "../../threads/threads.js";
+import { driverForInstance, executeTurn, waitForTurnTerminal, type TurnDriverFactories } from "../../threads/execute.js";
+import { toT3Thread } from "../../threads/project.js";
 import type {
   CliConfig,
   InteractionMode,
@@ -23,6 +39,14 @@ import type {
   T3Project,
   T3Thread,
 } from "../../types.js";
+import { directAuth, directRuntime } from "../infra/direct.js";
+import { resolveWorkspace } from "../infra/workspace.js";
+import { projectForWorkspace, type WorkspaceOptions } from "../projects/projects.js";
+import {
+  asModelSelection,
+  defaultModelSelection,
+  resolveModelSelection,
+} from "../shared/selection.js";
 
 const INSPECT_RECENT_MESSAGE_LIMIT = 6;
 const INSPECT_MESSAGE_TEXT_LIMIT = 2_000;
@@ -41,6 +65,9 @@ export interface ThreadSendOptions {
   delivery?: ThreadSendDelivery;
   handoffNote?: string;
   confirmSettled?: (thread: T3Thread, project: T3Project | null) => Promise<boolean>;
+  drivers?: TurnDriverFactories;
+  /** Return at acceptance; otherwise block until the turn settles. */
+  noWait?: boolean;
 }
 
 export type ThreadListStatus = "active" | "settled" | "snoozed" | "all";
@@ -235,7 +262,7 @@ function threadReadView(thread: T3Thread, options: { lastTurn: boolean; view: Th
     return { ...base, view: "checkpoints" as const, checkpointCount: checkpoints.length, checkpoints };
   }
   if (view === "transfers") {
-    // V1 transport exposes no ContextTransfer rows; report the empty set
+    // No transport exposes ContextTransfer rows; report the empty set
     // explicitly instead of inventing lineage.
     return {
       ...base,
@@ -269,6 +296,33 @@ function isThreadBusy(thread: T3Thread): boolean {
   );
 }
 
+async function openStore(): Promise<ThreadStore> {
+  return await openThreadStore(resolveStoreRoot());
+}
+
+async function storedProjects(): Promise<T3Project[]> {
+  return await listStoredProjects(resolveStoreRoot());
+}
+
+function projectOf(projects: T3Project[], projectId: string): T3Project | null {
+  return projects.find((candidate) => candidate.id === projectId) ?? null;
+}
+
+const driverOwner = {};
+
+async function fullThread(store: ThreadStore, threadId: string): Promise<T3Thread> {
+  const read = await readStoredThread(store, threadId, { view: "messages" });
+  return toT3Thread(read.thread, read.turns, {
+    messages: read.messages,
+    activities: read.activities,
+    checkpoints: read.checkpoints,
+  });
+}
+
+function openedNone(openMode: OpenMode | undefined, config: CliConfig) {
+  return { mode: openMode ?? config.openMode, kind: "none" as const, url: null, exactThread: false };
+}
+
 export async function listThreads(config: CliConfig, options: ThreadListOptions = {}) {
   const requestedProjectId = options.project?.trim();
   if (options.project !== undefined && !requestedProjectId) {
@@ -281,69 +335,68 @@ export async function listThreads(config: CliConfig, options: ThreadListOptions 
       exitCode: 2,
     });
   }
-  const runtime = await discoverRuntime(config, { startDesktopIfNeeded: false });
-  return await withT3Api(runtime, config, async (api, invocation) => {
-    const catalog = await new T3ThreadApi(api).catalog();
-    const projects = activeProjects(catalog.projects);
-    let project: T3Project | null = null;
-    let workspace = null;
+  const store = await openStore();
+  const projects = await storedProjects();
+  let project: T3Project | null = null;
+  let workspace = null;
 
-    if (requestedProjectId) {
-      project = projects.find((candidate) => candidate.id === requestedProjectId) ?? null;
-    } else if (options.cwd) {
-      workspace = await resolveWorkspace(options.cwd, options.workspaceMode ?? config.workspaceMode);
-      project = projectForWorkspace(projects, workspace.workspaceRoot);
-    }
+  if (requestedProjectId) {
+    project = projects.filter((candidate) => candidate.deletedAt == null).find((candidate) => candidate.id === requestedProjectId) ?? null;
+  } else if (options.cwd) {
+    workspace = await resolveWorkspace(options.cwd, options.workspaceMode ?? config.workspaceMode);
+    project = projectForWorkspace(projects, workspace.workspaceRoot);
+  }
 
-    if ((requestedProjectId || options.cwd) && !project) {
-      throw new CliError(
-        "PROJECT_NOT_FOUND",
-        requestedProjectId
-          ? `No active T3 Code project exists with id ${requestedProjectId}.`
-          : `No T3 Code project exists for ${workspace!.workspaceRoot}.`,
-        { exitCode: 3 },
-      );
-    }
+  if ((requestedProjectId || options.cwd) && !project) {
+    throw new CliError(
+      "PROJECT_NOT_FOUND",
+      requestedProjectId
+        ? `No active T3 Code project exists with id ${requestedProjectId}.`
+        : `No T3 Code project exists for ${workspace!.workspaceRoot}.`,
+      { exitCode: 3 },
+    );
+  }
 
-    const requestedStatus = options.status ?? "all";
-    const threads = catalog.threads
-      .filter(nonArchivedThread)
-      .filter((thread) => project === null || thread.projectId === project.id)
-      .filter((thread) => requestedStatus === "all" || threadStatus(thread) === requestedStatus)
-      .sort((left, right) => (right.updatedAt ?? "").localeCompare(left.updatedAt ?? ""))
-      .map((thread) => ({ ...thread, status: threadStatus(thread) }));
-
-    return {
-      runtime,
-      auth: { source: invocation.source, version: invocation.version },
-      snapshotSequence: catalog.snapshotSequence,
-      filter: {
-        status: requestedStatus,
-        projectId: project?.id ?? null,
-        workspaceRoot: workspace?.workspaceRoot ?? null,
-      },
-      projects,
-      threads,
-    };
+  const requestedStatus = options.status ?? "all";
+  const stored = await listStoredThreads(store, {
+    status: requestedStatus === "all" ? "all" : requestedStatus,
+    ...(project ? { projectId: project.id } : {}),
   });
+  const threads = await Promise.all(
+    stored.map(async (entry) => toT3Thread(entry, await store.readTurns(entry.id))),
+  );
+  const visible = threads
+    .filter(nonArchivedThread)
+    .sort((left, right) => (right.updatedAt ?? "").localeCompare(left.updatedAt ?? ""))
+    .map((thread) => ({ ...thread, status: threadStatus(thread) }));
+
+  return {
+    runtime: directRuntime(),
+    auth: directAuth(),
+    snapshotSequence: 0,
+    filter: {
+      status: requestedStatus,
+      projectId: project?.id ?? null,
+      workspaceRoot: workspace?.workspaceRoot ?? null,
+    },
+    projects: projects.filter((candidate) => candidate.deletedAt == null),
+    threads: visible,
+  };
 }
 
 export async function inspectThread(config: CliConfig, rawThreadId: string) {
+  void config;
   const threadId = requireThreadId(rawThreadId);
-  const runtime = await discoverRuntime(config, { startDesktopIfNeeded: false });
-  return await withT3Api(runtime, config, async (api, invocation) => {
-    const inspected = await new T3ThreadApi(api).inspect(threadId);
-    const snapshot = await api.shellSnapshot().catch(() => api.snapshot().catch(() => null));
-    const projects = snapshot && Array.isArray(snapshot.projects) ? snapshot.projects : [];
-    const project = projects.find((candidate) => candidate.id === inspected.thread.projectId) ?? null;
-    return {
-      runtime,
-      auth: { source: invocation.source, version: invocation.version },
-      snapshotSequence: inspected.snapshotSequence,
-      project,
-      thread: threadInspectionView(inspected.thread),
-    };
-  });
+  const store = await openStore();
+  const thread = await fullThread(store, threadId);
+  const project = projectOf(await storedProjects(), thread.projectId);
+  return {
+    runtime: directRuntime(),
+    auth: directAuth(),
+    snapshotSequence: 0,
+    project,
+    thread: threadInspectionView(thread),
+  };
 }
 
 export async function readThread(
@@ -351,94 +404,106 @@ export async function readThread(
   rawThreadId: string,
   options: ThreadReadRequestOptions = {},
 ) {
+  void config;
   const threadId = requireThreadId(rawThreadId);
   const lastTurn = options.lastTurn ?? false;
   const view = normalizeReadView(options.view);
-  const runtime = await discoverRuntime(config, { startDesktopIfNeeded: false });
-  return await withT3Api(runtime, config, async (api, invocation) => {
-    const read = await new T3ThreadApi(api).read(threadId, { lastTurn: view === "messages" && lastTurn });
-    const snapshot = await api.shellSnapshot().catch(() => api.snapshot().catch(() => null));
-    const projects = snapshot && Array.isArray(snapshot.projects) ? snapshot.projects : [];
-    const project = projects.find((candidate) => candidate.id === read.thread.projectId) ?? null;
-    return {
-      runtime,
-      auth: { source: invocation.source, version: invocation.version },
-      snapshotSequence: read.snapshotSequence,
-      project,
-      thread: threadReadView(read.thread, { lastTurn, view }),
-    };
+  const store = await openStore();
+  const read = await readStoredThread(store, threadId, { view: "messages" });
+  const thread = toT3Thread(read.thread, read.turns, {
+    messages: read.messages,
+    activities: read.activities,
+    checkpoints: read.checkpoints,
   });
+  const project = projectOf(await storedProjects(), thread.projectId);
+  return {
+    runtime: directRuntime(),
+    auth: directAuth(),
+    snapshotSequence: 0,
+    project,
+    thread: threadReadView(thread, { lastTurn, view }),
+  };
 }
 
 export async function snoozeThread(config: CliConfig, rawThreadId: string, rawUntil: string) {
+  void config;
   const threadId = requireThreadId(rawThreadId);
   const snoozedUntil = normalizeSnoozeUntil(rawUntil);
-  const runtime = await discoverRuntime(config, { startDesktopIfNeeded: true });
-  return await withT3Api(runtime, config, async (api, invocation) => {
-    const adapter = new T3ThreadApi(api);
-    const inspected = await adapter.inspect(threadId);
-    const thread = inspected.thread;
-    if (thread.archivedAt != null) {
-      throw new CliError("THREAD_ARCHIVED", `Thread ${threadId} is archived and cannot be snoozed.`, {
-        exitCode: 4,
-        details: { threadId, archivedAt: thread.archivedAt },
-      });
-    }
-    const snapshot = await api.shellSnapshot().catch(() => api.snapshot().catch(() => null));
-    const projects = snapshot && Array.isArray(snapshot.projects) ? snapshot.projects : [];
-    const project = projects.find((candidate) => candidate.id === thread.projectId) ?? null;
-    const command = adapter.buildSnooze(threadId, snoozedUntil);
-    const changed = await adapter.dispatchSnooze(command);
-    return {
-      runtime,
-      auth: { source: invocation.source, version: invocation.version },
-      project,
-      thread: {
-        id: thread.id,
-        projectId: thread.projectId,
-        title: thread.title,
-        snoozedUntil: changed.verification.snoozedUntil,
-      },
-      command,
-      dispatch: changed.dispatch,
-      verification: changed.verification,
-    };
-  });
+  const store = await openStore();
+  const before = await fullThread(store, threadId);
+  if (before.archivedAt != null) {
+    throw new CliError("THREAD_ARCHIVED", `Thread ${threadId} is archived and cannot be snoozed.`, {
+      exitCode: 4,
+      details: { threadId, archivedAt: before.archivedAt },
+    });
+  }
+  const project = projectOf(await storedProjects(), before.projectId);
+  const command = {
+    type: "thread.snooze" as const,
+    commandId: randomUUID(),
+    threadId,
+    snoozedUntil,
+  };
+  const changed = await snoozeStoredThread(store, threadId, snoozedUntil);
+  return {
+    runtime: directRuntime(),
+    auth: directAuth(),
+    project,
+    thread: {
+      id: before.id,
+      projectId: before.projectId,
+      title: before.title,
+      snoozedUntil: changed.snoozedUntil,
+    },
+    command,
+    dispatch: null,
+    verification: {
+      accepted: true as const,
+      snoozedUntil: changed.snoozedUntil,
+      snoozedAt: changed.snoozedAt,
+      snapshotSequence: 0,
+    },
+  };
 }
 
 export async function unsnoozeThread(config: CliConfig, rawThreadId: string) {
+  void config;
   const threadId = requireThreadId(rawThreadId);
-  const runtime = await discoverRuntime(config, { startDesktopIfNeeded: true });
-  return await withT3Api(runtime, config, async (api, invocation) => {
-    const adapter = new T3ThreadApi(api);
-    const inspected = await adapter.inspect(threadId);
-    const thread = inspected.thread;
-    if (thread.archivedAt != null) {
-      throw new CliError("THREAD_ARCHIVED", `Thread ${threadId} is archived and cannot be unsnoozed.`, {
-        exitCode: 4,
-        details: { threadId, archivedAt: thread.archivedAt },
-      });
-    }
-    const snapshot = await api.shellSnapshot().catch(() => api.snapshot().catch(() => null));
-    const projects = snapshot && Array.isArray(snapshot.projects) ? snapshot.projects : [];
-    const project = projects.find((candidate) => candidate.id === thread.projectId) ?? null;
-    const command = adapter.buildUnsnooze(threadId);
-    const changed = await adapter.dispatchUnsnooze(command);
-    return {
-      runtime,
-      auth: { source: invocation.source, version: invocation.version },
-      project,
-      thread: {
-        id: thread.id,
-        projectId: thread.projectId,
-        title: thread.title,
-        snoozedUntil: changed.verification.snoozedUntil,
-      },
-      command,
-      dispatch: changed.dispatch,
-      verification: changed.verification,
-    };
-  });
+  const store = await openStore();
+  const before = await fullThread(store, threadId);
+  if (before.archivedAt != null) {
+    throw new CliError("THREAD_ARCHIVED", `Thread ${threadId} is archived and cannot be unsnoozed.`, {
+      exitCode: 4,
+      details: { threadId, archivedAt: before.archivedAt },
+    });
+  }
+  const project = projectOf(await storedProjects(), before.projectId);
+  const command = {
+    type: "thread.unsnooze" as const,
+    commandId: randomUUID(),
+    threadId,
+    reason: "user" as const,
+  };
+  const changed = await unsnoozeStoredThread(store, threadId);
+  return {
+    runtime: directRuntime(),
+    auth: directAuth(),
+    project,
+    thread: {
+      id: before.id,
+      projectId: before.projectId,
+      title: before.title,
+      snoozedUntil: changed.snoozedUntil,
+    },
+    command,
+    dispatch: null,
+    verification: {
+      accepted: true as const,
+      snoozedUntil: changed.snoozedUntil,
+      snoozedAt: changed.snoozedAt,
+      snapshotSequence: 0,
+    },
+  };
 }
 
 export async function interruptThread(
@@ -446,145 +511,131 @@ export async function interruptThread(
   rawThreadId: string,
   options: { run?: string } = {},
 ) {
+  void config;
   const threadId = requireThreadId(rawThreadId);
   const rawRun = options.run?.trim() ?? "";
   if (options.run !== undefined && !rawRun) {
     throw new CliError("INVALID_THREAD_OPTION", "--run requires a non-empty turn id.", { exitCode: 2 });
   }
   const turnId = rawRun || undefined;
-  const runtime = await discoverRuntime(config, { startDesktopIfNeeded: true });
-  return await withT3Api(runtime, config, async (api, invocation) => {
-    const adapter = new T3ThreadApi(api);
-    const inspected = await adapter.inspect(threadId);
-    const thread = inspected.thread;
-    if (thread.archivedAt != null) {
-      throw new CliError("THREAD_ARCHIVED", `Thread ${threadId} is archived and cannot be interrupted.`, {
-        exitCode: 4,
-        details: { threadId, archivedAt: thread.archivedAt },
-      });
-    }
-    const snapshot = await api.shellSnapshot().catch(() => api.snapshot().catch(() => null));
-    const projects = snapshot && Array.isArray(snapshot.projects) ? snapshot.projects : [];
-    const project = projects.find((candidate) => candidate.id === thread.projectId) ?? null;
-    const base = {
-      runtime,
-      auth: { source: invocation.source, version: invocation.version },
-      project,
-      thread: {
-        id: thread.id,
-        projectId: thread.projectId,
-        title: thread.title,
-        latestTurn: thread.latestTurn ?? null,
-      },
-    };
-    if (!isThreadActive(thread)) {
-      return {
-        ...base,
-        run: thread.latestTurn?.turnId ?? turnId ?? null,
-        result: "no_active_run" as const,
-        command: null,
-        dispatch: null,
-        verification: null,
-      };
-    }
-    const command = adapter.buildInterrupt(threadId, turnId);
-    let interrupted: { dispatch: unknown; thread: T3Thread; verification: { accepted: true; method: "interrupt"; snapshotSequence: number; state: string | null } };
-    try {
-      interrupted = await adapter.dispatchInterrupt(command);
-    } catch (cause) {
-      if (cause instanceof CliError && cause.code === "THREAD_INTERRUPT_NOT_VERIFIED") throw cause;
-      throw new CliError(
-        "THREAD_INTERRUPT_FAILED",
-        `T3 could not interrupt the active turn on thread ${threadId}.`,
-        { exitCode: 4, cause, details: { threadId } },
-      );
-    }
+  const store = await openStore();
+  const thread = await fullThread(store, threadId);
+  if (thread.archivedAt != null) {
+    throw new CliError("THREAD_ARCHIVED", `Thread ${threadId} is archived and cannot be interrupted.`, {
+      exitCode: 4,
+      details: { threadId, archivedAt: thread.archivedAt },
+    });
+  }
+  const project = projectOf(await storedProjects(), thread.projectId);
+  const base = {
+    runtime: directRuntime(),
+    auth: directAuth(),
+    project,
+    thread: {
+      id: thread.id,
+      projectId: thread.projectId,
+      title: thread.title,
+      latestTurn: thread.latestTurn ?? null,
+    },
+  };
+  if (!isThreadActive(thread)) {
     return {
       ...base,
-      run: interrupted.thread.latestTurn?.turnId ?? turnId ?? null,
-      result: "interrupt_requested" as const,
-      command,
-      dispatch: interrupted.dispatch,
-      verification: interrupted.verification,
+      run: thread.latestTurn?.turnId ?? turnId ?? null,
+      result: "no_active_run" as const,
+      command: null,
+      dispatch: null,
+      verification: null,
     };
-  });
+  }
+  const command = {
+    type: "thread.turn.interrupt" as const,
+    commandId: randomUUID(),
+    threadId,
+    ...(turnId ? { turnId } : {}),
+    createdAt: new Date().toISOString(),
+  };
+  // The store interrupt flips the ledger and aborts the live driver run
+  // tracked in this process; a foreign process's late completion is
+  // dropped by the runner's terminal-state guard.
+  const interrupted = await interruptStoredTurn(store, threadId, turnId);
+  const after = await fullThread(store, threadId);
+  return {
+    ...base,
+    run: after.latestTurn?.turnId ?? turnId ?? null,
+    result: "interrupt_requested" as const,
+    command,
+    dispatch: null,
+    verification: {
+      accepted: true as const,
+      method: "interrupt" as const,
+      snapshotSequence: 0,
+      state: after.latestTurn?.state ?? null,
+    },
+  };
 }
 
 async function changeThreadSettlement(
   config: CliConfig,
   rawThreadId: string,
-  state: ThreadSettlementState,
+  state: "settled" | "active",
 ) {
+  void config;
   const threadId = requireThreadId(rawThreadId);
-  const runtime = await discoverRuntime(config, { startDesktopIfNeeded: true });
-  if (runtime.capabilities.threadSettlement !== true) {
-    throw new CliError(
-      "THREAD_SETTLEMENT_UNSUPPORTED",
-      "This T3 Code server does not advertise thread settlement support.",
-      {
-        exitCode: 4,
-        details: { capability: "threadSettlement", serverVersion: runtime.serverVersion },
-      },
-    );
+  const store = await openStore();
+  const before = await fullThread(store, threadId);
+  if (before.archivedAt != null) {
+    throw new CliError("THREAD_ARCHIVED", `Thread ${threadId} is archived and cannot change settlement state.`, {
+      exitCode: 4,
+      details: { threadId, archivedAt: before.archivedAt },
+    });
   }
-  return await withT3Api(runtime, config, async (api, invocation) => {
-    const adapter = new T3ThreadApi(api);
-    const inspected = await adapter.inspect(threadId);
-    const thread = inspected.thread;
-    if (thread.archivedAt != null) {
-      throw new CliError("THREAD_ARCHIVED", `Thread ${threadId} is archived and cannot change settlement state.`, {
-        exitCode: 4,
-        details: { threadId, archivedAt: thread.archivedAt },
-      });
-    }
-    // The thread detail endpoint never carries the pending-work flags — they
-    // only exist on shell snapshot rows — so read the guard from there.
-    const shell = await api.shellSnapshot().catch(() => null);
-    const shellThread = Array.isArray(shell?.threads)
-      ? (shell.threads.find((candidate) => candidate.id === threadId) ?? null)
-      : null;
-    const sessionStatus = shellThread?.session?.status ?? thread.session?.status ?? null;
-    const hasPendingApprovals = (shellThread?.hasPendingApprovals ?? thread.hasPendingApprovals) === true;
-    const hasPendingUserInput = (shellThread?.hasPendingUserInput ?? thread.hasPendingUserInput) === true;
-    if (
-      state === "settled" &&
-      (sessionStatus === "starting" ||
-        sessionStatus === "running" ||
-        hasPendingApprovals ||
-        hasPendingUserInput)
-    ) {
-      throw new CliError("THREAD_SETTLE_BLOCKED", `Thread ${threadId} still has active or blocked work.`, {
-        exitCode: 4,
-        details: {
-          threadId,
-          sessionStatus,
-          hasPendingApprovals,
-          hasPendingUserInput,
-        },
-      });
-    }
-
-    const snapshot = shell ?? (await api.snapshot().catch(() => null));
-    const projects = snapshot && Array.isArray(snapshot.projects) ? snapshot.projects : [];
-    const project = projects.find((candidate) => candidate.id === thread.projectId) ?? null;
-    const command = adapter.buildSettlement(threadId, state);
-    const changed = await adapter.dispatchSettlement(command, thread.updatedAt);
-    return {
-      runtime,
-      auth: { source: invocation.source, version: invocation.version },
-      project,
-      thread: {
-        id: thread.id,
-        projectId: thread.projectId,
-        title: thread.title,
-        statusBefore: threadStatus(thread),
-        statusAfter: threadStatus(changed.thread),
+  if (
+    state === "settled" &&
+    (before.session?.status === "starting" ||
+      before.session?.status === "running" ||
+      before.hasPendingApprovals === true ||
+      before.hasPendingUserInput === true)
+  ) {
+    throw new CliError("THREAD_SETTLE_BLOCKED", `Thread ${threadId} still has active or blocked work.`, {
+      exitCode: 4,
+      details: {
+        threadId,
+        sessionStatus: before.session?.status ?? null,
+        hasPendingApprovals: before.hasPendingApprovals === true,
+        hasPendingUserInput: before.hasPendingUserInput === true,
       },
-      command,
-      dispatch: changed.dispatch,
-      verification: changed.verification,
-    };
-  });
+    });
+  }
+  const project = projectOf(await storedProjects(), before.projectId);
+  const command = state === "settled"
+    ? { type: "thread.settle" as const, commandId: randomUUID(), threadId }
+    : { type: "thread.unsettle" as const, commandId: randomUUID(), threadId, reason: "user" as const };
+  const changed = state === "settled"
+    ? await settleStoredThread(store, threadId)
+    : await unsettleStoredThread(store, threadId);
+  const after = toT3Thread(changed, await store.readTurns(threadId));
+  return {
+    runtime: directRuntime(),
+    auth: directAuth(),
+    project,
+    thread: {
+      id: before.id,
+      projectId: before.projectId,
+      title: before.title,
+      statusBefore: threadStatus(before),
+      statusAfter: threadStatus(after),
+    },
+    command,
+    dispatch: null,
+    verification: {
+      accepted: true as const,
+      state,
+      snapshotSequence: 0,
+      settledAt: changed.settledAt,
+      unsettledAt: changed.unsettledAt,
+    },
+  };
 }
 
 export async function settleThread(config: CliConfig, threadId: string) {
@@ -611,6 +662,7 @@ export interface ThreadDelegateOptions {
   timeoutMs?: number;
   openMode?: OpenMode;
   dryRun?: boolean;
+  drivers?: TurnDriverFactories;
 }
 
 function normalizeDelegateTimeout(raw: number | undefined): number {
@@ -633,7 +685,7 @@ function requireParentModes(thread: T3Thread): { runtimeMode: RuntimeMode; inter
   ) {
     throw new CliError(
       "T3_INVALID_THREAD",
-      `T3 thread ${thread.id} is missing its runtime or interaction mode.`,
+      `Thread ${thread.id} is missing its runtime or interaction mode.`,
       { details: { threadId: thread.id } },
     );
   }
@@ -650,161 +702,195 @@ export async function delegateTask(config: CliConfig, options: ThreadDelegateOpt
   const timeoutMs = normalizeDelegateTimeout(options.timeoutMs);
   const title = delegateThreadTitle(task, options.title);
 
-  const runtime = await discoverRuntime(config, { startDesktopIfNeeded: true });
-  const result = await withT3Api(runtime, config, async (api, invocation) => {
-    const adapter = new T3ThreadApi(api);
-    const inspectedParent = await adapter.inspect(parentThreadId);
-    const parent = inspectedParent.thread;
-    if (parent.archivedAt != null) {
-      throw new CliError("THREAD_ARCHIVED", `Thread ${parentThreadId} is archived and cannot delegate work.`, {
-        exitCode: 4,
-        details: { threadId: parentThreadId, archivedAt: parent.archivedAt },
-      });
-    }
-    const snapshot = await api.shellSnapshot().catch(() => api.snapshot().catch(() => null));
-    const projects = snapshot && Array.isArray(snapshot.projects) ? snapshot.projects : [];
-    const project = projects.find((candidate) => candidate.id === parent.projectId) ?? null;
+  const store = await openStore();
+  const parent = await fullThread(store, parentThreadId);
+  if (parent.archivedAt != null) {
+    throw new CliError("THREAD_ARCHIVED", `Thread ${parentThreadId} is archived and cannot delegate work.`, {
+      exitCode: 4,
+      details: { threadId: parentThreadId, archivedAt: parent.archivedAt },
+    });
+  }
+  const project = projectOf(await storedProjects(), parent.projectId);
 
-    const baseSelection =
-      asModelSelection(parent.modelSelection) ??
-      project?.defaultModelSelection ??
-      defaultModelSelectionForVersion(runtime.serverVersion);
-    const hasModelOverride =
-      options.provider !== undefined ||
-      options.model !== undefined ||
-      options.speedMode !== undefined ||
-      options.thinkingEffort !== undefined;
-    const delegateConfig: CliConfig = { ...config };
-    delete delegateConfig.provider;
-    delete delegateConfig.model;
-    delete delegateConfig.speedMode;
-    delete delegateConfig.thinkingEffort;
-    const modelSelection: ModelSelection = hasModelOverride
-      ? resolveModelSelection(baseSelection, delegateConfig, {
-          prompt: task,
-          ...(options.provider !== undefined ? { provider: options.provider } : {}),
-          ...(options.model !== undefined ? { model: options.model } : {}),
-          ...(options.speedMode !== undefined ? { speedMode: options.speedMode } : {}),
-          ...(options.thinkingEffort !== undefined ? { thinkingEffort: options.thinkingEffort } : {}),
-        })
-      : baseSelection;
-    const { runtimeMode, interactionMode } = requireParentModes(parent);
+  const baseSelection =
+    asModelSelection(parent.modelSelection) ??
+    project?.defaultModelSelection ??
+    defaultModelSelection();
+  const hasModelOverride =
+    options.provider !== undefined ||
+    options.model !== undefined ||
+    options.speedMode !== undefined ||
+    options.thinkingEffort !== undefined;
+  const delegateConfig: CliConfig = { ...config };
+  delete delegateConfig.provider;
+  delete delegateConfig.model;
+  delete delegateConfig.speedMode;
+  delete delegateConfig.thinkingEffort;
+  const modelSelection: ModelSelection = hasModelOverride
+    ? resolveModelSelection(baseSelection, delegateConfig, {
+        prompt: task,
+        ...(options.provider !== undefined ? { provider: options.provider } : {}),
+        ...(options.model !== undefined ? { model: options.model } : {}),
+        ...(options.speedMode !== undefined ? { speedMode: options.speedMode } : {}),
+        ...(options.thinkingEffort !== undefined ? { thinkingEffort: options.thinkingEffort } : {}),
+      })
+    : baseSelection;
+  const { runtimeMode, interactionMode } = requireParentModes(parent);
 
-    const createdAt = new Date().toISOString();
-    const childThreadId = randomUUID();
-    const messageId = randomUUID();
-    const createCommand = {
-      type: "thread.create" as const,
-      commandId: randomUUID(),
-      threadId: childThreadId,
-      projectId: parent.projectId,
-      title,
-      modelSelection,
-      runtimeMode,
-      interactionMode,
-      branch: parent.branch ?? null,
-      worktreePath: null,
-      createdAt,
-    };
-    const turnCommand = {
-      type: "thread.turn.start" as const,
-      commandId: randomUUID(),
-      threadId: childThreadId,
-      message: { messageId, role: "user" as const, text: task, attachments: [] as [] },
-      modelSelection,
-      titleSeed: title,
-      runtimeMode,
-      interactionMode,
-      createdAt,
-    };
+  const createdAt = new Date().toISOString();
+  const childThreadId = randomUUID();
+  const messageId = randomUUID();
+  const createCommand = {
+    type: "thread.create" as const,
+    commandId: randomUUID(),
+    threadId: childThreadId,
+    projectId: parent.projectId,
+    title,
+    modelSelection,
+    runtimeMode,
+    interactionMode,
+    branch: parent.branch ?? null,
+    worktreePath: null,
+    createdAt,
+  };
+  const turnCommand = {
+    type: "thread.turn.start" as const,
+    commandId: randomUUID(),
+    threadId: childThreadId,
+    message: { messageId, role: "user" as const, text: task, attachments: [] as [] },
+    modelSelection,
+    titleSeed: title,
+    runtimeMode,
+    interactionMode,
+    createdAt,
+  };
 
-    const base = {
-      runtime,
-      auth: { source: invocation.source, version: invocation.version },
-      project,
-      parent: { id: parent.id, projectId: parent.projectId, title: parent.title },
-      child: { id: childThreadId, projectId: parent.projectId, title },
-      createCommand,
-      turnCommand,
-    };
-    if (options.dryRun) {
-      return {
-        ...base,
-        task: {
-          taskId: childThreadId,
-          childThreadId,
-          childRunId: null,
-          status: "running" as DelegatedTaskStatus,
-          workState: "working" as DelegatedTaskWorkState,
-          summary: null,
-          waitTimedOut: false,
-        },
-        dispatch: null,
-        verification: null,
-      };
-    }
-
-    await api.dispatch(createCommand);
-    let sent: { dispatch: unknown; verification: { accepted: true; method: "message-id"; snapshotSequence: number; messageId: string } };
-    try {
-      sent = await adapter.dispatchTurn(turnCommand);
-    } catch (cause) {
-      if (cause instanceof CliError && (cause.code === "THREAD_TURN_NOT_VERIFIED" || cause.code === "T3_INVALID_DISPATCH")) {
-        throw cause;
-      }
-      throw new CliError(
-        "THREAD_START_FAILED",
-        `T3 created delegated thread ${childThreadId} but could not start its task turn. The child thread was left untouched.`,
-        { cause, details: { threadId: childThreadId } },
-      );
-    }
-
-    let waitTimedOut = false;
-    let child = (await adapter.inspect(childThreadId)).thread;
-    if (wait) {
-      const deadline = Date.now() + timeoutMs;
-      for (;;) {
-        const state = child.latestTurn?.state;
-        if (state === "completed" || state === "interrupted" || state === "error") break;
-        if (Date.now() >= deadline) {
-          waitTimedOut = true;
-          break;
-        }
-        await sleep(DELEGATE_POLL_INTERVAL_MS);
-        child = (await adapter.inspect(childThreadId).catch(() => null))?.thread ?? child;
-      }
-      if (!waitTimedOut) {
-        const state = child.latestTurn?.state;
-        if (state !== "completed" && state !== "interrupted" && state !== "error") waitTimedOut = true;
-      }
-    }
-    const read = await adapter.read(childThreadId).catch(() => null);
-    const summaryThread = read?.thread ?? child;
-    const status = delegatedStatusOf(child);
+  const base = {
+    runtime: directRuntime(),
+    auth: directAuth(),
+    project,
+    parent: { id: parent.id, projectId: parent.projectId, title: parent.title },
+    child: { id: childThreadId, projectId: parent.projectId, title },
+    createCommand,
+    turnCommand,
+  };
+  if (options.dryRun) {
     return {
       ...base,
       task: {
         taskId: childThreadId,
         childThreadId,
-        childRunId: child.latestTurn?.turnId ?? null,
-        status,
-        workState: delegatedWorkStateOf(status),
-        summary: threadAssistantSummary(summaryThread),
-        waitTimedOut,
+        childRunId: null,
+        status: "running" as DelegatedTaskStatus,
+        workState: "working" as DelegatedTaskWorkState,
+        summary: null,
+        waitTimedOut: false,
       },
-      dispatch: sent.dispatch,
-      verification: sent.verification,
+      dispatch: null,
+      verification: null,
+      opened: openedNone(options.openMode, config),
+      dryRun: true as const,
     };
-  });
+  }
 
-  const opened = options.dryRun
-    ? { mode: options.openMode ?? config.openMode, kind: "none" as const, url: null, exactThread: false }
-    : await openThread(options.openMode ?? config.openMode, runtime, result.child.id);
-  return { ...result, opened, dryRun: options.dryRun ?? false };
+  const created = await createStoredThread(store, {
+    projectId: parent.projectId,
+    title,
+    modelSelection,
+    runtimeMode,
+    interactionMode,
+    env: { ...(await inspectStoredThread(store, parentThreadId)).env },
+  });
+  const childId = created.id;
+  const childEnvPath = created.env.path;
+  const sent = await sendStoredTurn(store, childId, { prompt: task }).catch((cause) => {
+    throw new CliError(
+      "THREAD_START_FAILED",
+      `Created delegated thread ${childId} but could not start its task turn. The child thread was left untouched.`,
+      { cause, details: { threadId: childId } },
+    );
+  });
+  await store.appendDelegation({
+    id: randomUUID(),
+    parentThreadId,
+    childThreadId: childId,
+    prompt: task,
+    status: "running",
+    createdAt,
+    updatedAt: createdAt,
+  }).catch(() => undefined);
+  const driver = driverForInstance(driverOwner, modelSelection.instanceId, options.drivers);
+  const hasSession = await Effect.runPromise(driver.hasSession(childId)).catch(() => false);
+  if (!hasSession) {
+    await Effect.runPromise(driver.startSession({
+      threadId: childId,
+      workingDirectory: childEnvPath.trim().length > 0 ? childEnvPath : process.cwd(),
+      modelSelection,
+      runtimeMode,
+      interactionMode,
+    })).catch(() => undefined);
+  }
+  void executeTurn({
+    store,
+    driver,
+    threadId: childId,
+    storeTurnId: sent.turn.id,
+    prompt: task,
+    modelSelection,
+    workingDirectory: childEnvPath,
+  }).catch(() => undefined);
+
+  let waitTimedOut = false;
+  let latest = await fullThread(store, childId);
+  if (wait) {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const state = latest.latestTurn?.state;
+      if (state === "completed" || state === "interrupted" || state === "error") break;
+      if (Date.now() >= deadline) {
+        waitTimedOut = true;
+        break;
+      }
+      await sleep(DELEGATE_POLL_INTERVAL_MS);
+      latest = await fullThread(store, childId).catch(() => latest);
+    }
+    if (!waitTimedOut) {
+      const state = latest.latestTurn?.state;
+      if (state !== "completed" && state !== "interrupted" && state !== "error") waitTimedOut = true;
+    }
+  }
+  const status = delegatedStatusOf(latest);
+  return {
+    runtime: directRuntime(),
+    auth: directAuth(),
+    project,
+    parent: { id: parent.id, projectId: parent.projectId, title: parent.title },
+    child: { id: latest.id, projectId: latest.projectId, title: latest.title },
+    createCommand: { ...createCommand, threadId: latest.id },
+    turnCommand: { ...turnCommand, threadId: latest.id, message: { ...turnCommand.message, messageId: sent.messageId } },
+    task: {
+      taskId: latest.id,
+      childThreadId: latest.id,
+      childRunId: latest.latestTurn?.turnId ?? null,
+      status,
+      workState: delegatedWorkStateOf(status),
+      summary: threadAssistantSummary(latest),
+      waitTimedOut,
+    },
+    dispatch: null,
+    verification: {
+      accepted: true as const,
+      method: "message-id" as const,
+      snapshotSequence: 0,
+      messageId: sent.messageId,
+    },
+    opened: openedNone(options.openMode, config),
+    dryRun: false as const,
+  };
 }
 
 async function describeDelegatedTask(
-  api: T3ThreadApi,
+  store: ThreadStore,
   parentThreadId: string,
   rawTaskId: string,
 ): Promise<{
@@ -820,18 +906,16 @@ async function describeDelegatedTask(
   };
 }> {
   const taskId = requireThreadId(rawTaskId);
-  const inspectedParent = await api.inspect(parentThreadId);
-  const inspectedChild = await api.inspect(taskId).catch(() => null);
-  if (!inspectedChild) {
-    throw new CliError("TASK_NOT_FOUND", `No delegated task exists with id ${taskId} for thread ${parentThreadId}.`, {
-      exitCode: 3,
-      details: { taskId, parentThreadId },
-    });
+  const parent = await fullThread(store, parentThreadId);
+  const delegation = await delegationForChild(store, parentThreadId, taskId);
+  const childId = delegation?.childThreadId ?? taskId;
+  let child: T3Thread | null = null;
+  try {
+    child = await fullThread(store, childId);
+  } catch {
+    child = null;
   }
-  const parent = inspectedParent.thread;
-  const childSummary = await api.read(taskId).catch(() => null);
-  const child = childSummary?.thread ?? inspectedChild.thread;
-  if (child.projectId !== parent.projectId) {
+  if (!child || child.projectId !== parent.projectId) {
     throw new CliError("TASK_NOT_FOUND", `No delegated task exists with id ${taskId} for thread ${parentThreadId}.`, {
       exitCode: 3,
       details: { taskId, parentThreadId },
@@ -853,79 +937,84 @@ async function describeDelegatedTask(
 }
 
 export async function taskStatus(config: CliConfig, rawParentThreadId: string, rawTaskId: string) {
+  void config;
   const parentThreadId = requireThreadId(rawParentThreadId);
-  const runtime = await discoverRuntime(config, { startDesktopIfNeeded: false });
-  return await withT3Api(runtime, config, async (api, invocation) => {
-    const adapter = new T3ThreadApi(api);
-    const described = await describeDelegatedTask(adapter, parentThreadId, rawTaskId);
-    const snapshot = await api.shellSnapshot().catch(() => api.snapshot().catch(() => null));
-    const projects = snapshot && Array.isArray(snapshot.projects) ? snapshot.projects : [];
-    const project = projects.find((candidate) => candidate.id === described.parent.projectId) ?? null;
-    return {
-      runtime,
-      auth: { source: invocation.source, version: invocation.version },
-      project,
-      parent: { id: described.parent.id, projectId: described.parent.projectId, title: described.parent.title },
-      task: { ...described.task, hasPendingChildRuns: false, waitTimedOut: false },
-    };
-  });
+  const store = await openStore();
+  const described = await describeDelegatedTask(store, parentThreadId, rawTaskId);
+  const project = projectOf(await storedProjects(), described.parent.projectId);
+  return {
+    runtime: directRuntime(),
+    auth: directAuth(),
+    project,
+    parent: { id: described.parent.id, projectId: described.parent.projectId, title: described.parent.title },
+    task: { ...described.task, hasPendingChildRuns: false, waitTimedOut: false },
+  };
 }
 
 export async function cancelTask(config: CliConfig, rawParentThreadId: string, rawTaskId: string) {
+  void config;
   const parentThreadId = requireThreadId(rawParentThreadId);
-  const runtime = await discoverRuntime(config, { startDesktopIfNeeded: true });
-  return await withT3Api(runtime, config, async (api, invocation) => {
-    const adapter = new T3ThreadApi(api);
-    const described = await describeDelegatedTask(adapter, parentThreadId, rawTaskId);
-    const snapshot = await api.shellSnapshot().catch(() => api.snapshot().catch(() => null));
-    const projects = snapshot && Array.isArray(snapshot.projects) ? snapshot.projects : [];
-    const project = projects.find((candidate) => candidate.id === described.parent.projectId) ?? null;
-    const base = {
-      runtime,
-      auth: { source: invocation.source, version: invocation.version },
-      project,
-      parent: { id: described.parent.id, projectId: described.parent.projectId, title: described.parent.title },
-    };
-    const child = described.child;
-    if (!isThreadActive(child)) {
-      const terminal = child.latestTurn?.state;
-      const status =
-        terminal === "completed" ? "completed" as const
-        : terminal === "error" ? "failed" as const
-        : terminal === "interrupted" ? "interrupted" as const
-        : "cancelled" as const;
-      return {
-        ...base,
-        task: { ...described.task, status },
-        command: null,
-        dispatch: null,
-        verification: null,
-      };
-    }
-    const command = adapter.buildInterrupt(child.id);
-    let interrupted: { dispatch: unknown; thread: T3Thread; verification: { accepted: true; method: "interrupt"; snapshotSequence: number; state: string | null } };
-    try {
-      interrupted = await adapter.dispatchInterrupt(command);
-    } catch (cause) {
-      if (cause instanceof CliError && cause.code === "THREAD_INTERRUPT_NOT_VERIFIED") throw cause;
-      throw new CliError(
-        "TASK_CANCEL_UNSUPPORTED",
-        `T3 could not interrupt delegated task ${described.task.taskId}; cancellation is unsupported for this thread.`,
-        { exitCode: 4, cause, details: { taskId: described.task.taskId, childThreadId: child.id } },
-      );
-    }
-    const state = interrupted.thread.latestTurn?.state;
+  const store = await openStore();
+  const described = await describeDelegatedTask(store, parentThreadId, rawTaskId);
+  const project = projectOf(await storedProjects(), described.parent.projectId);
+  const base = {
+    runtime: directRuntime(),
+    auth: directAuth(),
+    project,
+    parent: { id: described.parent.id, projectId: described.parent.projectId, title: described.parent.title },
+  };
+  const child = described.child;
+  if (!isThreadActive(child)) {
+    const terminal = child.latestTurn?.state;
+    const status =
+      terminal === "completed" ? "completed" as const
+      : terminal === "error" ? "failed" as const
+      : terminal === "interrupted" ? "interrupted" as const
+      : "cancelled" as const;
     return {
       ...base,
-      task: {
-        ...described.task,
-        status: state === "interrupted" ? "interrupted" as const : "cancel_requested" as const,
-      },
-      command,
-      dispatch: interrupted.dispatch,
-      verification: interrupted.verification,
+      task: { ...described.task, status },
+      command: null,
+      dispatch: null,
+      verification: null,
     };
-  });
+  }
+  const command = {
+    type: "thread.turn.interrupt" as const,
+    commandId: randomUUID(),
+    threadId: child.id,
+    createdAt: new Date().toISOString(),
+  };
+  try {
+    await interruptStoredTurn(store, child.id);
+  } catch (cause) {
+    throw new CliError(
+      "TASK_CANCEL_UNSUPPORTED",
+      `Could not interrupt delegated task ${described.task.taskId}; cancellation is unsupported for this thread.`,
+      { exitCode: 4, cause, details: { taskId: described.task.taskId, childThreadId: child.id } },
+    );
+  }
+  const delegation = await delegationForChild(store, parentThreadId, child.id);
+  if (delegation && delegation.status !== "cancelled") {
+    await store.updateDelegation(delegation.id, { status: "cancelled" }).catch(() => null);
+  }
+  const after = await fullThread(store, child.id);
+  const state = after.latestTurn?.state;
+  return {
+    ...base,
+    task: {
+      ...described.task,
+      status: state === "interrupted" ? "interrupted" as const : "cancel_requested" as const,
+    },
+    command,
+    dispatch: null,
+    verification: {
+      accepted: true as const,
+      method: "interrupt" as const,
+      snapshotSequence: 0,
+      state: state ?? null,
+    },
+  };
 }
 
 export async function sendThreadMessage(config: CliConfig, options: ThreadSendOptions) {
@@ -941,157 +1030,93 @@ export async function sendThreadMessage(config: CliConfig, options: ThreadSendOp
   const delivery = normalizeDelivery(options.delivery);
   const handoffNote = normalizeHandoffNote(options.handoffNote);
 
-  const runtime = await discoverRuntime(config, { startDesktopIfNeeded: true });
+  const store = await openStore();
+  const thread = await fullThread(store, threadId);
+  if (thread.archivedAt != null) {
+    throw new CliError("THREAD_ARCHIVED", `Thread ${threadId} is archived and cannot receive a new turn.`, {
+      exitCode: 4,
+      details: { threadId, archivedAt: thread.archivedAt },
+    });
+  }
 
-  const result = await withT3Api(runtime, config, async (api, invocation) => {
-    const adapter = new T3ThreadApi(api);
-    const inspected = await adapter.inspect(threadId);
-    const thread = inspected.thread;
-    if (thread.archivedAt != null) {
-      throw new CliError("THREAD_ARCHIVED", `Thread ${threadId} is archived and cannot receive a new turn.`, {
+  const project = projectOf(await storedProjects(), thread.projectId);
+  if (threadStatus(thread) === "settled" && !options.wakeSettled) {
+    if (!options.confirmSettled) {
+      throw new CliError(
+        "SETTLED_THREAD_CONFIRMATION_REQUIRED",
+        `Thread ${threadId} is settled. Re-run with --wake-settled to send and wake it.`,
+        { exitCode: 4, details: { threadId, settledAt: thread.settledAt } },
+      );
+    }
+    if (!(await options.confirmSettled(thread, project))) {
+      throw new CliError("SETTLED_THREAD_DECLINED", `Did not send a message to settled thread ${threadId}.`, {
         exitCode: 4,
-        details: { threadId, archivedAt: thread.archivedAt },
-      });
-    }
-
-    const snapshot = await api.shellSnapshot().catch(() => api.snapshot().catch(() => null));
-    const projects = snapshot && Array.isArray(snapshot.projects) ? snapshot.projects : [];
-    const project = projects.find((candidate) => candidate.id === thread.projectId) ?? null;
-    if (threadStatus(thread) === "settled" && !options.wakeSettled) {
-      if (!options.confirmSettled) {
-        throw new CliError(
-          "SETTLED_THREAD_CONFIRMATION_REQUIRED",
-          `Thread ${threadId} is settled. Re-run with --wake-settled to send and wake it.`,
-          { exitCode: 4, details: { threadId, settledAt: thread.settledAt } },
-        );
-      }
-      if (!(await options.confirmSettled(thread, project))) {
-        throw new CliError("SETTLED_THREAD_DECLINED", `Did not send a message to settled thread ${threadId}.`, {
-          exitCode: 4,
-          details: { threadId },
-        });
-      }
-    }
-
-    const busy = isThreadBusy(thread);
-    // V1 transports every follow-up as thread.turn.start; --delivery selects
-    // client-side policy and reporting because the V1 wire has no steer/queue
-    // mode. queue/steer/restart take precedence over --if-busy.
-    if (delivery === "auto" && busy && ifBusy === "reject") {
-      throw new CliError("THREAD_BUSY", "The thread has an active or pending turn. Retry when idle or use --if-busy inject.", {
         details: { threadId },
       });
     }
-    if ((delivery === "steer" || delivery === "restart") && !busy) {
-      throw new CliError(
-        "THREAD_NOT_STEERABLE",
-        `Thread ${threadId} has no active turn to ${delivery}. Send without --delivery or with --delivery queue.`,
-        { exitCode: 4, details: { threadId, delivery } },
-      );
-    }
-    const deliveryResult: ThreadSendDeliveryResult =
-      delivery === "queue" ? (busy ? "queued" : "started")
-      : delivery === "steer" ? "steered"
-      : delivery === "restart" ? "restarted"
-      : "started";
+  }
 
-    const baseSelection =
-      asModelSelection(thread.modelSelection) ??
-      project?.defaultModelSelection ??
-      defaultModelSelectionForVersion(runtime.serverVersion);
-    const hasModelOverride =
-      options.provider !== undefined ||
-      options.model !== undefined ||
-      options.speedMode !== undefined ||
-      options.thinkingEffort !== undefined;
-    // Follow-ups keep the thread's model unless flags explicitly override it:
-    // global config provider/model must not flip a scheduled thread's model.
-    const sendConfig: CliConfig = { ...config };
-    delete sendConfig.provider;
-    delete sendConfig.model;
-    delete sendConfig.speedMode;
-    delete sendConfig.thinkingEffort;
-    const modelSelection = hasModelOverride
-      ? resolveModelSelection(baseSelection, sendConfig, {
-          prompt,
-          ...(options.provider !== undefined ? { provider: options.provider } : {}),
-          ...(options.model !== undefined ? { model: options.model } : {}),
-          ...(options.speedMode !== undefined ? { speedMode: options.speedMode } : {}),
-          ...(options.thinkingEffort !== undefined ? { thinkingEffort: options.thinkingEffort } : {}),
-        })
-      : undefined;
+  const busy = isThreadBusy(thread);
+  if (delivery === "auto" && busy && ifBusy === "reject") {
+    throw new CliError("THREAD_BUSY", "The thread has an active or pending turn. Retry when idle or use --if-busy inject.", {
+      details: { threadId },
+    });
+  }
+  if ((delivery === "steer" || delivery === "restart") && !busy) {
+    throw new CliError(
+      "THREAD_NOT_STEERABLE",
+      `Thread ${threadId} has no active turn to ${delivery}. Send without --delivery or with --delivery queue.`,
+      { exitCode: 4, details: { threadId, delivery } },
+    );
+  }
+  const deliveryResult: ThreadSendDeliveryResult =
+    delivery === "queue" ? (busy ? "queued" : "started")
+    : delivery === "steer" ? "steered"
+    : delivery === "restart" ? "restarted"
+    : "started";
 
-    const baseCommand = adapter.buildTurnStart(thread, prompt);
-    const command = {
-      ...baseCommand,
-      ...(modelSelection ? { modelSelection } : {}),
-    };
+  const baseSelection =
+    asModelSelection(thread.modelSelection) ??
+    project?.defaultModelSelection ??
+    defaultModelSelection();
+  const hasModelOverride =
+    options.provider !== undefined ||
+    options.model !== undefined ||
+    options.speedMode !== undefined ||
+    options.thinkingEffort !== undefined;
+  // Follow-ups keep the thread's model unless flags explicitly override it:
+  // global config provider/model must not flip a scheduled thread's model.
+  const sendConfig: CliConfig = { ...config };
+  delete sendConfig.provider;
+  delete sendConfig.model;
+  delete sendConfig.speedMode;
+  delete sendConfig.thinkingEffort;
+  const modelSelection = hasModelOverride
+    ? resolveModelSelection(baseSelection, sendConfig, {
+        prompt,
+        ...(options.provider !== undefined ? { provider: options.provider } : {}),
+        ...(options.model !== undefined ? { model: options.model } : {}),
+        ...(options.speedMode !== undefined ? { speedMode: options.speedMode } : {}),
+        ...(options.thinkingEffort !== undefined ? { thinkingEffort: options.thinkingEffort } : {}),
+      })
+    : undefined;
 
-    if (options.dryRun) {
-      return {
-        runtime,
-        auth: { source: invocation.source, version: invocation.version },
-        project,
-        thread: {
-          id: thread.id,
-          projectId: thread.projectId,
-          title: thread.title,
-          statusBeforeSend: threadStatus(thread),
-        },
-        message: {
-          messageId: command.message.messageId,
-          textLength: command.message.text.length,
-        },
-        command: {
-          type: command.type,
-          commandId: command.commandId,
-          threadId: command.threadId,
-          runtimeMode: command.runtimeMode,
-          interactionMode: command.interactionMode,
-          ...(modelSelection ? { modelSelection } : {}),
-          createdAt: command.createdAt,
-        },
-        delivery: deliveryResult,
-        handoffNote,
-        ...(delivery === "restart"
-          ? { interruptPreview: { type: "thread.turn.interrupt", threadId: thread.id } }
-          : {}),
-        dispatch: null,
-        verification: null,
-      };
-    }
+  const createdAt = new Date().toISOString();
+  const previewCommand = {
+    type: "thread.turn.start" as const,
+    commandId: randomUUID(),
+    threadId,
+    message: { messageId: randomUUID(), role: "user" as const, text: prompt, attachments: [] as [] },
+    runtimeMode: thread.runtimeMode ?? "full-access",
+    interactionMode: thread.interactionMode ?? "default",
+    ...(modelSelection ? { modelSelection } : {}),
+    createdAt,
+  };
 
-    if (delivery === "restart") {
-      // Restart steers by interrupting the active provider turn first, then
-      // sending the replacement message as a fresh turn.
-      const interrupt = adapter.buildInterrupt(thread.id);
-      try {
-        await adapter.dispatchInterrupt(interrupt);
-      } catch (cause) {
-        throw new CliError(
-          "THREAD_RESTART_FAILED",
-          `T3 could not interrupt the active turn on thread ${thread.id} before restarting it.`,
-          { exitCode: 4, cause, details: { threadId: thread.id } },
-        );
-      }
-    }
-
-    let sent: { dispatch: unknown; verification: { accepted: true; method: "message-id"; snapshotSequence: number; messageId: string } };
-    try {
-      sent = await adapter.dispatchTurn(command);
-    } catch (cause) {
-      if (cause instanceof CliError && (cause.code === "THREAD_TURN_NOT_VERIFIED" || cause.code === "T3_INVALID_DISPATCH")) {
-        throw cause;
-      }
-      throw new CliError(
-        "THREAD_START_FAILED",
-        `T3 could not start a turn on thread ${thread.id}. The thread was left untouched.`,
-        { cause, details: { threadId: thread.id } },
-      );
-    }
+  if (options.dryRun) {
     return {
-      runtime,
-      auth: { source: invocation.source, version: invocation.version },
+      runtime: directRuntime(),
+      auth: directAuth(),
       project,
       thread: {
         id: thread.id,
@@ -1100,30 +1125,126 @@ export async function sendThreadMessage(config: CliConfig, options: ThreadSendOp
         statusBeforeSend: threadStatus(thread),
       },
       message: {
-        messageId: command.message.messageId,
-        textLength: command.message.text.length,
+        messageId: previewCommand.message.messageId,
+        textLength: previewCommand.message.text.length,
       },
       command: {
-        type: command.type,
-        commandId: command.commandId,
-        threadId: command.threadId,
-        runtimeMode: command.runtimeMode,
-        interactionMode: command.interactionMode,
+        type: previewCommand.type,
+        commandId: previewCommand.commandId,
+        threadId: previewCommand.threadId,
+        runtimeMode: previewCommand.runtimeMode,
+        interactionMode: previewCommand.interactionMode,
         ...(modelSelection ? { modelSelection } : {}),
-        createdAt: command.createdAt,
+        createdAt: previewCommand.createdAt,
       },
       delivery: deliveryResult,
       handoffNote,
-      dispatch: sent.dispatch,
-      verification: sent.verification,
-      ...(modelSelection ? { modelSelection } : {}),
+      ...(delivery === "restart"
+        ? { interruptPreview: { type: "thread.turn.interrupt", threadId: thread.id } }
+        : {}),
+      dispatch: null,
+      verification: null,
+      opened: openedNone(options.openMode, config),
+      dryRun: true as const,
     };
+  }
+
+  // Resolve the driver before touching the ledger: unknown providers fail
+  // without recording a turn.
+  const instanceId = modelSelection?.instanceId ?? thread.modelSelection?.instanceId ?? "codex";
+  const driver = driverForInstance(driverOwner, instanceId, options.drivers);
+
+  // `restart` is atomic in the store: it interrupts the running turn
+  // (aborting the tracked driver run) and chains the replacement turn.
+  const sent = await sendStoredTurn(store, threadId, {
+    prompt,
+    ...(options.ifBusy ? { ifBusy: options.ifBusy } : {}),
+    ...(options.delivery ? { delivery: options.delivery } : {}),
+    ...(options.wakeSettled !== undefined ? { wakeSettled: options.wakeSettled } : {}),
+    ...(modelSelection ? { modelSelection } : {}),
+    ...(options.handoffNote !== undefined ? { handoffNote: options.handoffNote } : {}),
+  }).catch((cause) => {
+    if (cause instanceof CliError && cause.code === "THREAD_BUSY") throw cause;
+    throw new CliError(
+      "THREAD_START_FAILED",
+      `Could not start a turn on thread ${thread.id}. The thread was left untouched.`,
+      { cause, details: { threadId: thread.id } },
+    );
   });
 
-  const opened = options.dryRun
-    ? { mode: options.openMode ?? config.openMode, kind: "none" as const, url: null, exactThread: false }
-    : await openThread(options.openMode ?? config.openMode, runtime, result.thread.id);
-  return { ...result, opened, dryRun: options.dryRun ?? false };
+  const hasSession = await Effect.runPromise(driver.hasSession(threadId)).catch(() => false);
+  if (!hasSession) {
+    await Effect.runPromise(driver.startSession({
+      threadId,
+      workingDirectory: sent.thread.env.path.trim().length > 0 ? sent.thread.env.path : process.cwd(),
+      modelSelection: sent.thread.modelSelection,
+      runtimeMode: sent.thread.runtimeMode,
+      interactionMode: sent.thread.interactionMode,
+    })).catch(() => undefined);
+  }
+  void executeTurn({
+    store,
+    driver,
+    threadId,
+    storeTurnId: sent.turn.id,
+    prompt,
+    ...(modelSelection ? { modelSelection } : {}),
+    workingDirectory: sent.thread.env.path,
+  }).catch(() => undefined);
+  if (options.noWait !== true) {
+    // One-shot CLI: the process is the only runner. Returning at
+    // acceptance would orphan the run and strand the turn `running`.
+    await waitForTurnTerminal(store, threadId, sent.turn.id, () =>
+      interruptStoredTurn(store, threadId).catch(() => undefined),
+    );
+  }
+
+  const command = {
+    type: "thread.turn.start" as const,
+    commandId: randomUUID(),
+    threadId,
+    message: { messageId: sent.messageId, role: "user" as const, text: prompt, attachments: [] as [] },
+    runtimeMode: thread.runtimeMode ?? "full-access",
+    interactionMode: thread.interactionMode ?? "default",
+    ...(modelSelection ? { modelSelection } : {}),
+    createdAt,
+  };
+  return {
+    runtime: directRuntime(),
+    auth: directAuth(),
+    project,
+    thread: {
+      id: thread.id,
+      projectId: thread.projectId,
+      title: thread.title,
+      statusBeforeSend: threadStatus(thread),
+    },
+    message: {
+      messageId: sent.messageId,
+      textLength: prompt.length,
+    },
+    command: {
+      type: command.type,
+      commandId: command.commandId,
+      threadId: command.threadId,
+      runtimeMode: command.runtimeMode,
+      interactionMode: command.interactionMode,
+      ...(modelSelection ? { modelSelection } : {}),
+      createdAt: command.createdAt,
+    },
+    delivery: deliveryResult,
+    handoffNote,
+    dispatch: null,
+    verification: {
+      accepted: true as const,
+      method: "message-id" as const,
+      snapshotSequence: 0,
+      messageId: sent.messageId,
+    },
+    ...(modelSelection ? { modelSelection } : {}),
+    opened: openedNone(options.openMode, config),
+    dryRun: false as const,
+  };
 }
 
 export async function sendThreadPrompt(config: CliConfig, options: ThreadSendOptions) {

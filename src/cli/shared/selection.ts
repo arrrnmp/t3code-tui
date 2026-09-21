@@ -7,8 +7,6 @@ import type {
 } from "../../types.js";
 
 const LEGACY_DEFAULT_MODEL_SELECTION: ModelSelection = { instanceId: "codex", model: "gpt-5.4" };
-const CURRENT_DEFAULT_MODEL_SELECTION: ModelSelection = { instanceId: "codex", model: "gpt-6-astra" };
-const MODERN_DEFAULTS_VERSION = "0.0.29";
 
 export interface ModelSelectionRequest {
   prompt: string;
@@ -35,14 +33,14 @@ export function versionAtLeast(version: string, minimum: string): boolean {
   return true;
 }
 
-export function defaultModelSelectionForVersion(version: string): ModelSelection {
-  return versionAtLeast(version, MODERN_DEFAULTS_VERSION)
-    ? CURRENT_DEFAULT_MODEL_SELECTION
-    : LEGACY_DEFAULT_MODEL_SELECTION;
-}
-
-export function defaultStartFromOriginForVersion(version: string): boolean {
-  return versionAtLeast(version, MODERN_DEFAULTS_VERSION);
+/**
+ * Explicit installation default (DECOUPLE.md §10): the native Codex
+ * driver with a long-lived model slug, verified against live `model/list`.
+ * Anything more specific wins — flags, config, project default, thread
+ * model — this is only the last resort so a bare `send` has an address.
+ */
+export function defaultModelSelection(): ModelSelection {
+  return { ...LEGACY_DEFAULT_MODEL_SELECTION };
 }
 
 export function nonEmptyOption(value: string | undefined, name: string): string | undefined {

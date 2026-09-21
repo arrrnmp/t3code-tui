@@ -24,7 +24,7 @@ import {
   extractMentions,
   MAX_PENDING_ATTACHMENTS,
 } from "../model/attachments.js";
-import type { ImageAttachmentUpload } from "../../cli/threads/threadApi.js";
+import type { ImageAttachmentUpload } from "../model/attachments.js";
 import { formatContextUsage, formatTokenCount, groupTurns } from "../model/turns.js";
 import { markModalDismissed } from "../model/modalDismiss.js";
 import { Sidebar } from "../features/sidebar/sidebar.js";

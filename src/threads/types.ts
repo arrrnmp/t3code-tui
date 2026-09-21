@@ -35,6 +35,7 @@ export interface StoredThread {
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly archivedAt: string | null;
+  readonly deletedAt: string | null;
   readonly settledAt: string | null;
   readonly unsettledAt: string | null;
   readonly settledOverride: "settled" | "active" | null;
@@ -61,9 +62,20 @@ export interface StoredTurn {
   /** Steer/restart chains reference the turn they superseded. */
   readonly parentTurnId: string | null;
   readonly error: string | null;
+  /** Tokens spent by the provider run; null when the driver reported none. */
+  readonly usage: TurnUsage | null;
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly completedAt: string | null;
+}
+
+/** Token totals per turn (mirrors the provider SPI delta, kept local to avoid layer tangles). */
+export interface TurnUsage {
+  readonly input: number;
+  readonly cacheRead: number;
+  readonly cacheCreate: number;
+  readonly output: number;
+  readonly thinking: number;
 }
 
 export type MessageRole = "user" | "assistant" | "system";
@@ -90,9 +102,12 @@ export interface StoredCheckpoint {
   readonly id: string;
   readonly threadId: string;
   readonly turnId: string;
-  /** `recorded` in Stage 1; providers/git back it from Stage 2/5 on. */
+  /** `available` when both pre/post worktree captures exist; else `unavailable`. */
   readonly status: string;
+  /** Post-turn capture sha (diff head). */
   readonly ref: string | null;
+  /** Pre-turn capture sha (diff base). */
+  readonly baseRef: string | null;
   readonly createdAt: string;
 }
 
@@ -115,6 +130,8 @@ export interface StoredDelegation {
 }
 
 export interface CreateThreadInput {
+  /** Client-generated id (the TUI opens the thread before the store confirms); generated when omitted. */
+  readonly id?: string;
   readonly projectId: string;
   readonly title: string;
   readonly modelSelection: ModelSelection;

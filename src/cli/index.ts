@@ -24,7 +24,6 @@ import {
 import {
   ensureProject,
   listProjects,
-  rawGet,
   resolveProject,
 } from "./projects/projects.js";
 import {
@@ -66,12 +65,12 @@ import type {
 const program = new Command();
 program
   .name("t3code")
-  .description("Create T3 Code projects and handover threads from the current folder.")
+  .description("Create projects and handover threads from the current folder.")
   .version("0.1.0")
   .option("--json", "Emit stable JSON envelopes.")
   .option("--config <path>", "Use a specific config file.")
-  .option("--t3-home <path>", "Override T3CODE_HOME for this command.")
-  .option("--origin <url>", "Override the running T3 server origin.");
+  .option("--t3-home <path>", "Deprecated no-op (kept for script compatibility).")
+  .option("--origin <url>", "Deprecated no-op (kept for script compatibility).");
 
 interface GlobalOptions {
   json?: boolean;
@@ -125,7 +124,7 @@ function addThreadOptions(command: Command): Command {
     .option("--prompt-file <path>", "Read the handover prompt from a UTF-8 file.")
     .option("--stdin", "Read the handover prompt from stdin.")
     .addOption(new Option("--open <mode>").choices(["auto", "desktop", "browser", "none"]))
-    .option("--provider <instance-id>", "T3 provider instance id (for example codex or claudeAgent).")
+    .option("--provider <instance-id>", "Provider instance id (for example codex or claudeAgent).")
     .option("--model <slug>", "Provider model slug.")
     .addOption(
       new Option("--speed, --speed-mode <mode>", "Model speed mode.")
@@ -144,7 +143,8 @@ function addThreadOptions(command: Command): Command {
       new Option("--mode, --interaction-mode <mode>", "Build/default or Plan mode.")
         .choices(["default", "build", "plan"]),
     )
-    .option("--dry-run", "Resolve and print commands without dispatching them.");
+    .option("--dry-run", "Resolve and print commands without dispatching them.")
+    .option("--no-wait", "Return at turn acceptance without waiting for the provider run to settle.");
 }
 
 interface PromptOptions {
@@ -166,6 +166,7 @@ interface ThreadSendCommandOptions extends PromptOptions {
   delivery?: ThreadSendDelivery;
   handoffNote?: string;
   dryRun?: boolean;
+  noWait?: boolean;
 }
 
 interface ThreadListCommandOptions extends WorkspaceCommandOptions {
@@ -199,8 +200,8 @@ interface ThreadTaskCommandOptions {
 
 function addSendOptions(command: Command): Command {
   return command
-    .option("--thread <id>", "Existing T3 thread id to message (alias: --thread-id).")
-    .option("--thread-id <id>", "Existing T3 thread id (alias: --thread).")
+    .option("--thread <id>", "Existing thread id to message (alias: --thread-id).")
+    .option("--thread-id <id>", "Existing thread id (alias: --thread).")
     .option("--prompt <text>", "Follow-up message text.")
     .option("--prompt-file <path>", "Read the follow-up message from a UTF-8 file.")
     .option("--stdin", "Read the follow-up message from stdin.")
@@ -224,7 +225,8 @@ function addSendOptions(command: Command): Command {
         .default("auto"),
     )
     .option("--handoff-note <text>", "Provider-switch note recorded with the send (CLI-side metadata; V1 sends no context-transfer row).")
-    .option("--dry-run", "Build the turn command without dispatching it.");
+    .option("--dry-run", "Build the turn command without dispatching it.")
+    .option("--no-wait", "Return at turn acceptance without waiting for the provider run to settle.");
 }
 
 interface WorkspaceCommandOptions {
@@ -235,6 +237,7 @@ interface WorkspaceCommandOptions {
 }
 
 interface ThreadCommandOptions extends WorkspaceCommandOptions {
+  noWait?: boolean;
   prompt?: string;
   promptFile?: string;
   stdin?: boolean;
@@ -302,12 +305,13 @@ function threadCreateOptions(options: ThreadCommandOptions, prompt: string): Thr
     ...(options.speedMode ? { speedMode: options.speedMode } : {}),
     ...(options.thinkingEffort ? { thinkingEffort: options.thinkingEffort } : {}),
     ...(options.dryRun ? { dryRun: true } : {}),
+    ...(options.noWait ? { noWait: true } : {}),
   };
 }
 
 program
   .command("tui")
-  .description("Open the terminal UI for T3 Code threads.")
+  .description("Open the terminal UI for threads.")
   .action(() =>
     action(async () => {
       const context = await commandContext();
@@ -316,11 +320,11 @@ program
     }),
   );
 
-program.command("doctor").description("Check T3 discovery, auth tooling, and desktop integration.").action(() =>
+program.command("doctor").description("Check provider binaries, auth, store, and config.").action(() =>
   action(async () => {
     const context = await commandContext();
     const result = await doctor(context.config, context.configPath, context.configExists);
-    writeSuccess(result, context, result.ok ? "T3 Code CLI is ready." : "T3 Code CLI has failing checks.");
+    writeSuccess(result, context, result.ok ? "t3code CLI is ready." : "t3code CLI has failing checks.");
     if (!result.ok) process.exitCode = 1;
   }),
 );
@@ -354,7 +358,7 @@ configCommand
     }),
   );
 
-const projects = program.command("projects").description("Resolve and manage T3 Code projects.");
+const projects = program.command("projects").description("Resolve and manage projects.");
 projects.command("list").action(() =>
   action(async () => {
     const context = await commandContext();
@@ -364,7 +368,7 @@ projects.command("list").action(() =>
   }),
 );
 addWorkspaceOptions(projects.command("resolve"))
-  .description("Resolve a folder/repository to an existing T3 project.")
+  .description("Resolve a folder/repository to an existing project.")
   .action((options: WorkspaceCommandOptions) =>
     action(async () => {
       const context = await commandContext();
@@ -393,12 +397,12 @@ addProjectPolicyOption(addWorkspaceOptions(projects.command("ensure")))
     }),
   );
 
-const threads = program.command("threads").description("Create, inspect, and message T3 Code threads.");
+const threads = program.command("threads").description("Create, inspect, and message threads.");
 threads.command("list")
   .description("List active and settled threads.")
-  .option("--cwd <path>", "Filter by the T3 project resolved from this folder.")
+  .option("--cwd <path>", "Filter by the project resolved from this folder.")
   .addOption(new Option("--workspace-mode <mode>").choices(["repo", "folder"]))
-  .option("--project <project-id>", "Filter by an exact T3 project id.")
+  .option("--project <project-id>", "Filter by an exact project id.")
   .addOption(
     new Option("--status <status>", "Filter by thread lifecycle status.")
       .choices(["active", "settled", "snoozed", "all"])
@@ -427,7 +431,7 @@ threads.command("list")
 threads
   .command("inspect")
   .description("Inspect a thread before targeting it.")
-  .requiredOption("--thread <thread-id>", "Exact T3 thread id.")
+  .requiredOption("--thread <thread-id>", "Exact thread id.")
   .action((options: { thread: string }) =>
     action(async () => {
       const context = await commandContext();
@@ -455,7 +459,7 @@ threads
 threads
   .command("read")
   .description("Read a thread projection without truncation.")
-  .requiredOption("--thread <thread-id>", "Exact T3 thread id.")
+  .requiredOption("--thread <thread-id>", "Exact thread id.")
   .option("--last-turn", "Return only entries assigned to the latest turn (messages and turn-items views).")
   .addOption(
     new Option("--view <view>", "Which thread projection to read.")
@@ -593,6 +597,7 @@ addSendOptions(threads.command("send"))
         ...(options.handoffNote ? { handoffNote: options.handoffNote } : {}),
         ...(!context.json && !options.stdin ? { confirmSettled: confirmSettledThread } : {}),
         ...(options.dryRun ? { dryRun: true } : {}),
+        ...(options.noWait ? { noWait: true } : {}),
       });
       const projectLabel = result.project ? ` in ${result.project.title}` : "";
       writeSuccess(
@@ -606,7 +611,7 @@ addSendOptions(threads.command("send"))
 threads
   .command("settle")
   .description("Mark a thread as settled after verifying it can be settled.")
-  .requiredOption("--thread <thread-id>", "Exact T3 thread id.")
+  .requiredOption("--thread <thread-id>", "Exact thread id.")
   .action((options: { thread: string }) =>
     action(async () => {
       const context = await commandContext();
@@ -614,7 +619,7 @@ threads
       writeSuccess(
         result,
         context,
-        `Settled thread ${result.thread.id}; T3 projected the lifecycle change.`,
+        `Settled thread ${result.thread.id}.`,
       );
     }),
   );
@@ -622,7 +627,7 @@ threads
 threads
   .command("unsettle")
   .description("Mark a settled thread as active without starting a turn.")
-  .requiredOption("--thread <thread-id>", "Exact T3 thread id.")
+  .requiredOption("--thread <thread-id>", "Exact thread id.")
   .action((options: { thread: string }) =>
     action(async () => {
       const context = await commandContext();
@@ -630,7 +635,7 @@ threads
       writeSuccess(
         result,
         context,
-        `Marked thread ${result.thread.id} active; T3 projected the lifecycle change.`,
+        `Marked thread ${result.thread.id} active.`,
       );
     }),
   );
@@ -638,7 +643,7 @@ threads
 threads
   .command("snooze")
   .description("Snooze an active thread until an ISO-8601 datetime.")
-  .requiredOption("--thread <thread-id>", "Exact T3 thread id.")
+  .requiredOption("--thread <thread-id>", "Exact thread id.")
   .requiredOption("--until <datetime>", "Wake time as an ISO-8601 datetime.")
   .action((options: { thread: string; until: string }) =>
     action(async () => {
@@ -647,7 +652,7 @@ threads
       writeSuccess(
         result,
         context,
-        `Snoozed thread ${result.thread.id} until ${result.thread.snoozedUntil}; T3 projected the change.`,
+        `Snoozed thread ${result.thread.id} until ${result.thread.snoozedUntil}.`,
       );
     }),
   );
@@ -655,7 +660,7 @@ threads
 threads
   .command("unsnooze")
   .description("Clear the snooze on a thread.")
-  .requiredOption("--thread <thread-id>", "Exact T3 thread id.")
+  .requiredOption("--thread <thread-id>", "Exact thread id.")
   .action((options: { thread: string }) =>
     action(async () => {
       const context = await commandContext();
@@ -663,7 +668,7 @@ threads
       writeSuccess(
         result,
         context,
-        `Unsnoozed thread ${result.thread.id}; T3 projected the change.`,
+        `Unsnoozed thread ${result.thread.id}.`,
       );
     }),
   );
@@ -671,7 +676,7 @@ threads
 threads
   .command("interrupt")
   .description("Interrupt the active turn on a thread (dispatches thread.turn.interrupt).")
-  .requiredOption("--thread <thread-id>", "Exact T3 thread id.")
+  .requiredOption("--thread <thread-id>", "Exact thread id.")
   .option("--run <turn-id>", "Interrupt a specific turn; omit to target the active turn.")
   .action((options: { thread: string; run?: string }) =>
     action(async () => {
@@ -684,7 +689,7 @@ threads
         context,
         result.result === "no_active_run"
           ? `Thread ${result.thread.id} has no active turn; nothing was dispatched.`
-          : `Interrupted thread ${result.thread.id}; T3 projected the interruption.`,
+          : `Interrupted thread ${result.thread.id}.`,
       );
     }),
   );
@@ -692,7 +697,7 @@ threads
 threads
   .command("delegate")
   .description("Delegate a self-contained task to a new child thread in the same project, then wait for its terminal turn.")
-  .requiredOption("--thread <thread-id>", "Parent T3 thread id that owns the delegated task.")
+  .requiredOption("--thread <thread-id>", "Parent thread id that owns the delegated task.")
   .option("--prompt <text>", "Task prompt for the child thread.")
   .option("--prompt-file <path>", "Read the task prompt from a UTF-8 file.")
   .option("--stdin", "Read the task prompt from stdin.")
@@ -746,7 +751,7 @@ threads
 threads
   .command("task-status")
   .description("Read a delegated task's status from its parent thread and child thread id.")
-  .requiredOption("--thread <thread-id>", "Parent T3 thread id that owns the delegated task.")
+  .requiredOption("--thread <thread-id>", "Parent thread id that owns the delegated task.")
   .requiredOption("--task <task-id>", "Delegated task id (the child thread id).")
   .action((options: ThreadTaskCommandOptions) =>
     action(async () => {
@@ -763,8 +768,8 @@ threads
 
 threads
   .command("task-cancel")
-  .description("Interrupt a delegated task's active turn (requires a real thread.turn.interrupt).")
-  .requiredOption("--thread <thread-id>", "Parent T3 thread id that owns the delegated task.")
+  .description("Interrupt a delegated task's active turn.")
+  .requiredOption("--thread <thread-id>", "Parent thread id that owns the delegated task.")
   .requiredOption("--task <task-id>", "Delegated task id (the child thread id).")
   .action((options: ThreadTaskCommandOptions) =>
     action(async () => {
@@ -780,7 +785,7 @@ threads
   );
 
 addThreadOptions(program.command("handover"))
-  .description("Resolve the current repo, ensure its project, and start a new T3 Code thread.")
+  .description("Resolve the current repo, ensure its project, and start a new thread.")
   .action((options: ThreadCommandOptions) =>
     action(async () => {
       const context = await commandContext();
@@ -801,10 +806,10 @@ function formatUsageSummary(usage: ProviderUsageLimits | null): string {
   return usage.windows.map((window) => `${window.label} ${Math.round(window.usedPercent)}%`).join(", ");
 }
 
-const providers = program.command("providers").description("List configured T3 provider instances.");
+const providers = program.command("providers").description("List configured provider instances.");
 providers
   .command("list")
-  .description("List provider instances with live status from the running T3 server.")
+  .description("List provider instances with live status.")
   .option("--refresh", "Probe providers for fresh status before listing.")
   .action((options: { refresh?: boolean }) =>
     action(async () => {
@@ -818,7 +823,7 @@ providers
     }),
   );
 
-const models = program.command("models").description("List models on configured T3 provider instances.");
+const models = program.command("models").description("List models on configured provider instances.");
 models
   .command("list")
   .description("List models with their effort-option descriptors.")
@@ -838,7 +843,7 @@ models
     }),
   );
 
-const efforts = program.command("efforts").description("List effort options for a T3 provider model.");
+const efforts = program.command("efforts").description("List effort options for a provider model.");
 efforts
   .command("list")
   .description("List the selectable effort/option values a model supports.")
@@ -858,19 +863,6 @@ efforts
         context,
         lines.length > 0 ? lines.join("\n") : `No effort options for ${options.model}.`,
       );
-    }),
-  );
-
-program
-  .command("request")
-  .description("Raw read-only HTTP escape hatch.")
-  .command("get")
-  .argument("<path>", "Absolute T3 API path, starting with one slash.")
-  .action((requestPath: string) =>
-    action(async () => {
-      const context = await commandContext();
-      const result = await rawGet(context.config, requestPath);
-      writeSuccess(result, context);
     }),
   );
 

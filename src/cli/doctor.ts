@@ -1,44 +1,91 @@
-import { access } from "node:fs/promises";
+/**
+ * Doctor, repointed at the direct world (DECOUPLE.md §15.5): provider
+ * binaries with versions, the thread store, stored subscription auth —
+ * no T3 CLI, no T3 home, no server, no protocol handlers.
+ *
+ * Envelope evolution note: the outer `{ok, checks}` wrapper stays, but
+ * the T3-specific checks (`t3Cli`, `t3Home`, `t3Server`,
+ * `desktopProtocol`, `exactThreadProtocol`) are gone — there is nothing
+ * left to probe. `providers` reports one row per owned surface and
+ * `auth` summarizes the stored OpenCode credentials file.
+ */
+import { access, constants } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
-import { commandExists, resolveT3Invocation } from "./infra/process.js";
-import { hasProtocolHandler } from "./infra/platformOpen.js";
-import { discoverRuntime, resolveT3Home } from "./infra/runtime.js";
+import { readStoredAuthTypes } from "../providers/opencode/catalog.js";
+import { resolveStoreRoot } from "../threads/store.js";
 import type { CliConfig } from "../types.js";
+import { commandExists, runProcess } from "./infra/process.js";
+
+interface ProviderCheck {
+  ok: boolean;
+  installed: boolean;
+  version: string | null;
+}
+
+async function probeProvider(binary: string, versionArgs: string[]): Promise<ProviderCheck> {
+  const installed = await commandExists(binary);
+  if (!installed) return { ok: false, installed, version: null };
+  try {
+    const result = await runProcess(binary, versionArgs, { timeoutMs: 10_000 });
+    const firstLine = result.stdout.split("\n")[0]?.trim() ?? "";
+    const version = firstLine.length > 0 ? firstLine.slice(0, 80) : null;
+    return { ok: true, installed, version };
+  } catch {
+    return { ok: false, installed, version: null };
+  }
+}
 
 export async function doctor(config: CliConfig, configPath: string, configExists: boolean) {
-  const [git, invocation, desktopProtocol, exactThreadProtocol, t3HomeExists, runtime] =
-    await Promise.all([
-      commandExists("git"),
-      resolveT3Invocation(config.t3Command).catch((error: unknown) => ({ error })),
-      hasProtocolHandler("t3code"),
-      hasProtocolHandler("t3"),
-      access(resolveT3Home(config))
-        .then(() => true)
-        .catch(() => false),
-      discoverRuntime(config, { startDesktopIfNeeded: false }).catch(() => null),
-    ]);
+  const [git, claude, codex, opencode, grok] = await Promise.all([
+    commandExists("git"),
+    probeProvider("claude", ["--version"]),
+    probeProvider("codex", ["--version"]),
+    probeProvider("opencode", ["--version"]),
+    probeProvider("grok", ["--version"]),
+  ]);
 
-  const invocationResult = "error" in invocation
-    ? { available: false, source: null, version: null }
-    : { available: true, source: invocation.source, version: invocation.version };
+  const storePath = resolveStoreRoot();
+  const storeWritable = await access(path.dirname(storePath), constants.W_OK)
+    .then(() => true)
+    .catch(() => false);
+
+  const storedAuth = readStoredAuthTypes();
+  const authProviders = Object.keys(storedAuth).sort();
+  const authFile = process.env.OPENCODE_AUTH_FILE?.trim() ||
+    path.join(
+      process.env.XDG_DATA_HOME?.trim() || path.join(os.homedir(), ".local", "share"),
+      "opencode",
+      "auth.json",
+    );
+
   const checks = {
     node: { ok: true, version: process.version },
     git: { ok: git },
-    t3Cli: { ok: invocationResult.available, ...invocationResult },
-    t3Home: { ok: t3HomeExists, path: resolveT3Home(config) },
-    t3Server: {
-      ok: runtime !== null,
-      origin: runtime?.origin ?? null,
-      environmentId: runtime?.environmentId ?? null,
-      version: runtime?.serverVersion ?? null,
+    providers: {
+      claude: { ...claude, login: "inherit from `claude auth login`" },
+      codex: { ...codex, login: "inherit from `codex login`" },
+      opencode: { ...opencode, login: "`opencode auth login` or provider API keys" },
+      grok: { ...grok, login: "inherit from `grok login`" },
     },
-    desktopProtocol: { ok: desktopProtocol, scheme: "t3code" },
-    exactThreadProtocol: { ok: exactThreadProtocol, scheme: "t3" },
+    store: { ok: storeWritable, path: storePath },
+    auth: {
+      ok: authProviders.length > 0,
+      path: authFile,
+      providers: authProviders,
+    },
     config: { ok: true, path: configPath, exists: configExists },
   };
 
   return {
-    ok: checks.git.ok && checks.t3Cli.ok && checks.t3Server.ok,
+    ok:
+      checks.git.ok &&
+      checks.store.ok &&
+      (checks.providers.claude.ok ||
+        checks.providers.codex.ok ||
+        checks.providers.opencode.ok ||
+        checks.providers.grok.ok),
     checks,
   };
 }

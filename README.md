@@ -1,10 +1,10 @@
 # t3code-tui
 
-`t3code-tui` drives [T3 Code](https://github.com/pingdotgg/t3code) from your terminal: a full interactive TUI for working with threads, plus a scriptable CLI for handovers, thread inspection, messaging, and automation.
+`t3code-tui` drives provider CLIs directly from your terminal: a full interactive TUI for working with threads, plus a scriptable CLI for handovers, thread inspection, messaging, and automation. No T3 Code server — threads, projects, and orchestration live in a local store (`~/.t3code`), and turns run against `claude`, `codex`, `grok`, or `opencode serve` through their own logins.
 
 ## Requirements
 
-Bun (it manages packages and runs everything) and a running T3 Code instance.
+Bun (it manages packages and runs everything) and at least one provider CLI: `claude` (`claude auth login`), `codex` (`codex login`), `grok` (`grok login`), or `opencode` (`opencode auth login` or provider API keys).
 
 ## Install
 
@@ -48,7 +48,8 @@ t3code tui
 
 Opens the interactive client: sidebar with your threads, the live transcript with per-turn diffs,
 and a composer with model/effort pickers, image attachments, and an external-editor shortcut.
-Clicking a user prompt opens message actions (copy, revert); clicking a diff-turn header jumps
+Image attachments are validated client-side and reach the provider as file-name mentions until
+per-driver image plumbing lands. Clicking a user prompt opens message actions (copy, revert); clicking a diff-turn header jumps
 the transcript to that turn; the command palette covers copy/thread/jump actions.
 
 | Keys | Action |
@@ -77,9 +78,7 @@ The same binary scripts everything the TUI does, with stable `--json` envelopes
 
 ### Handover
 
-Hands the current folder or Git repository to a new thread. It connects to the running local T3
-server, resolves the workspace against T3 projects, optionally creates the missing project,
-creates a fresh thread, and starts its first prompt through T3's orchestration API:
+Hands the current folder or Git repository to a new thread. It resolves the workspace against the local project registry, optionally creates the missing project, creates a fresh thread, and starts its first prompt against the selected provider driver:
 
 ```bash
 t3code handover --prompt "Continue the implementation from this handover."
@@ -91,17 +90,17 @@ printf '%s' "$PROMPT" | t3code handover --stdin
 | --- | --- |
 | `--prompt`, `--prompt-file`, `--stdin` | Exactly one is required |
 | `--open` | `auto`, `desktop`, `browser`, `none` |
-| `--provider` | A provider instance id supported by that T3 installation |
+| `--provider` | A provider instance id from `providers list` (`claude`, `codex`, `grok`, `opencode/<provider>`) |
 | `--model` | A model slug supported by that provider instance |
 | `--speed`, `--speed-mode` | `standard`, `fast` |
 | `--thinking-effort` | A model-supported value such as `low`, `medium`, `high`, `xhigh` or `max` |
 | `--permission`, `--runtime-mode` | `approval-required`, `auto-accept-edits`, `auto`, `full-access` |
 | `--mode`, `--interaction-mode` | `build`/`default`, `plan` |
-| `--checkout`, `--env-mode` | `current`/`local`, `worktree`, or T3's configured default via `t3` |
+| `--checkout`, `--env-mode` | `current`/`local`, `worktree`, or the resolved default via `t3` |
 
-Command flags override the CLI config, which overrides the T3 project's saved model selection. Without either override, the saved selection and its options are passed through unchanged. A newly-created project uses the detected T3 version's default (`gpt-5.4` on 0.0.28 and `gpt-6-astra` on 0.0.29 and later).
+Command flags override the CLI config, which overrides the project's saved model selection. Without either override, the saved selection and its options are passed through unchanged. A newly-created project has no default; the fallback is the explicit installation default (`codex` / `gpt-5.4`).
 
-Speed and thinking effort are stored as model options. T3 applies the option ids supported by the selected provider/model. If `--provider` changes the project's default provider instance, also pass `--model` because provider instance ids can be user-defined and do not imply a model.
+Speed and thinking effort are stored as model options. The provider driver applies the option ids supported by the selected provider/model. If `--provider` changes the project's default provider instance, also pass `--model` because provider instance ids can be user-defined and do not imply a model.
 
 ## Existing threads
 
@@ -131,11 +130,11 @@ t3code --json threads read --thread <thread-id> --view checkpoints
 t3code --json threads read --thread <thread-id> --view transfers
 ```
 
-`--view` defaults to `messages`: the JSON result stores the transcript in `data.thread.messages`. Messages remain in chronological order and retain their `turnId`. `--last-turn` keeps only messages assigned to `data.thread.latestTurn.turnId`. Neither mode truncates message text. The other views expose the thread's V1 activity projection (`turn-items`), proposed plans (`plans`), and checkpoint summaries (`checkpoints`); `transfers` is always empty because V1 exposes no context-transfer rows.
+`--view` defaults to `messages`: the JSON result stores the transcript in `data.thread.messages`. Messages remain in chronological order and retain their `turnId`. `--last-turn` keeps only messages assigned to `data.thread.latestTurn.turnId`. Neither mode truncates message text. The other views expose the thread's activity ledger (`turn-items`), proposed plans (`plans`, currently always empty — no plan capture is wired yet), and checkpoint summaries (`checkpoints`, backed by git worktree snapshots around each turn); `transfers` is always empty because no transport exposes context-transfer rows.
 
 ## Follow-up messages
 
-Send to an existing thread instead of starting a new one. Use the **T3 thread ID** from a previous command's JSON `data.thread.id` (not a provider session ID). `--thread` and `--thread-id` are aliases:
+Send to an existing thread instead of starting a new one. Use the **thread ID** from a previous command's JSON `data.thread.id`. `--thread` and `--thread-id` are aliases:
 
 ```bash
 t3code threads send --thread <thread-id> --prompt "Run the morning check."
@@ -143,7 +142,7 @@ t3code threads send --thread-id <thread-id> --stdin --open none < follow-up.txt
 t3code threads send --thread-id <thread-id> --prompt-file follow-up.txt --dry-run
 ```
 
-Exactly one of `--prompt`, `--prompt-file`, or `--stdin` is required. The message dispatches `thread.turn.start` against that thread. The send waits until the exact message is visible in T3's thread projection before reporting success. A failed send never deletes the thread. Archived threads are rejected — unarchive them in T3 Code first.
+Exactly one of `--prompt`, `--prompt-file`, or `--stdin` is required. The message is recorded as a turn on that thread and the provider run continues in the background; success reports acceptance, not agent completion. A failed send never deletes the thread. Archived threads are rejected (there is no unarchive path).
 
 Choose how to handle active work (default `reject`):
 
@@ -152,10 +151,10 @@ t3code threads send --thread-id <thread-id> --if-busy inject \
   --prompt "Additional context for the work in progress…" --open none
 ```
 
-- `--if-busy reject` (default) returns `THREAD_BUSY` without dispatching when the thread has an active or pending turn.
-- `--if-busy inject` dispatches immediately even when busy, letting T3 and its provider incorporate the prompt into active work. It does not introduce a CLI queue or send an interrupt command.
+- `--if-busy reject` (default) returns `THREAD_BUSY` without recording when the thread has an active or pending turn.
+- `--if-busy inject` records immediately even when busy, letting the provider incorporate the prompt into active work. It does not introduce a CLI queue or send an interrupt command.
 
-The busy check is a snapshot preflight, not an atomic lock; concurrent callers must serialize requests when that matters. Success reports dispatch acceptance rather than agent completion.
+The busy check holds the per-thread mutex instead of a snapshot preflight: one active turn per thread is enforced, not raced. Success reports acceptance rather than agent completion.
 
 Sending to a settled thread requires confirmation. Non-interactive and JSON callers must explicitly opt in with `--wake-settled`:
 
@@ -164,9 +163,9 @@ printf '%s' "New findings that require more work..." \
   | t3code --json threads send --thread <thread-id> --stdin --wake-settled
 ```
 
-The turn keeps the thread's model, permission, and mode unless overridden. `--provider`, `--model`, `--speed`, and `--thinking-effort` override the model for that turn only (global `provider`/`model` config is ignored so a stale default cannot flip a scheduled thread's model). There is no `--permission`/`--mode` flag: set the thread's permission in T3 Code, since scheduled runs inherit it.
+The turn keeps the thread's model, permission, and mode unless overridden. `--provider`, `--model`, `--speed`, and `--thinking-effort` override the model for that turn only (global `provider`/`model` config is ignored so a stale default cannot flip a scheduled thread's model). There is no `--permission`/`--mode` flag: change the thread's modes in the TUI permission picker, since scheduled runs inherit them.
 
-`--delivery` selects follow-up policy (default `auto`; V1 always dispatches `thread.turn.start`, so the mode governs preconditions and reporting): `queue` dispatches even when busy and reports `queued`, `steer` requires an active turn and reports `steered`, and `restart` interrupts the active turn first and reports `restarted` (`THREAD_NOT_STEERABLE` when idle, `THREAD_RESTART_FAILED` when the interrupt fails). `--handoff-note <text>` records provider-switch context as CLI-side metadata without changing the dispatched turn.
+`--delivery` selects follow-up policy (default `auto`; every follow-up is recorded as a `thread.turn.start` turn, so the mode governs preconditions and reporting): `queue` records even when busy and reports `queued`, `steer` requires an active turn and reports `steered`, and `restart` interrupts the active turn first and reports `restarted` (`THREAD_NOT_STEERABLE` when idle). `--handoff-note <text>` records provider-switch context as CLI-side metadata without changing the recorded turn.
 
 Use `--prompt-file` (or `--stdin`) for skill invocations and longer prompts, `--open none` for headless runs, and `--dry-run --json` to inspect the turn command without dispatching it.
 
@@ -177,7 +176,7 @@ t3code threads settle --thread <thread-id>
 t3code threads unsettle --thread <thread-id>
 ```
 
-`settle` refuses a thread with a running/starting session or a pending approval or user-input request. `unsettle` marks the thread manually active but does not send a message or start its provider session. Both commands require the server to advertise the `threadSettlement` capability and wait for the requested lifecycle state to appear in T3's projection before succeeding.
+`settle` refuses a thread with a running session or a pending approval or user-input request. `unsettle` marks the thread manually active but does not send a message or start its provider session. Both apply synchronously to the ledger.
 
 Snooze an active thread until an ISO-8601 datetime, interrupt an active turn, or delegate a sub-agent task to a child thread in the same project:
 
@@ -190,11 +189,11 @@ t3code threads task-status --thread <parent-id> --task <child-thread-id>
 t3code threads task-cancel --thread <parent-id> --task <child-thread-id>
 ```
 
-`delegate` sends only the task prompt as the child's first turn and waits for its latest turn to reach `completed`, `interrupted`, or `error` (default budget 600000ms via `--timeout-ms`; `--no-wait` returns after dispatch). A wait timeout exits 0 with `data.task.waitTimedOut: true` and never cancels the child — re-poll with `task-status`. `task-cancel` interrupts through the real `thread.turn.interrupt` path and returns `TASK_CANCEL_UNSUPPORTED` when no interrupt can be dispatched.
+`delegate` sends only the task prompt as the child's first turn and waits for its latest turn to reach `completed`, `interrupted`, or `error` (default budget 600000ms via `--timeout-ms`; `--no-wait` returns after acceptance). A wait timeout exits 0 with `data.task.waitTimedOut: true` and never cancels the child — re-poll with `task-status`. `task-cancel` interrupts the live provider run through the store and marks the turn interrupted.
 
-Thread targeting uses exit code `3` for a missing target, `4` for a lifecycle/confirmation refusal, and `5` when dispatch returned but projection acceptance could not be verified.
+Thread targeting uses exit code `3` for a missing target and `4` for a lifecycle/confirmation refusal.
 
-To run a message on a schedule (for example daily at 05:01), pair it with the OS scheduler. T3 Code must be running and the machine awake. The scheduler doesn't load your shell profile, so point it at `bun` and the script path directly rather than at the `t3code` function/alias. PowerShell example:
+To run a message on a schedule (for example daily at 05:01), pair it with the OS scheduler. The provider CLIs must be installed and authenticated, and the machine awake. The scheduler doesn't load your shell profile, so point it at `bun` and the script path directly rather than at the `t3code` function/alias. PowerShell example:
 
 ```powershell
 $action = New-ScheduledTaskAction -Execute "bun.exe" `
@@ -218,7 +217,7 @@ t3code config set workspaceMode folder
 t3code config set openMode browser
 t3code config set threadEnvMode local
 t3code config set provider codex
-t3code config set model gpt-6-astra
+t3code config set model gpt-5.4
 t3code config set speedMode fast
 t3code config set thinkingEffort xhigh
 ```
@@ -231,14 +230,14 @@ t3code config set thinkingEffort xhigh
 | `threadEnvMode` | `t3`, `local`, `worktree` | `t3` |
 | `runtimeMode` | `approval-required`, `auto-accept-edits`, `auto`, `full-access` | `full-access` |
 | `interactionMode` | `default`, `plan` | `default` |
-| `provider` | Configured T3 provider instance id | T3 project selection |
-| `model` | Provider model slug | T3 project selection |
-| `speedMode` | `standard`, `fast` | T3 project selection |
-| `thinkingEffort` | Model-supported effort value | T3 project selection |
+| `provider` | Provider instance id for model overrides | Unset (inherits thread/project) |
+| `model` | Model slug for overrides | Unset (inherits thread/project) |
+| `speedMode` | `standard`, `fast` | Unset (inherits thread/project) |
+| `thinkingEffort` | Model-supported effort value | Unset (inherits thread/project) |
 
-`projectPolicy: "existing"` makes a missing project a hard error. `workspaceMode: "folder"` uses the exact current folder instead of walking up to the Git root. `threadEnvMode: "t3"` follows T3's project → `t3.json` → global local/worktree preference. Explicit CLI config values remain overrides.
+`projectPolicy: "existing"` makes a missing project a hard error. `workspaceMode: "folder"` uses the exact current folder instead of walking up to the Git root. `threadEnvMode: "t3"` follows project → `t3.json` → global local/worktree preference. Explicit CLI config values remain overrides.
 
-T3 0.0.28 and later expose an atomic thread bootstrap contract for new worktrees. `--checkout worktree` uses it to create the thread, prepare the worktree from the current branch, run the matching setup script, and start the prompt. Worktree creation honors the current installation's explicit `newWorktreesStartFromOrigin` value; when that value is absent, it uses the installed version's default (`false` on 0.0.28, `true` on 0.0.29 and later). A repository without a current branch returns `WORKTREE_REQUIRES_BRANCH` instead of silently falling back to the current checkout.
+`--checkout worktree` provisions a local worktree for the new thread: a `t3code/<id>` branch off the current branch (or its origin — new worktrees always start from origin), placed under the store's `worktrees` directory, with the thread rooted there. A repository without a current branch returns `WORKTREE_REQUIRES_BRANCH` instead of silently falling back to the current checkout.
 
 ## Commands
 
@@ -266,26 +265,25 @@ t3code threads delegate --thread <parent-id> --stdin
 t3code threads task-status --thread <parent-id> --task <child-thread-id>
 t3code threads task-cancel --thread <parent-id> --task <child-thread-id>
 t3code handover --stdin
-t3code request get /api/orchestration/snapshot
 ```
 
 Every command supports human-readable output. `--json` produces `{ "ok": true, "data": ... }` on success and a stable error envelope on failure.
 
 ## Providers, models, and efforts
 
-`providers list`, `models list`, and `efforts list` read the live provider snapshots from the running T3 server over its websocket RPC (`server.getConfig`), using the same short-lived session mechanism as every other command. Use them to pick valid `--provider`, `--model`, and `--thinking-effort` values before a handover instead of guessing — unknown ids fail with `PROVIDER_NOT_FOUND` / `MODEL_NOT_FOUND` and list what exists. Pass `--refresh` to probe providers for fresh status first (slower; without it the cached snapshots are returned). Choices marked `*` in human output are the model's defaults.
+`providers list`, `models list`, and `efforts list` probe live sources on every call with no server in the loop: native surfaces through ephemeral driver sessions (failures degrade into each entry's `status` instead of failing the listing), and the long tail from the pinned models.dev catalog plus local API-key presence and stored OAuth state. Use them to pick valid `--provider`, `--model`, and `--thinking-effort` values before a handover instead of guessing — unknown ids fail with `PROVIDER_NOT_FOUND` / `MODEL_NOT_FOUND` and list what exists. Choices marked `*` in human output are the model's defaults.
 
-`models list` also reports whether each model is `hidden` — the user removed it from T3's own model picker (`providerModelPreferences`). This is a display preference, not an entitlement check: a hidden model still dispatches normally if you name it explicitly, and a model that isn't hidden isn't guaranteed to work — T3 has no field for whether a model matches the account's actual plan or subscription tier.
+`models list` never reports `hidden` on this backend — there is no picker-preference store yet, so everything reads visible.
 
-`providers list` reports each instance's `usageLimits` — the same subscription-quota windows (a five-hour session, a weekly allowance, and so on) behind T3's own usage panel: `checkedAt`, a `usedPercent` and optional `resetsAt` per window, and an `unavailable` reason when the account has no usage data or a probe failed. It is `null` for drivers with no notion of usage at all, such as an API-key account. Usage is scoped to the whole provider instance, not to one model.
+`providers list` reports each instance's `usageLimits` as `null`: subscription-quota windows are session-live in every native driver and there is no session to probe at listing time. Per-turn token totals are recorded in the turn ledger as runs settle and feed the TUI usage display.
 
-## Desktop navigation
+## Opening threads
 
-Current stable T3 Code registers `t3code://` but only uses a second launch to reveal its window. The CLI therefore creates the exact thread first and reports `opened.exactThread: false` when it can only reveal today's desktop app. If a T3 build registers the proposed `t3://thread/<threadId>` protocol, `openMode: "auto"` uses it and reports `exactThread: true`. `openMode: "browser"` opens the exact local web route immediately.
+`--open` is accepted everywhere for script compatibility, but there is no desktop app to deep-link into: `opened.kind` is always `none`. The TUI (`t3code tui`) is the interactive interface; use `--open none` for headless runs.
 
 ## Security
 
-The CLI uses T3's own `auth session issue` control plane to mint an administrative bearer token, keeps it only in memory, and revokes it in a `finally` block. Tokens are never included in JSON output or logs.
+There are no bearer tokens anywhere in this stack: provider CLIs own their own logins (`claude auth login`, `codex login`, `grok login`, `opencode auth login`), and this CLI never reads their secrets — it only observes credential *presence* (env vars, stored-auth file) for status display. Threads live as local JSONL under `~/.t3code` (override with `T3CODE_STORE_ROOT`); `doctor` reports store writability alongside binary and auth status.
 
 ## License
 

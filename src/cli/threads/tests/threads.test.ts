@@ -2,7 +2,15 @@ import { realpath } from "node:fs/promises";
 
 import { describe, expect, it } from "vitest";
 
-import { testHarness } from "../../testing/harness.js";
+import { ensureStoredProject } from "../../../projects/projects.js";
+import {
+  archiveThread,
+  createThread,
+  readThread as readStoredThread,
+  sendTurn,
+  settleThread as settleStoredThread,
+} from "../../../threads/threads.js";
+import { testHarness, type TestHarness } from "../../testing/harness.js";
 import {
   cancelTask,
   delegateTask,
@@ -18,44 +26,57 @@ import {
   unsnoozeThread,
 } from "../threads.js";
 
-async function withFastVerification<T>(run: () => Promise<T>): Promise<T> {
-  const previousTimeout = process.env.T3CODE_VERIFICATION_TIMEOUT_MS;
-  const previousInterval = process.env.T3CODE_VERIFICATION_INTERVAL_MS;
-  process.env.T3CODE_VERIFICATION_TIMEOUT_MS = "400";
-  process.env.T3CODE_VERIFICATION_INTERVAL_MS = "25";
-  try {
-    return await run();
-  } finally {
-    if (previousTimeout === undefined) delete process.env.T3CODE_VERIFICATION_TIMEOUT_MS;
-    else process.env.T3CODE_VERIFICATION_TIMEOUT_MS = previousTimeout;
-    if (previousInterval === undefined) delete process.env.T3CODE_VERIFICATION_INTERVAL_MS;
-    else process.env.T3CODE_VERIFICATION_INTERVAL_MS = previousInterval;
+function storeRoot(): string {
+  return process.env.T3CODE_STORE_ROOT!;
+}
+
+async function seedProject(harness: TestHarness, overrides: Record<string, unknown> = {}) {
+  const workspaceRoot = await realpath(harness.work);
+  return await ensureStoredProject(storeRoot(), {
+    id: "project-existing",
+    title: "Existing project",
+    workspaceRoot,
+    defaultModelSelection: { instanceId: "codex", model: "gpt-5.6-sol" },
+    ...(overrides as object),
+  });
+}
+
+async function seedThread(harness: TestHarness, overrides: Record<string, unknown> = {}) {
+  return await createThread(harness.store, {
+    id: "thread-existing",
+    projectId: "project-existing",
+    title: "Existing thread",
+    modelSelection: { instanceId: "codex", model: "gpt-5.6-sol" },
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    ...(overrides as object),
+  });
+}
+
+async function seededHarness() {
+  const harness = await testHarness();
+  await seedProject(harness);
+  await seedThread(harness);
+  return harness;
+}
+
+async function waitForTurnStatus(
+  harness: TestHarness,
+  threadId: string,
+  statuses: string[],
+  timeoutMs = 5000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const read = await readStoredThread(harness.store, threadId);
+    const last = read.turns[read.turns.length - 1];
+    if (last && statuses.includes(last.status)) return;
+    if (Date.now() > deadline) throw new Error(`turn on ${threadId} did not reach ${statuses.join("/")}`);
+    await new Promise((resolve) => setTimeout(resolve, 20));
   }
 }
 
 describe("sendThreadMessage", () => {
-  async function seededHarness() {
-    const harness = await testHarness();
-    const workspaceRoot = await realpath(harness.root);
-    harness.projects.push({
-      id: "project-existing",
-      title: "Existing project",
-      workspaceRoot,
-      defaultModelSelection: { instanceId: "codex", model: "gpt-5.6-sol" },
-      deletedAt: null,
-    });
-    harness.threads.push({
-      id: "thread-existing",
-      projectId: "project-existing",
-      title: "Existing thread",
-      archivedAt: null,
-      modelSelection: { instanceId: "codex", model: "gpt-5.6-sol" },
-      runtimeMode: "full-access",
-      interactionMode: "default",
-    });
-    return harness;
-  }
-
   it("sends a follow-up as a single turn start on the existing thread", async () => {
     const harness = await seededHarness();
 
@@ -63,21 +84,18 @@ describe("sendThreadMessage", () => {
       threadId: "thread-existing",
       prompt: "Run the 5am skill.",
       openMode: "none",
+      drivers: harness.drivers,
     });
 
-    expect(harness.commands.map((command) => command.type)).toEqual(["thread.turn.start"]);
-    const turn = harness.commands[0] as {
-      threadId: string;
-      message: { role: string; text: string; attachments: unknown[] };
-      runtimeMode: string;
-      interactionMode: string;
-    };
-    expect(turn.threadId).toBe("thread-existing");
-    expect(turn.message).toMatchObject({ role: "user", text: "Run the 5am skill.", attachments: [] });
-    expect(turn.runtimeMode).toBe("full-access");
-    expect(turn.interactionMode).toBe("default");
-    expect(harness.commands[0]).not.toHaveProperty("modelSelection");
-    expect(harness.commands[0]).not.toHaveProperty("bootstrap");
+    expect(result.command).toMatchObject({
+      type: "thread.turn.start",
+      threadId: "thread-existing",
+      runtimeMode: "full-access",
+      interactionMode: "default",
+    });
+    expect(result.message).toMatchObject({ textLength: "Run the 5am skill.".length });
+    expect(result.command).not.toHaveProperty("modelSelection");
+    expect(result.command).not.toHaveProperty("bootstrap");
     expect(result.thread.id).toBe("thread-existing");
     expect(result.project?.id).toBe("project-existing");
     expect(result.opened.kind).toBe("none");
@@ -85,7 +103,7 @@ describe("sendThreadMessage", () => {
     expect(result.message.textLength).toBe("Run the 5am skill.".length);
   });
 
-  it("rejects unknown thread ids without dispatching", async () => {
+  it("rejects unknown thread ids without writing", async () => {
     const harness = await seededHarness();
 
     await expect(
@@ -93,23 +111,23 @@ describe("sendThreadMessage", () => {
         threadId: "thread-missing",
         prompt: "Hello",
         openMode: "none",
+        drivers: harness.drivers,
       }),
     ).rejects.toMatchObject({ code: "THREAD_NOT_FOUND", details: { threadId: "thread-missing" } });
-    expect(harness.commands).toHaveLength(0);
   });
 
   it("rejects archived threads", async () => {
     const harness = await seededHarness();
-    harness.threads[0]!.archivedAt = new Date().toISOString();
+    await archiveThread(harness.store, "thread-existing");
 
     await expect(
       sendThreadMessage(harness.config, {
         threadId: "thread-existing",
         prompt: "Hello",
         openMode: "none",
+        drivers: harness.drivers,
       }),
     ).rejects.toMatchObject({ code: "THREAD_ARCHIVED" });
-    expect(harness.commands).toHaveLength(0);
   });
 
   it("rejects empty prompts and thread ids", async () => {
@@ -121,7 +139,6 @@ describe("sendThreadMessage", () => {
     await expect(
       sendThreadMessage(harness.config, { threadId: "  ", prompt: "Hello", openMode: "none" }),
     ).rejects.toMatchObject({ code: "THREAD_ID_REQUIRED" });
-    expect(harness.commands).toHaveLength(0);
   });
 
   it("supports a no-write dry run", async () => {
@@ -138,26 +155,27 @@ describe("sendThreadMessage", () => {
     expect(result.command).toMatchObject({ type: "thread.turn.start", threadId: "thread-existing" });
     expect(result.dispatch).toBeNull();
     expect(result.verification).toBeNull();
-    expect(harness.commands).toHaveLength(0);
   });
 
   it("applies explicit model, speed, and effort overrides for the turn", async () => {
     const harness = await seededHarness();
 
-    await sendThreadMessage(harness.config, {
+    const result = await sendThreadMessage(harness.config, {
       threadId: "thread-existing",
       prompt: "Hello",
       model: "gpt-5.3-codex",
       speedMode: "fast",
       thinkingEffort: "high",
       openMode: "none",
+      drivers: harness.drivers,
     });
 
-    const turn = harness.commands[0] as {
-      modelSelection: { instanceId: string; model: string; options: Array<{ id: string; value: string | boolean }> };
-    };
-    expect(turn.modelSelection).toMatchObject({ instanceId: "codex", model: "gpt-5.3-codex" });
-    expect(turn.modelSelection.options).toEqual(
+    expect(result.command).toMatchObject({
+      modelSelection: { instanceId: "codex", model: "gpt-5.3-codex" },
+    });
+    const options = (result.command as { modelSelection: { options: Array<{ id: string; value: unknown }> } })
+      .modelSelection.options;
+    expect(options).toEqual(
       expect.arrayContaining([
         { id: "serviceTier", value: "fast" },
         { id: "fastMode", value: true },
@@ -175,142 +193,114 @@ describe("sendThreadMessage", () => {
         prompt: "Hello",
         provider: "claudeAgent",
         openMode: "none",
+        drivers: harness.drivers,
       }),
     ).rejects.toMatchObject({ code: "MODEL_REQUIRED_FOR_PROVIDER" });
-    expect(harness.commands).toHaveLength(0);
   });
 
-  it("leaves the thread untouched when its turn fails", async () => {
-    const harness = await testHarness([], { failTurn: true });
-    const workspaceRoot = await realpath(harness.root);
-    harness.projects.push({
-      id: "project-existing",
-      title: "Existing project",
-      workspaceRoot,
-      defaultModelSelection: { instanceId: "codex", model: "gpt-5.6-sol" },
-      deletedAt: null,
-    });
-    harness.threads.push({
-      id: "thread-existing",
-      projectId: "project-existing",
-      title: "Existing thread",
-      archivedAt: null,
-      modelSelection: { instanceId: "codex", model: "gpt-5.6-sol" },
-      runtimeMode: "full-access",
-      interactionMode: "default",
-    });
+  it("accepts the send and records a later driver failure in the ledger", async () => {
+    const harness = await testHarness({ failTurns: true });
+    await seedProject(harness);
+    await seedThread(harness);
 
-    await expect(
-      sendThreadMessage(harness.config, {
-        threadId: "thread-existing",
-        prompt: "Hello",
-        openMode: "none",
-      }),
-    ).rejects.toMatchObject({ code: "THREAD_START_FAILED", details: { threadId: "thread-existing" } });
-    // Unlike a failed handover, a failed follow-up must not delete the thread.
-    expect(harness.commands.map((command) => command.type)).toEqual(["thread.turn.start"]);
+    const result = await sendThreadMessage(harness.config, {
+      threadId: "thread-existing",
+      prompt: "Hello",
+      openMode: "none",
+      drivers: harness.drivers,
+    });
+    expect(result.delivery).toBe("started");
+    await waitForTurnStatus(harness, "thread-existing", ["failed"]);
+    const read = await readStoredThread(harness.store, "thread-existing");
+    expect(read.turns).toHaveLength(1);
   });
 
   it("rejects busy threads by default and injects with --if-busy inject", async () => {
     const harness = await seededHarness();
-    harness.threads[0]!.session = {
-      threadId: "thread-existing",
-      status: "running",
-      providerName: "codex",
-      runtimeMode: "full-access",
-      activeTurnId: "turn-active",
-      lastError: null,
-      updatedAt: new Date().toISOString(),
-    };
+    await sendTurn(harness.store, "thread-existing", { prompt: "First" });
 
     await expect(
       sendThreadMessage(harness.config, {
         threadId: "thread-existing",
         prompt: "Hello",
         openMode: "none",
+        drivers: harness.drivers,
       }),
     ).rejects.toMatchObject({ code: "THREAD_BUSY" });
-    expect(harness.commands).toHaveLength(0);
 
     const injected = await sendThreadMessage(harness.config, {
       threadId: "thread-existing",
       prompt: "Hello",
       ifBusy: "inject",
       openMode: "none",
+      drivers: harness.drivers,
+      noWait: true,
     });
     expect(injected.verification).toMatchObject({ accepted: true });
-    expect(harness.commands.map((command) => command.type)).toEqual(["thread.turn.start"]);
   });
 
   it("requires --wake-settled for settled threads and honors declines", async () => {
     const harness = await seededHarness();
-    harness.threads[0]!.settledAt = new Date().toISOString();
+    await settleStoredThread(harness.store, "thread-existing");
 
     await expect(
       sendThreadMessage(harness.config, {
         threadId: "thread-existing",
         prompt: "Hello",
         openMode: "none",
+        drivers: harness.drivers,
       }),
     ).rejects.toMatchObject({ code: "SETTLED_THREAD_CONFIRMATION_REQUIRED" });
-    expect(harness.commands).toHaveLength(0);
 
     await expect(
       sendThreadMessage(harness.config, {
         threadId: "thread-existing",
         prompt: "Hello",
         openMode: "none",
+        drivers: harness.drivers,
         confirmSettled: async () => false,
       }),
     ).rejects.toMatchObject({ code: "SETTLED_THREAD_DECLINED" });
-    expect(harness.commands).toHaveLength(0);
 
     const woken = await sendThreadMessage(harness.config, {
       threadId: "thread-existing",
       prompt: "Hello",
       wakeSettled: true,
       openMode: "none",
+      drivers: harness.drivers,
     });
     expect(woken.thread.statusBeforeSend).toBe("settled");
-    expect(harness.commands.map((command) => command.type)).toEqual(["thread.turn.start"]);
+    expect(woken.command.type).toBe("thread.turn.start");
   });
 });
 
 describe("thread lifecycle", () => {
   async function lifecycleHarness() {
     const harness = await testHarness();
-    const workspaceRoot = await realpath(harness.root);
-    harness.projects.push({
+    const workspaceRoot = await realpath(harness.work);
+    await ensureStoredProject(storeRoot(), {
       id: "project-1",
       title: "Project One",
       workspaceRoot,
       defaultModelSelection: { instanceId: "codex", model: "gpt-5.6-sol" },
-      deletedAt: null,
     });
-    harness.threads.push({
+    await createThread(harness.store, {
       id: "thread-active",
       projectId: "project-1",
       title: "Active thread",
-      archivedAt: null,
-      settledAt: null,
       modelSelection: { instanceId: "codex", model: "gpt-5.6-sol" },
       runtimeMode: "full-access",
       interactionMode: "default",
-      updatedAt: "2026-09-04T10:00:00.000Z",
-      messages: [],
     });
-    harness.threads.push({
+    await createThread(harness.store, {
       id: "thread-settled",
       projectId: "project-1",
       title: "Settled thread",
-      archivedAt: null,
-      settledAt: "2026-09-04T11:00:00.000Z",
       modelSelection: { instanceId: "codex", model: "gpt-5.6-sol" },
       runtimeMode: "full-access",
       interactionMode: "default",
-      updatedAt: "2026-09-04T11:00:00.000Z",
-      messages: [],
     });
+    await settleStoredThread(harness.store, "thread-settled");
     return harness;
   }
 
@@ -348,7 +338,6 @@ describe("thread lifecycle", () => {
     const harness = await lifecycleHarness();
 
     const snoozed = await snoozeThread(harness.config, "thread-active", "2030-01-01T00:00:00.000Z");
-    expect(harness.commands.map((command) => command.type)).toEqual(["thread.snooze"]);
     expect(snoozed.command).toMatchObject({
       type: "thread.snooze",
       threadId: "thread-active",
@@ -368,7 +357,6 @@ describe("thread lifecycle", () => {
     expect(inspected.thread.snoozedUntil).toBe("2030-01-01T00:00:00.000Z");
 
     const unsnoozed = await unsnoozeThread(harness.config, "thread-active");
-    expect(harness.commands.map((command) => command.type)).toEqual(["thread.snooze", "thread.unsnooze"]);
     expect(unsnoozed.command).toMatchObject({ type: "thread.unsnooze", threadId: "thread-active", reason: "user" });
     expect(unsnoozed.verification).toMatchObject({ accepted: true, snoozedUntil: null });
     expect(unsnoozed.thread.snoozedUntil).toBeNull();
@@ -396,79 +384,21 @@ describe("thread lifecycle", () => {
     await expect(unsnoozeThread(harness.config, "thread-missing")).rejects.toMatchObject({
       code: "THREAD_NOT_FOUND",
     });
-    expect(harness.commands).toHaveLength(0);
 
-    harness.threads[0]!.archivedAt = new Date().toISOString();
+    await archiveThread(harness.store, "thread-active");
     await expect(snoozeThread(harness.config, "thread-active", "2030-01-01T00:00:00.000Z")).rejects.toMatchObject({
       code: "THREAD_ARCHIVED",
     });
     await expect(unsnoozeThread(harness.config, "thread-active")).rejects.toMatchObject({
       code: "THREAD_ARCHIVED",
     });
-    expect(harness.commands).toHaveLength(0);
-  });
-
-  it("reports unverified snooze and unsnooze dispatches without retrying", async () => {
-    const harness = await testHarness([], {
-      suppressProjectionFor: ["thread.snooze", "thread.unsnooze"],
-    });
-    const { realpath: resolveRealpath } = await import("node:fs/promises");
-    const workspaceRoot = await resolveRealpath(harness.root);
-    harness.projects.push({
-      id: "project-1",
-      title: "Project One",
-      workspaceRoot,
-      defaultModelSelection: { instanceId: "codex", model: "gpt-5.6-sol" },
-      deletedAt: null,
-    });
-    harness.threads.push({
-      id: "thread-active",
-      projectId: "project-1",
-      title: "Active thread",
-      archivedAt: null,
-      runtimeMode: "full-access",
-      interactionMode: "default",
-      snoozedUntil: "2030-01-01T00:00:00.000Z",
-      snoozedAt: "2026-09-04T10:00:00.000Z",
-    });
-
-    await withFastVerification(() =>
-      expect(snoozeThread(harness.config, "thread-active", "2031-01-01T00:00:00.000Z")).rejects.toMatchObject({
-        code: "THREAD_SNOOZE_NOT_VERIFIED",
-        details: { threadId: "thread-active" },
-      }),
-    );
-    await withFastVerification(() =>
-      expect(unsnoozeThread(harness.config, "thread-active")).rejects.toMatchObject({
-        code: "THREAD_UNSNOOZE_NOT_VERIFIED",
-        details: { threadId: "thread-active" },
-      }),
-    );
-    expect(harness.commands.map((command) => command.type)).toEqual(["thread.snooze", "thread.unsnooze"]);
   });
 
   it("interrupts a running turn and reports no_active_run when idle", async () => {
     const harness = await lifecycleHarness();
-    harness.threads[0]!.session = {
-      threadId: "thread-active",
-      status: "running",
-      providerName: "codex",
-      runtimeMode: "full-access",
-      activeTurnId: "turn-active",
-      lastError: null,
-      updatedAt: new Date().toISOString(),
-    };
-    harness.threads[0]!.latestTurn = {
-      turnId: "turn-active",
-      state: "running",
-      requestedAt: new Date().toISOString(),
-      startedAt: new Date().toISOString(),
-      completedAt: null,
-      assistantMessageId: null,
-    };
+    await sendTurn(harness.store, "thread-active", { prompt: "Work" });
 
     const interrupted = await interruptThread(harness.config, "thread-active");
-    expect(harness.commands.map((command) => command.type)).toEqual(["thread.turn.interrupt"]);
     expect(interrupted.command).toMatchObject({ type: "thread.turn.interrupt", threadId: "thread-active" });
     expect(interrupted.command).not.toHaveProperty("turnId");
     expect(interrupted.result).toBe("interrupt_requested");
@@ -478,25 +408,17 @@ describe("thread lifecycle", () => {
     expect(settled.result).toBe("no_active_run");
     expect(settled.command).toBeNull();
     expect(settled.dispatch).toBeNull();
-    expect(harness.commands.map((command) => command.type)).toEqual(["thread.turn.interrupt"]);
   });
 
   it("targets a specific turn with --run and rejects bad interrupt targets", async () => {
     const harness = await lifecycleHarness();
-    harness.threads[0]!.latestTurn = {
-      turnId: "turn-active",
-      state: "running",
-      requestedAt: new Date().toISOString(),
-      startedAt: new Date().toISOString(),
-      completedAt: null,
-      assistantMessageId: null,
-    };
+    const sent = await sendTurn(harness.store, "thread-active", { prompt: "Work" });
 
-    const interrupted = await interruptThread(harness.config, "thread-active", { run: "turn-active" });
+    const interrupted = await interruptThread(harness.config, "thread-active", { run: sent.turn.id });
     expect(interrupted.command).toMatchObject({
       type: "thread.turn.interrupt",
       threadId: "thread-active",
-      turnId: "turn-active",
+      turnId: sent.turn.id,
     });
 
     await expect(interruptThread(harness.config, "thread-missing")).rejects.toMatchObject({
@@ -505,97 +427,31 @@ describe("thread lifecycle", () => {
     await expect(interruptThread(harness.config, "thread-active", { run: "  " })).rejects.toMatchObject({
       code: "INVALID_THREAD_OPTION",
     });
-    harness.threads[0]!.archivedAt = new Date().toISOString();
+    await archiveThread(harness.store, "thread-active");
     await expect(interruptThread(harness.config, "thread-active")).rejects.toMatchObject({
       code: "THREAD_ARCHIVED",
     });
   });
 
-  it("reports failed and unverified interrupt dispatches", async () => {
-    const failing = await testHarness([], { failCommands: ["thread.turn.interrupt"] });
-    const workspaceRoot = await realpath(failing.root);
-    failing.projects.push({
-      id: "project-1",
-      title: "Project One",
-      workspaceRoot,
-      defaultModelSelection: { instanceId: "codex", model: "gpt-5.6-sol" },
-      deletedAt: null,
-    });
-    failing.threads.push({
-      id: "thread-busy",
-      projectId: "project-1",
-      title: "Busy thread",
-      archivedAt: null,
-      runtimeMode: "full-access",
-      interactionMode: "default",
-      latestTurn: {
-        turnId: "turn-active",
-        state: "running",
-        requestedAt: new Date().toISOString(),
-        startedAt: new Date().toISOString(),
-        completedAt: null,
-        assistantMessageId: null,
-      },
-    });
-    await expect(interruptThread(failing.config, "thread-busy")).rejects.toMatchObject({
-      code: "THREAD_INTERRUPT_FAILED",
-    });
-
-    const suppressed = await testHarness([], { suppressProjectionFor: ["thread.turn.interrupt"] });
-    const suppressedRoot = await realpath(suppressed.root);
-    suppressed.projects.push({
-      id: "project-1",
-      title: "Project One",
-      workspaceRoot: suppressedRoot,
-      defaultModelSelection: { instanceId: "codex", model: "gpt-5.6-sol" },
-      deletedAt: null,
-    });
-    suppressed.threads.push({
-      id: "thread-busy",
-      projectId: "project-1",
-      title: "Busy thread",
-      archivedAt: null,
-      runtimeMode: "full-access",
-      interactionMode: "default",
-      latestTurn: {
-        turnId: "turn-active",
-        state: "running",
-        requestedAt: new Date().toISOString(),
-        startedAt: new Date().toISOString(),
-        completedAt: null,
-        assistantMessageId: null,
-      },
-      session: {
-        threadId: "thread-busy",
-        status: "running",
-        providerName: "codex",
-        runtimeMode: "full-access",
-        activeTurnId: "turn-active",
-        lastError: null,
-        updatedAt: new Date().toISOString(),
-      },
-    });
-    await withFastVerification(() =>
-      expect(interruptThread(suppressed.config, "thread-busy")).rejects.toMatchObject({
-        code: "THREAD_INTERRUPT_NOT_VERIFIED",
-      }),
-    );
-  });
-
   it("reads turn-items, plans, checkpoints, and transfers views", async () => {
     const harness = await lifecycleHarness();
-    harness.threads[0]!.activities = [
-      {
-        id: "activity-1",
-        tone: "tool",
-        kind: "tool_execution",
-        summary: "Ran tests",
-        turnId: "turn-1",
-        createdAt: "2026-09-04T10:01:00.000Z",
-      },
-    ];
-    harness.threads[0]!.proposedPlans = [{ id: "plan-1", turnId: "turn-1" }];
-    harness.threads[0]!.checkpoints = [{ turnId: "turn-1", status: "ready" }];
+    await harness.store.appendLedger("thread-active", "activity", {
+      id: "activity-1",
+      threadId: "thread-active",
+      turnId: "turn-1",
+      kind: "tool_execution",
+      summary: "Ran tests",
+      createdAt: "2026-09-04T10:01:00.000Z",
+    });
+    await harness.store.appendLedger("thread-active", "checkpoints", {
+      id: "checkpoint-1",
+      threadId: "thread-active",
+      turnId: "turn-1",
+      status: "ready",
+      ref: null,
+      baseRef: null,
+      createdAt: "2026-09-04T10:01:00.000Z",
+    });
 
     const items = await readThread(harness.config, "thread-active", { view: "turn-items" });
     if (items.thread.view !== "turn-items") throw new Error("expected turn-items view");
@@ -604,8 +460,7 @@ describe("thread lifecycle", () => {
 
     const plans = await readThread(harness.config, "thread-active", { view: "plans" });
     if (plans.thread.view !== "plans") throw new Error("expected plans view");
-    expect(plans.thread.planCount).toBe(1);
-    expect(plans.thread.plans[0]).toMatchObject({ id: "plan-1" });
+    expect(plans.thread.planCount).toBe(0);
 
     const checkpoints = await readThread(harness.config, "thread-active", { view: "checkpoints" });
     if (checkpoints.thread.view !== "checkpoints") throw new Error("expected checkpoints view");
@@ -621,88 +476,39 @@ describe("thread lifecycle", () => {
     });
   });
 
-  it("refuses to settle a thread with shell-reported pending work", async () => {
+  it("refuses to settle a thread with pending work", async () => {
     const harness = await lifecycleHarness();
-    // The detail endpoint never carries these flags; the guard must read them
-    // from the shell snapshot, where the mock keeps them.
-    harness.threads[0]!.hasPendingApprovals = true;
+    const stored = await harness.store.readThreadRecord("thread-active");
+    await harness.store.writeThreadRecord({ ...stored!, hasPendingApprovals: true });
 
     await expect(settleThread(harness.config, "thread-active")).rejects.toMatchObject({
       code: "THREAD_SETTLE_BLOCKED",
       details: { threadId: "thread-active", hasPendingApprovals: true },
     });
-    expect(harness.commands).toHaveLength(0);
   });
 });
 
 describe("send delivery modes", () => {
   async function busyHarness() {
     const harness = await testHarness();
-    const workspaceRoot = await realpath(harness.root);
-    harness.projects.push({
-      id: "project-existing",
-      title: "Existing project",
-      workspaceRoot,
-      defaultModelSelection: { instanceId: "codex", model: "gpt-5.6-sol" },
-      deletedAt: null,
-    });
-    harness.threads.push({
-      id: "thread-existing",
-      projectId: "project-existing",
-      title: "Existing thread",
-      archivedAt: null,
-      modelSelection: { instanceId: "codex", model: "gpt-5.6-sol" },
-      runtimeMode: "full-access",
-      interactionMode: "default",
-      latestTurn: {
-        turnId: "turn-active",
-        state: "running",
-        requestedAt: new Date().toISOString(),
-        startedAt: new Date().toISOString(),
-        completedAt: null,
-        assistantMessageId: null,
-      },
-      session: {
-        threadId: "thread-existing",
-        status: "running",
-        providerName: "codex",
-        runtimeMode: "full-access",
-        activeTurnId: "turn-active",
-        lastError: null,
-        updatedAt: new Date().toISOString(),
-      },
-    });
+    await seedProject(harness);
+    await seedThread(harness);
+    await sendTurn(harness.store, "thread-existing", { prompt: "First" });
     return harness;
   }
 
   it("reports started delivery by default with no handoff note", async () => {
-    const harness = await testHarness();
-    const workspaceRoot = await realpath(harness.root);
-    harness.projects.push({
-      id: "project-existing",
-      title: "Existing project",
-      workspaceRoot,
-      defaultModelSelection: { instanceId: "codex", model: "gpt-5.6-sol" },
-      deletedAt: null,
-    });
-    harness.threads.push({
-      id: "thread-existing",
-      projectId: "project-existing",
-      title: "Existing thread",
-      archivedAt: null,
-      modelSelection: { instanceId: "codex", model: "gpt-5.6-sol" },
-      runtimeMode: "full-access",
-      interactionMode: "default",
-    });
+    const harness = await seededHarness();
 
     const result = await sendThreadMessage(harness.config, {
       threadId: "thread-existing",
       prompt: "Hello",
       openMode: "none",
+      drivers: harness.drivers,
     });
     expect(result.delivery).toBe("started");
     expect(result.handoffNote).toBeNull();
-    expect(harness.commands.map((command) => command.type)).toEqual(["thread.turn.start"]);
+    expect(result.command.type).toBe("thread.turn.start");
   });
 
   it("queues behind busy threads with --delivery queue", async () => {
@@ -713,9 +519,10 @@ describe("send delivery modes", () => {
       prompt: "Follow-up",
       delivery: "queue",
       openMode: "none",
+      drivers: harness.drivers,
+      noWait: true,
     });
     expect(result.delivery).toBe("queued");
-    expect(harness.commands.map((command) => command.type)).toEqual(["thread.turn.start"]);
   });
 
   it("steers only busy threads", async () => {
@@ -725,37 +532,21 @@ describe("send delivery modes", () => {
       prompt: "Steer this",
       delivery: "steer",
       openMode: "none",
+      drivers: busy.drivers,
+      noWait: true,
     });
     expect(steered.delivery).toBe("steered");
-    expect(busy.commands.map((command) => command.type)).toEqual(["thread.turn.start"]);
 
-    const idle = await testHarness();
-    const workspaceRoot = await realpath(idle.root);
-    idle.projects.push({
-      id: "project-existing",
-      title: "Existing project",
-      workspaceRoot,
-      defaultModelSelection: { instanceId: "codex", model: "gpt-5.6-sol" },
-      deletedAt: null,
-    });
-    idle.threads.push({
-      id: "thread-existing",
-      projectId: "project-existing",
-      title: "Existing thread",
-      archivedAt: null,
-      modelSelection: { instanceId: "codex", model: "gpt-5.6-sol" },
-      runtimeMode: "full-access",
-      interactionMode: "default",
-    });
+    const idle = await seededHarness();
     await expect(
       sendThreadMessage(idle.config, {
         threadId: "thread-existing",
         prompt: "Steer this",
         delivery: "steer",
         openMode: "none",
+        drivers: idle.drivers,
       }),
     ).rejects.toMatchObject({ code: "THREAD_NOT_STEERABLE", details: { delivery: "steer" } });
-    expect(idle.commands).toHaveLength(0);
   });
 
   it("restarts by interrupting before sending", async () => {
@@ -766,109 +557,41 @@ describe("send delivery modes", () => {
       prompt: "Start over with this",
       delivery: "restart",
       openMode: "none",
+      drivers: harness.drivers,
+      noWait: true,
     });
     expect(result.delivery).toBe("restarted");
-    expect(harness.commands.map((command) => command.type)).toEqual([
-      "thread.turn.interrupt",
-      "thread.turn.start",
-    ]);
+    const read = await readStoredThread(harness.store, "thread-existing");
+    const interrupted = read.turns.filter((turn) => turn.status === "interrupted");
+    expect(interrupted).toHaveLength(1);
+    expect(read.turns[read.turns.length - 1]?.status).toBe("running");
 
-    const idle = await testHarness();
-    const workspaceRoot = await realpath(idle.root);
-    idle.projects.push({
-      id: "project-existing",
-      title: "Existing project",
-      workspaceRoot,
-      defaultModelSelection: { instanceId: "codex", model: "gpt-5.6-sol" },
-      deletedAt: null,
-    });
-    idle.threads.push({
-      id: "thread-existing",
-      projectId: "project-existing",
-      title: "Existing thread",
-      archivedAt: null,
-      modelSelection: { instanceId: "codex", model: "gpt-5.6-sol" },
-      runtimeMode: "full-access",
-      interactionMode: "default",
-    });
+    const idle = await seededHarness();
     await expect(
       sendThreadMessage(idle.config, {
         threadId: "thread-existing",
         prompt: "Start over",
         delivery: "restart",
         openMode: "none",
+        drivers: idle.drivers,
       }),
     ).rejects.toMatchObject({ code: "THREAD_NOT_STEERABLE" });
-    expect(idle.commands).toHaveLength(0);
   });
 
-  it("fails a restart loudly when the interrupt fails", async () => {
-    const harness = await testHarness([], { failCommands: ["thread.turn.interrupt"] });
-    const workspaceRoot = await realpath(harness.root);
-    harness.projects.push({
-      id: "project-existing",
-      title: "Existing project",
-      workspaceRoot,
-      defaultModelSelection: { instanceId: "codex", model: "gpt-5.6-sol" },
-      deletedAt: null,
-    });
-    harness.threads.push({
-      id: "thread-existing",
-      projectId: "project-existing",
-      title: "Existing thread",
-      archivedAt: null,
-      modelSelection: { instanceId: "codex", model: "gpt-5.6-sol" },
-      runtimeMode: "full-access",
-      interactionMode: "default",
-      latestTurn: {
-        turnId: "turn-active",
-        state: "running",
-        requestedAt: new Date().toISOString(),
-        startedAt: new Date().toISOString(),
-        completedAt: null,
-        assistantMessageId: null,
-      },
-    });
-
-    await expect(
-      sendThreadMessage(harness.config, {
-        threadId: "thread-existing",
-        prompt: "Start over",
-        delivery: "restart",
-        openMode: "none",
-      }),
-    ).rejects.toMatchObject({ code: "THREAD_RESTART_FAILED" });
-    expect(harness.commands.map((command) => command.type)).toEqual(["thread.turn.interrupt"]);
-  });
-
-  it("records a handoff note without changing the dispatched turn", async () => {
-    const harness = await testHarness();
-    const workspaceRoot = await realpath(harness.root);
-    harness.projects.push({
-      id: "project-existing",
-      title: "Existing project",
-      workspaceRoot,
-      defaultModelSelection: { instanceId: "codex", model: "gpt-5.6-sol" },
-      deletedAt: null,
-    });
-    harness.threads.push({
-      id: "thread-existing",
-      projectId: "project-existing",
-      title: "Existing thread",
-      archivedAt: null,
-      modelSelection: { instanceId: "codex", model: "gpt-5.6-sol" },
-      runtimeMode: "full-access",
-      interactionMode: "default",
-    });
+  it("records a handoff note without changing the recorded turn", async () => {
+    const harness = await seededHarness();
 
     const result = await sendThreadMessage(harness.config, {
       threadId: "thread-existing",
       prompt: "Continue on claudeAgent",
       handoffNote: "Switched provider; prior context summarized.",
       openMode: "none",
+      drivers: harness.drivers,
     });
     expect(result.handoffNote).toBe("Switched provider; prior context summarized.");
-    expect(harness.commands[0]).not.toHaveProperty("handoffNote");
+    const read = await readStoredThread(harness.store, "thread-existing");
+    expect(read.turns).toHaveLength(1);
+    await waitForTurnStatus(harness, "thread-existing", ["completed", "failed"]);
 
     const dryRun = await sendThreadMessage(harness.config, {
       threadId: "thread-existing",
@@ -878,7 +601,6 @@ describe("send delivery modes", () => {
       openMode: "none",
     });
     expect(dryRun.handoffNote).toBe("note");
-    expect(harness.commands).toHaveLength(1);
 
     await expect(
       sendThreadMessage(harness.config, {
@@ -902,23 +624,20 @@ describe("send delivery modes", () => {
 describe("delegated tasks", () => {
   async function parentHarness() {
     const harness = await testHarness();
-    const workspaceRoot = await realpath(harness.root);
-    harness.projects.push({
+    const workspaceRoot = await realpath(harness.work);
+    await ensureStoredProject(storeRoot(), {
       id: "project-1",
       title: "Project One",
       workspaceRoot,
       defaultModelSelection: { instanceId: "codex", model: "gpt-5.6-sol" },
-      deletedAt: null,
     });
-    harness.threads.push({
+    await createThread(harness.store, {
       id: "thread-parent",
       projectId: "project-1",
       title: "Parent thread",
-      archivedAt: null,
       modelSelection: { instanceId: "codex", model: "gpt-5.6-sol" },
       runtimeMode: "full-access",
       interactionMode: "default",
-      branch: "main",
     });
     return harness;
   }
@@ -930,15 +649,13 @@ describe("delegated tasks", () => {
       parentThreadId: "thread-parent",
       task: "Research the retry policy.",
       openMode: "none",
+      drivers: harness.drivers,
     });
 
-    expect(harness.commands.map((command) => command.type)).toEqual(["thread.create", "thread.turn.start"]);
-    const create = harness.commands[0] as { projectId: string; title: string; runtimeMode: string };
-    expect(create.projectId).toBe("project-1");
-    expect(create.runtimeMode).toBe("full-access");
-    const turn = harness.commands[1] as { threadId: string; message: { text: string } };
-    expect(turn.threadId).toBe(result.child.id);
-    expect(turn.message.text).toBe("Research the retry policy.");
+    expect(result.createCommand.projectId).toBe("project-1");
+    expect(result.createCommand.runtimeMode).toBe("full-access");
+    expect(result.turnCommand.message.text).toBe("Research the retry policy.");
+    expect(result.turnCommand.threadId).toBe(result.child.id);
     expect(result.child.projectId).toBe("project-1");
     expect(result.task.taskId).toBe(result.child.id);
     expect(result.task.status).toBe("completed");
@@ -949,20 +666,18 @@ describe("delegated tasks", () => {
   });
 
   it("returns waitTimedOut instead of cancelling on timeout", async () => {
-    const harness = await testHarness([], { leaveTurnsRunning: true });
-    const workspaceRoot = await realpath(harness.root);
-    harness.projects.push({
+    const harness = await testHarness({ leaveTurnsRunning: true });
+    const workspaceRoot = await realpath(harness.work);
+    await ensureStoredProject(storeRoot(), {
       id: "project-1",
       title: "Project One",
       workspaceRoot,
       defaultModelSelection: { instanceId: "codex", model: "gpt-5.6-sol" },
-      deletedAt: null,
     });
-    harness.threads.push({
+    await createThread(harness.store, {
       id: "thread-parent",
       projectId: "project-1",
       title: "Parent thread",
-      archivedAt: null,
       modelSelection: { instanceId: "codex", model: "gpt-5.6-sol" },
       runtimeMode: "full-access",
       interactionMode: "default",
@@ -973,27 +688,25 @@ describe("delegated tasks", () => {
       task: "Long task",
       timeoutMs: 250,
       openMode: "none",
+      drivers: harness.drivers,
     });
     expect(result.task.waitTimedOut).toBe(true);
     expect(result.task.status).toBe("running");
-    expect(harness.commands.map((command) => command.type)).toEqual(["thread.create", "thread.turn.start"]);
   });
 
   it("supports no-wait dispatch and dry runs", async () => {
-    const running = await testHarness([], { leaveTurnsRunning: true });
-    const runningRoot = await realpath(running.root);
-    running.projects.push({
+    const running = await testHarness({ leaveTurnsRunning: true });
+    const runningRoot = await realpath(running.work);
+    await ensureStoredProject(storeRoot(), {
       id: "project-1",
       title: "Project One",
       workspaceRoot: runningRoot,
       defaultModelSelection: { instanceId: "codex", model: "gpt-5.6-sol" },
-      deletedAt: null,
     });
-    running.threads.push({
+    await createThread(running.store, {
       id: "thread-parent",
       projectId: "project-1",
       title: "Parent thread",
-      archivedAt: null,
       modelSelection: { instanceId: "codex", model: "gpt-5.6-sol" },
       runtimeMode: "full-access",
       interactionMode: "default",
@@ -1003,6 +716,7 @@ describe("delegated tasks", () => {
       task: "Background task",
       wait: false,
       openMode: "none",
+      drivers: running.drivers,
     });
     expect(asyncResult.task.status).toBe("running");
     expect(asyncResult.task.waitTimedOut).toBe(false);
@@ -1016,10 +730,9 @@ describe("delegated tasks", () => {
     });
     expect(dryRun.dryRun).toBe(true);
     expect(dryRun.task.childRunId).toBeNull();
-    expect(harness.commands).toHaveLength(0);
   });
 
-  it("rejects bad delegate input without dispatching", async () => {
+  it("rejects bad delegate input without writing", async () => {
     const harness = await parentHarness();
 
     await expect(
@@ -1036,7 +749,6 @@ describe("delegated tasks", () => {
         openMode: "none",
       }),
     ).rejects.toMatchObject({ code: "INVALID_THREAD_OPTION" });
-    expect(harness.commands).toHaveLength(0);
   });
 
   it("reads task status and rejects foreign tasks", async () => {
@@ -1045,6 +757,7 @@ describe("delegated tasks", () => {
       parentThreadId: "thread-parent",
       task: "Research the retry policy.",
       openMode: "none",
+      drivers: harness.drivers,
     });
 
     const status = await taskStatus(harness.config, "thread-parent", delegated.child.id);
@@ -1063,18 +776,16 @@ describe("delegated tasks", () => {
       details: { taskId: "task-missing" },
     });
 
-    harness.projects.push({
+    await ensureStoredProject(storeRoot(), {
       id: "project-2",
       title: "Project Two",
       workspaceRoot: "/elsewhere",
-      defaultModelSelection: null,
-      deletedAt: null,
     });
-    harness.threads.push({
+    await createThread(harness.store, {
       id: "thread-foreign",
       projectId: "project-2",
       title: "Foreign thread",
-      archivedAt: null,
+      modelSelection: { instanceId: "codex", model: "gpt-5.6-sol" },
       runtimeMode: "full-access",
       interactionMode: "default",
     });
@@ -1084,20 +795,18 @@ describe("delegated tasks", () => {
   });
 
   it("cancels a running task with a real interrupt", async () => {
-    const harness = await testHarness([], { leaveTurnsRunning: true });
-    const workspaceRoot = await realpath(harness.root);
-    harness.projects.push({
+    const harness = await testHarness({ leaveTurnsRunning: true });
+    const workspaceRoot = await realpath(harness.work);
+    await ensureStoredProject(storeRoot(), {
       id: "project-1",
       title: "Project One",
       workspaceRoot,
       defaultModelSelection: { instanceId: "codex", model: "gpt-5.6-sol" },
-      deletedAt: null,
     });
-    harness.threads.push({
+    await createThread(harness.store, {
       id: "thread-parent",
       projectId: "project-1",
       title: "Parent thread",
-      archivedAt: null,
       modelSelection: { instanceId: "codex", model: "gpt-5.6-sol" },
       runtimeMode: "full-access",
       interactionMode: "default",
@@ -1107,12 +816,12 @@ describe("delegated tasks", () => {
       task: "Long task",
       wait: false,
       openMode: "none",
+      drivers: harness.drivers,
     });
-    const before = harness.commands.length;
 
     const cancelled = await cancelTask(harness.config, "thread-parent", delegated.child.id);
     expect(cancelled.task.status).toBe("interrupted");
-    expect(harness.commands.slice(before).map((command) => command.type)).toEqual(["thread.turn.interrupt"]);
+    expect(cancelled.command).toMatchObject({ type: "thread.turn.interrupt" });
     expect(cancelled.verification).toMatchObject({ accepted: true, method: "interrupt" });
   });
 
@@ -1122,48 +831,19 @@ describe("delegated tasks", () => {
       parentThreadId: "thread-parent",
       task: "Quick task",
       openMode: "none",
+      drivers: harness.drivers,
     });
-    const before = harness.commands.length;
+    const childBefore = (await readStoredThread(harness.store, delegated.child.id)).turns.length;
 
     const cancelled = await cancelTask(harness.config, "thread-parent", delegated.child.id);
     expect(cancelled.task.status).toBe("completed");
     expect(cancelled.command).toBeNull();
-    expect(harness.commands).toHaveLength(before);
+
+    const childAfter = (await readStoredThread(harness.store, delegated.child.id)).turns.length;
+    expect(childAfter).toBe(childBefore);
 
     await expect(cancelTask(harness.config, "thread-parent", "task-missing")).rejects.toMatchObject({
       code: "TASK_NOT_FOUND",
-    });
-  });
-
-  it("returns TASK_CANCEL_UNSUPPORTED when the interrupt cannot dispatch", async () => {
-    const harness = await testHarness([], { leaveTurnsRunning: true, failCommands: ["thread.turn.interrupt"] });
-    const workspaceRoot = await realpath(harness.root);
-    harness.projects.push({
-      id: "project-1",
-      title: "Project One",
-      workspaceRoot,
-      defaultModelSelection: { instanceId: "codex", model: "gpt-5.6-sol" },
-      deletedAt: null,
-    });
-    harness.threads.push({
-      id: "thread-parent",
-      projectId: "project-1",
-      title: "Parent thread",
-      archivedAt: null,
-      modelSelection: { instanceId: "codex", model: "gpt-5.6-sol" },
-      runtimeMode: "full-access",
-      interactionMode: "default",
-    });
-    const delegated = await delegateTask(harness.config, {
-      parentThreadId: "thread-parent",
-      task: "Long task",
-      wait: false,
-      openMode: "none",
-    });
-
-    await expect(cancelTask(harness.config, "thread-parent", delegated.child.id)).rejects.toMatchObject({
-      code: "TASK_CANCEL_UNSUPPORTED",
-      details: { taskId: delegated.child.id },
     });
   });
 });

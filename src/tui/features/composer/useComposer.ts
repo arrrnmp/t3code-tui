@@ -9,7 +9,7 @@ import {
   readTempDraftFile,
   runEditorAttached,
 } from "../../model/externalEditor.js";
-import type { ImageAttachmentUpload } from "../../../cli/threads/threadApi.js";
+import type { ImageAttachmentUpload } from "../../model/attachments.js";
 import { COPY_TOAST_MS } from "../../app/constants.js";
 
 /**

@@ -4,86 +4,78 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { CliError } from "../../../errors.js";
+import { ensureStoredProject, listStoredProjects } from "../../../projects/projects.js";
+import { readThread } from "../../../threads/threads.js";
 import { testHarness } from "../../testing/harness.js";
 import { createHandoverThread } from "../handover.js";
+
+function storeRoot(): string {
+  return process.env.T3CODE_STORE_ROOT!;
+}
 
 describe("createHandoverThread", () => {
   it("creates a missing project, thread, and first turn", async () => {
     const harness = await testHarness();
 
     const result = await createHandoverThread(harness.config, {
-      cwd: harness.root,
+      cwd: harness.work,
       prompt: "Continue the implementation from this handover.",
       openMode: "none",
+      drivers: harness.drivers,
     });
 
     expect(result.projectCreated).toBe(true);
-    expect(result.workspace.workspaceRoot).toBe(await realpath(harness.root));
-    expect(harness.commands.map((command) => command.type)).toEqual([
-      "project.create",
-      "thread.create",
-      "thread.turn.start",
-    ]);
-    const createThread = harness.commands[1] as {
-      projectId: string;
-      branch: string;
-      modelSelection: {
-        instanceId: string;
-        model: string;
-        options: Array<{ id: string; value: string | boolean }>;
-      };
-      runtimeMode: string;
-    };
-    const turn = harness.commands[2] as {
-      message: { text: string };
-    };
-    expect(turn.message.text).toBe("Continue the implementation from this handover.");
+    expect(result.workspace.workspaceRoot).toBe(await realpath(harness.work));
+    expect(result.projectCommand).toMatchObject({ type: "project.create" });
+    const createThread = result.thread.createCommand;
+    expect(createThread).toMatchObject({ projectId: result.project.id, branch: "main" });
+    expect(result.thread.command).toMatchObject({
+      type: "thread.turn.start",
+      message: { text: "Continue the implementation from this handover." },
+    });
     expect(createThread.projectId).toBe(result.project.id);
     expect(createThread.branch).toBe("main");
     expect(createThread.modelSelection).toMatchObject({
       instanceId: "codex",
-      model: "gpt-6-astra",
+      model: "gpt-5.4",
     });
     expect(createThread.modelSelection.options).toBeUndefined();
     expect(createThread.runtimeMode).toBe("full-access");
-    expect(harness.commands[2]).toMatchObject({ runtimeMode: "full-access" });
+    expect(result.thread.command).toMatchObject({ runtimeMode: "full-access" });
     expect(result.opened.kind).toBe("none");
   });
 
   it("inherits an existing project's pre-configured model and options", async () => {
     const harness = await testHarness();
-    harness.projects.push({
+    await ensureStoredProject(storeRoot(), {
       id: "project-existing",
       title: "Existing project",
-      workspaceRoot: await realpath(harness.root),
+      workspaceRoot: await realpath(harness.work),
       defaultModelSelection: {
         instanceId: "claudeAgent",
         model: "claude-sonnet-5",
         options: [{ id: "effort", value: "max" }],
       },
-      deletedAt: null,
     });
 
-    await createHandoverThread(harness.config, {
-      cwd: harness.root,
+    const result = await createHandoverThread(harness.config, {
+      cwd: harness.work,
       prompt: "Handover",
       openMode: "none",
+      drivers: harness.drivers,
     });
 
-    expect(harness.commands.map((command) => command.type)).toEqual([
-      "thread.create",
-      "thread.turn.start",
-    ]);
+    expect(result.projectCreated).toBe(false);
     const expectedSelection = {
       instanceId: "claudeAgent",
       model: "claude-sonnet-5",
       options: [{ id: "effort", value: "max" }],
     };
-    expect(harness.commands[0]).toMatchObject({
+    expect(result.thread.createCommand).toMatchObject({
       modelSelection: expectedSelection,
       runtimeMode: "full-access",
     });
-    expect(harness.commands[1]).toMatchObject({
+    expect(result.thread.command).toMatchObject({
       modelSelection: expectedSelection,
       runtimeMode: "full-access",
     });
@@ -94,20 +86,21 @@ describe("createHandoverThread", () => {
 
     await expect(
       createHandoverThread(harness.config, {
-        cwd: harness.root,
+        cwd: harness.work,
         prompt: "Handover",
         projectPolicy: "existing",
         openMode: "none",
+        drivers: harness.drivers,
       }),
     ).rejects.toMatchObject({ code: "PROJECT_NOT_FOUND" } satisfies Partial<CliError>);
-    expect(harness.commands).toHaveLength(0);
+    expect(await listStoredProjects(storeRoot())).toHaveLength(0);
   });
 
   it("supports a no-write dry run", async () => {
     const harness = await testHarness();
 
     const result = await createHandoverThread(harness.config, {
-      cwd: harness.root,
+      cwd: harness.work,
       prompt: "Handover",
       dryRun: true,
       openMode: "none",
@@ -117,7 +110,7 @@ describe("createHandoverThread", () => {
     expect(result.projectCommand).toMatchObject({ type: "project.create" });
     expect(result.thread.createCommand).toMatchObject({ type: "thread.create" });
     expect(result.thread.command).toMatchObject({ type: "thread.turn.start" });
-    expect(harness.commands).toHaveLength(0);
+    expect(await listStoredProjects(storeRoot())).toHaveLength(0);
   });
 
   it("uses the process working directory when cwd is omitted", async () => {
@@ -135,8 +128,8 @@ describe("createHandoverThread", () => {
   it("applies provider, model, speed, effort, permission, and interaction selections", async () => {
     const harness = await testHarness();
 
-    await createHandoverThread(harness.config, {
-      cwd: harness.root,
+    const result = await createHandoverThread(harness.config, {
+      cwd: harness.work,
       prompt: "Handover",
       provider: "codex",
       model: "gpt-5.3-codex",
@@ -145,14 +138,11 @@ describe("createHandoverThread", () => {
       runtimeMode: "approval-required",
       interactionMode: "plan",
       openMode: "none",
+      drivers: harness.drivers,
     });
 
-    const createThread = harness.commands[1] as {
-      modelSelection: { instanceId: string; model: string; options: Array<{ id: string; value: string | boolean }> };
-      runtimeMode: string;
-      interactionMode: string;
-    };
-    const turn = harness.commands[2] as typeof createThread;
+    const createThread = result.thread.createCommand;
+    const turn = result.thread.command;
     expect(createThread.modelSelection).toMatchObject({
       instanceId: "codex",
       model: "gpt-5.3-codex",
@@ -171,103 +161,67 @@ describe("createHandoverThread", () => {
     expect(turn.modelSelection).toEqual(createThread.modelSelection);
   });
 
-  it("creates a new worktree through T3's bootstrap command", async () => {
+  it("provisions a local worktree and records it on the thread", async () => {
     const harness = await testHarness();
 
     const result = await createHandoverThread(harness.config, {
-      cwd: harness.root,
+      cwd: harness.work,
       prompt: "Handover",
       threadEnvMode: "worktree",
       openMode: "none",
+      drivers: harness.drivers,
     });
 
-    expect(harness.commands.map((command) => command.type)).toEqual([
-      "project.create",
-      "thread.turn.start",
-    ]);
-    expect(result.thread.createDispatch).toBeNull();
-    expect(result.thread.command).toMatchObject({
-      type: "thread.turn.start",
-      bootstrap: {
-        createThread: {
-          projectId: result.project.id,
-          branch: "main",
-          worktreePath: null,
-        },
-        prepareWorktree: {
-          projectCwd: await realpath(harness.root),
-          baseBranch: "main",
-          startFromOrigin: true,
-        },
-        runSetupScript: true,
-      },
-      runtimeMode: "full-access",
+    expect(result.thread.createCommand).toMatchObject({ type: "thread.create" });
+    expect(result.thread.command).toMatchObject({ type: "thread.turn.start" });
+    expect(result.thread.command).not.toHaveProperty("bootstrap");
+    expect(result.worktree).toMatchObject({
+      baseBranch: "main",
+      startFromOrigin: true,
     });
-    expect(result.thread.command).toMatchObject({
-      bootstrap: { createThread: { runtimeMode: "full-access" } },
-    });
-    expect(harness.threads).toHaveLength(1);
+    expect(result.worktree?.branch?.startsWith("t3code/")).toBe(true);
+    expect(result.thread.createCommand.worktreePath).toBe(result.worktree?.path);
+    const stored = await readThread(harness.store, result.thread.id);
+    expect(stored.thread.env.mode).toBe("worktree");
+    expect(stored.thread.env.path).toBe(result.worktree?.path);
   });
 
-  it("honors an explicit worktree-origin setting from the current installation", async () => {
-    const harness = await testHarness([], {
-      settings: { newWorktreesStartFromOrigin: false },
-    });
+  it("uses explicit installation defaults", async () => {
+    const harness = await testHarness();
 
     const result = await createHandoverThread(harness.config, {
-      cwd: harness.root,
+      cwd: harness.work,
       prompt: "Handover",
       threadEnvMode: "worktree",
       openMode: "none",
       dryRun: true,
     });
 
-    expect(result.thread.command).toMatchObject({
-      bootstrap: { prepareWorktree: { startFromOrigin: false } },
-    });
-  });
-
-  it("uses the 0.0.28 worktree-origin and model defaults", async () => {
-    const harness = await testHarness([], { serverVersion: "0.0.28" });
-
-    const result = await createHandoverThread(harness.config, {
-      cwd: harness.root,
-      prompt: "Handover",
-      threadEnvMode: "worktree",
-      openMode: "none",
-      dryRun: true,
-    });
-
-    expect(result.projectCommand).toMatchObject({
-      defaultModelSelection: null,
-    });
+    expect(result.projectCommand).toMatchObject({ defaultModelSelection: null });
     expect(result.thread.command).toMatchObject({
       modelSelection: { instanceId: "codex", model: "gpt-5.4" },
-      bootstrap: { prepareWorktree: { startFromOrigin: false } },
     });
+    expect(result.worktree).toMatchObject({ startFromOrigin: true });
   });
 
   it("prefers a project's checkout setting over t3.json and the global setting", async () => {
-    const harness = await testHarness([], {
-      settings: { defaultThreadEnvMode: "worktree" },
-    });
+    const harness = await testHarness();
     await writeFile(
-      path.join(harness.root, "t3.json"),
+      path.join(harness.work, "t3.json"),
       JSON.stringify({ defaultThreadEnvMode: "worktree" }),
       "utf8",
     );
-    harness.projects.push({
+    await ensureStoredProject(storeRoot(), {
       id: "project-existing",
       title: "Existing project",
-      workspaceRoot: await realpath(harness.root),
+      workspaceRoot: await realpath(harness.work),
       defaultModelSelection: { instanceId: "codex", model: "gpt-5.6-sol" },
       defaultThreadEnvMode: "local",
-      deletedAt: null,
     });
     harness.config.threadEnvMode = "t3";
 
     const result = await createHandoverThread(harness.config, {
-      cwd: harness.root,
+      cwd: harness.work,
       prompt: "Handover",
       dryRun: true,
       openMode: "none",
@@ -277,22 +231,20 @@ describe("createHandoverThread", () => {
       effectiveThreadEnvMode: "local",
       threadEnvModeSource: "project",
     });
-    expect(result.thread.command).not.toHaveProperty("bootstrap");
+    expect(result.worktree).toBeNull();
   });
 
   it("prefers t3.json's checkout setting over the global setting", async () => {
-    const harness = await testHarness([], {
-      settings: { defaultThreadEnvMode: "worktree" },
-    });
+    const harness = await testHarness();
     await writeFile(
-      path.join(harness.root, "t3.json"),
+      path.join(harness.work, "t3.json"),
       JSON.stringify({ defaultThreadEnvMode: "local" }),
       "utf8",
     );
     harness.config.threadEnvMode = "t3";
 
     const result = await createHandoverThread(harness.config, {
-      cwd: harness.root,
+      cwd: harness.work,
       prompt: "Handover",
       dryRun: true,
       openMode: "none",
@@ -302,17 +254,15 @@ describe("createHandoverThread", () => {
       effectiveThreadEnvMode: "local",
       threadEnvModeSource: "t3.json",
     });
-    expect(result.thread.command).not.toHaveProperty("bootstrap");
+    expect(result.worktree).toBeNull();
   });
 
   it("uses the global checkout setting when the project and t3.json do not set one", async () => {
-    const harness = await testHarness([], {
-      settings: { defaultThreadEnvMode: "worktree" },
-    });
-    harness.config.threadEnvMode = "t3";
+    const harness = await testHarness();
+    harness.config.threadEnvMode = "worktree";
 
     const result = await createHandoverThread(harness.config, {
-      cwd: harness.root,
+      cwd: harness.work,
       prompt: "Handover",
       dryRun: true,
       openMode: "none",
@@ -322,45 +272,29 @@ describe("createHandoverThread", () => {
       effectiveThreadEnvMode: "worktree",
       threadEnvModeSource: "global",
     });
-    expect(result.thread.command).toHaveProperty("bootstrap");
+    expect(result.worktree).toMatchObject({ baseBranch: "main" });
   });
 
-  it("rejects worktree handovers against older T3 servers", async () => {
-    const harness = await testHarness([], { serverVersion: "0.0.27" });
+  it("accepts the handover and records a later driver failure in the ledger", async () => {
+    const harness = await testHarness({ failTurns: true });
 
-    await expect(
-      createHandoverThread(harness.config, {
-        cwd: harness.root,
-        prompt: "Handover",
-        threadEnvMode: "worktree",
-        openMode: "none",
-      }),
-    ).rejects.toMatchObject({
-      code: "WORKTREE_HANDOVER_UNSUPPORTED",
-      details: { serverVersion: "0.0.27", minimumServerVersion: "0.0.28" },
+    const result = await createHandoverThread(harness.config, {
+      cwd: harness.work,
+      prompt: "Handover",
+      openMode: "none",
+      drivers: harness.drivers,
     });
-    expect(harness.commands).toHaveLength(0);
-  });
+    expect(result.thread.id).toBeTruthy();
 
-  it("deletes a newly-created thread when its first turn fails", async () => {
-    const harness = await testHarness([], { failTurn: true });
-
-    await expect(
-      createHandoverThread(harness.config, {
-        cwd: harness.root,
-        prompt: "Handover",
-        openMode: "none",
-      }),
-    ).rejects.toMatchObject({
-      code: "THREAD_START_FAILED",
-      details: { cleanup: "deleted" },
-    });
-    expect(harness.commands.map((command) => command.type)).toEqual([
-      "project.create",
-      "thread.create",
-      "thread.turn.start",
-      "thread.delete",
-    ]);
-    expect(harness.threads).toHaveLength(0);
+    const deadline = Date.now() + 5000;
+    for (;;) {
+      const read = await readThread(harness.store, result.thread.id);
+      const last = read.turns[read.turns.length - 1];
+      if (last?.status === "failed") break;
+      if (Date.now() > deadline) throw new Error("turn did not fail");
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    const stored = await readThread(harness.store, result.thread.id);
+    expect(stored.turns).toHaveLength(1);
   });
 });

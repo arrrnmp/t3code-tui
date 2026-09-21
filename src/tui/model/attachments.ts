@@ -3,15 +3,19 @@ import path from "node:path";
 
 import { createHostClipboard } from "@opentui/core";
 
-import type { ImageAttachmentUpload } from "../../cli/threads/threadApi.js";
-
 /**
- * Inline image upload as the client `thread.turn.start` command accepts it:
- * bytes ride along as a data URL, so no separate upload round-trip (and no
- * dependence on the server's attachment-upload capability) is needed. Limits
- * mirror the server contract: gif/jpeg/png/webp, 10 MiB, 14M-char data URL.
+ * Inline image upload as a `thread.turn.start` message accepts it: bytes
+ * ride along as a data URL, so no separate upload round-trip is needed.
+ * Limits mirror the original server contract: gif/jpeg/png/webp, 10 MiB,
+ * 14M-char data URL.
  */
-export type { ImageAttachmentUpload };
+export interface ImageAttachmentUpload {
+  type: "image";
+  name: string;
+  mimeType: string;
+  sizeBytes: number;
+  dataUrl: string;
+}
 
 const MIME_BY_EXTENSION: Record<string, string> = {
   ".gif": "image/gif",

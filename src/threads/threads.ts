@@ -27,6 +27,7 @@ import type {
   ThreadReadResult,
   ThreadStatus,
   TurnDelivery,
+  TurnUsage,
 } from "./types.js";
 
 const READ_VIEWS: readonly ReadView[] = [
@@ -133,8 +134,15 @@ export async function createThread(
     });
   }
   const now = store.nowIso();
+  const id = input.id?.trim() || store.newId();
+  if (input.id?.trim() && (await store.readThreadRecord(id)) !== null) {
+    throw new CliError("THREAD_ALREADY_EXISTS", `A thread already exists with id ${id}.`, {
+      exitCode: 4,
+      details: { threadId: id },
+    });
+  }
   const thread: StoredThread = {
-    id: store.newId(),
+    id,
     projectId,
     title,
     modelSelection: input.modelSelection,
@@ -148,6 +156,7 @@ export async function createThread(
     createdAt: now,
     updatedAt: now,
     archivedAt: null,
+    deletedAt: null,
     settledAt: null,
     unsettledAt: null,
     settledOverride: null,
@@ -170,7 +179,7 @@ export async function listThreads(
   const threads: StoredThread[] = [];
   for (const id of await store.listThreadIds()) {
     const thread = await store.readThreadRecord(id);
-    if (!thread || thread.archivedAt != null) continue;
+    if (!thread || thread.archivedAt != null || thread.deletedAt != null) continue;
     if (options.projectId !== undefined && thread.projectId !== options.projectId) continue;
     if (status !== "all" && threadStatus(thread, now) !== status) continue;
     threads.push(thread);
@@ -330,6 +339,7 @@ export async function sendTurn(
       modelSelection,
       parentTurnId: delivery === "restart" && running ? running.id : null,
       error: null,
+      usage: null,
       createdAt: now,
       updatedAt: now,
       completedAt: null,
@@ -421,6 +431,7 @@ export interface FinishTurnInput {
   /** Assistant text appended on completion; omitted for pure interrupts/failures. */
   readonly text?: string;
   readonly error?: string;
+  readonly usage?: TurnUsage | null;
 }
 
 async function finishTurn(
@@ -465,6 +476,7 @@ async function finishTurn(
     const updated = await store.updateTurn(threadId, turnId, {
       status,
       ...(status === "failed" && input.error !== undefined ? { error: input.error } : {}),
+      ...(input.usage !== undefined ? { usage: input.usage } : {}),
       updatedAt: now,
       completedAt: now,
     });
@@ -622,6 +634,91 @@ export async function unsnoozeThread(store: ThreadStore, rawThreadId: string): P
     store.emit(threadId, "unsnoozed");
     return next;
   });
+}
+
+export async function archiveThread(store: ThreadStore, rawThreadId: string): Promise<StoredThread> {
+  const threadId = requireThreadId(rawThreadId);
+  return await store.withThreadLock(threadId, async () => {
+    const now = store.nowIso();
+    const thread = requireStoredThread(await store.readThreadRecord(threadId), threadId);
+    if (thread.deletedAt != null) {
+      throw new CliError("THREAD_ARCHIVED", `Thread ${threadId} is deleted and cannot be archived.`, {
+        exitCode: 4,
+        details: { threadId },
+      });
+    }
+    const next: StoredThread = { ...thread, archivedAt: thread.archivedAt ?? now, updatedAt: now };
+    await store.writeThreadRecord(next);
+    store.emit(threadId, "archived");
+    return next;
+  });
+}
+
+export async function deleteThread(store: ThreadStore, rawThreadId: string): Promise<StoredThread> {
+  const threadId = requireThreadId(rawThreadId);
+  return await store.withThreadLock(threadId, async () => {
+    const now = store.nowIso();
+    const thread = requireStoredThread(await store.readThreadRecord(threadId), threadId);
+    const next: StoredThread = { ...thread, deletedAt: now, updatedAt: now };
+    await store.writeThreadRecord(next);
+    store.emit(threadId, "deleted");
+    return next;
+  });
+}
+
+export interface UpdateThreadMetaInput {
+  readonly title?: string;
+  readonly modelSelection?: ModelSelection;
+  readonly runtimeMode?: RuntimeMode;
+  readonly interactionMode?: InteractionMode;
+  readonly regenerateTitle?: boolean;
+}
+
+export async function updateThreadMeta(
+  store: ThreadStore,
+  rawThreadId: string,
+  input: UpdateThreadMetaInput,
+): Promise<StoredThread> {
+  const threadId = requireThreadId(rawThreadId);
+  return await store.withThreadLock(threadId, async () => {
+    const now = store.nowIso();
+    const thread = requireStoredThread(await store.readThreadRecord(threadId), threadId);
+    requireNotArchived(thread, "be updated");
+    let title = thread.title;
+    if (input.title !== undefined) {
+      const trimmed = input.title.trim();
+      if (!trimmed) {
+        throw new CliError("INVALID_THREAD_OPTION", "A non-empty thread title is required.", { exitCode: 2 });
+      }
+      title = trimmed;
+    } else if (input.regenerateTitle === true) {
+      const messages = await store.readMessages(threadId);
+      const firstUser = messages.find((message) => message.role === "user" && message.text.trim().length > 0);
+      const seed = firstUser?.text.trim().split(/\r?\n/u)[0]?.replace(/\s+/gu, " ").trim() || thread.title;
+      title = seed.length <= 80 ? seed : `${seed.slice(0, 79)}…`;
+    }
+    const next: StoredThread = {
+      ...thread,
+      title,
+      ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
+      ...(input.runtimeMode !== undefined ? { runtimeMode: input.runtimeMode } : {}),
+      ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
+      updatedAt: now,
+    };
+    await store.writeThreadRecord(next);
+    store.emit(threadId, "meta-updated");
+    return next;
+  });
+}
+
+/** CLI `task-status`/`task-cancel` address delegations by child thread id. */
+export async function delegationForChild(
+  store: ThreadStore,
+  parentThreadId: string,
+  childThreadId: string,
+): Promise<StoredDelegation | null> {
+  const rows = await store.readDelegations();
+  return rows.find((row) => row.parentThreadId === parentThreadId && row.childThreadId === childThreadId) ?? null;
 }
 
 export interface DelegateTaskInput {

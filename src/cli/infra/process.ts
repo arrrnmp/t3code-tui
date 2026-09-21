@@ -1,7 +1,4 @@
 import { spawn } from "node:child_process";
-import { access, readFile } from "node:fs/promises";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { CliError } from "../../errors.js";
 
@@ -80,87 +77,4 @@ export async function commandExists(command: string): Promise<boolean> {
     () => null,
   );
   return result?.exitCode === 0;
-}
-
-export interface T3Invocation {
-  command: string;
-  argsPrefix: string[];
-  source: "configured" | "bundled" | "path" | "npx";
-  version: string | null;
-}
-
-async function isFile(filePath: string): Promise<boolean> {
-  return await access(filePath)
-    .then(() => true)
-    .catch(() => false);
-}
-
-// The bundled `t3` CLI is built on Effect, which does not run correctly under Bun: every command
-// that needs a session dies inside its own schema code with "undefined is not an object
-// (evaluating 'impl.base.get')". Spawning it with `process.execPath` inherits whatever runtime
-// this CLI was itself started with, and the documented way to start it is `bun src/cli/index.ts` -- so
-// the child got Bun and broke, while `doctor` still passed because it only checks that the file
-// is there.
-//
-// Resolve a real Node for the child instead, and fall back to the current runtime only when there
-// is no Node to be found, which is the pre-existing behaviour and no worse than it was.
-let cachedNodeRunner: string | null = null;
-
-async function resolveNodeRunner(): Promise<string> {
-  if (cachedNodeRunner !== null) return cachedNodeRunner;
-  const self = path.basename(process.execPath).toLowerCase();
-  if (self === "node" || self === "node.exe") {
-    cachedNodeRunner = process.execPath;
-    return cachedNodeRunner;
-  }
-  cachedNodeRunner = (await commandExists("node")) ? "node" : process.execPath;
-  return cachedNodeRunner;
-}
-
-async function bundledT3Invocation(): Promise<T3Invocation | null> {
-  let cursor = path.dirname(fileURLToPath(import.meta.url));
-  for (let index = 0; index < 6; index += 1) {
-    const packageRoot = path.join(cursor, "node_modules", "t3");
-    const binPath = path.join(packageRoot, "dist", "bin.mjs");
-    if (await isFile(binPath)) {
-      const packageJson = JSON.parse(await readFile(path.join(packageRoot, "package.json"), "utf8")) as {
-        version?: unknown;
-      };
-      return {
-        command: await resolveNodeRunner(),
-        argsPrefix: [binPath],
-        source: "bundled",
-        version: typeof packageJson.version === "string" ? packageJson.version : null,
-      };
-    }
-    const parent = path.dirname(cursor);
-    if (parent === cursor) break;
-    cursor = parent;
-  }
-  return null;
-}
-
-export async function resolveT3Invocation(configured?: readonly string[]): Promise<T3Invocation> {
-  if (configured && configured.length > 0) {
-    const [command, ...argsPrefix] = configured;
-    if (!command) throw new CliError("INVALID_T3_COMMAND", "Configured t3Command is empty.");
-    return { command, argsPrefix, source: "configured", version: null };
-  }
-
-  const bundled = await bundledT3Invocation();
-  if (bundled) return bundled;
-
-  if (await commandExists("t3")) {
-    return { command: "t3", argsPrefix: [], source: "path", version: null };
-  }
-
-  const npx = process.platform === "win32" ? "npx.cmd" : "npx";
-  if (await commandExists(npx)) {
-    return { command: npx, argsPrefix: ["--yes", "t3@latest"], source: "npx", version: null };
-  }
-
-  throw new CliError(
-    "T3_CLI_NOT_FOUND",
-    "The upstream T3 CLI is unavailable. Reinstall t3code-cli or install `t3` on PATH.",
-  );
 }

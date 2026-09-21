@@ -11,6 +11,7 @@
  */
 import { appendFile, mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
+import os from "node:os";
 import path from "node:path";
 
 import { CliError } from "../errors.js";
@@ -29,6 +30,13 @@ export interface ThreadStoreOptions {
   readonly bus?: EventBus<BackendEvent>;
   /** Milliseconds since epoch; injectable for tests. */
   readonly clock?: () => number;
+}
+
+/** Home of the JSONL thread store + the projects registry. */
+export function resolveStoreRoot(env: NodeJS.ProcessEnv = process.env): string {
+  const raw = env.T3CODE_STORE_ROOT?.trim();
+  if (raw) return path.resolve(raw);
+  return path.join(os.homedir(), ".t3code", "threads");
 }
 
 type LedgerName = "turns" | "messages" | "activity" | "checkpoints";

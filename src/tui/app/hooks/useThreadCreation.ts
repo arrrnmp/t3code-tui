@@ -3,7 +3,7 @@ import { basename, resolve } from "node:path";
 import { buildImageAttachments, extractMentions } from "../../model/attachments.js";
 import { dispatchErrorMessage } from "../../../errors.js";
 import type { ModelSelection, RuntimeMode, T3Project, T3Thread } from "../../../types.js";
-import type { ImageAttachmentUpload } from "../../../cli/threads/threadApi.js";
+import type { ImageAttachmentUpload } from "../../model/attachments.js";
 import type { TuiClient } from "../app.js";
 import type { PickerName } from "../../features/pickers/pickerTypes.js";
 import { threadTitle } from "../utils.js";

@@ -47,8 +47,7 @@
     "commander": "^14.0.1",
     "diff": "9.0.0",
     "effect": "4.0.0-rc.115",
-    "react": "^19.3.0",
-    "t3": "0.0.40"
+    "react": "^19.3.0"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",

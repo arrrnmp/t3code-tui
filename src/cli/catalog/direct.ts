@@ -232,8 +232,7 @@ function opencodeProviders(
  * every failure degrades into its entry's `status`, never a throw — a
  * broken Codex login must not hide the working Claude install.
  */
-export async function buildDirectProviders(options: DirectCatalogOptions = {}): Promise<ProviderSummary[]> {
-  const env = options.env ?? process.env;
+export async function buildDirectProviders(options: DirectCatalogOptions = {}): Promise<ProviderSummary[]> {  const env = options.env ?? process.env;
   const opencodeInstalled = binaryOnPath("opencode", env);
 
   const [claude, codex, grok, modelsDev] = await Promise.all([
@@ -256,4 +255,51 @@ export async function buildDirectProviders(options: DirectCatalogOptions = {}): 
   ]);
 
   return [claude, codex, grok, ...opencodeProviders(modelsDev, env, opencodeInstalled)];
+}
+
+/**
+ * Translate direct summaries into the `server.getConfig` payload shape so
+ * the TUI's `extractProviders` keeps working unmodified — including
+ * effort descriptors, which become `capabilities.optionDescriptors`.
+ * Hidden-model preferences have no direct equivalent yet: nothing is
+ * hidden. Consumed by `tui/client/direct.ts` `getConfig`.
+ */
+export function toWsConfigPayload(providers: ReadonlyArray<ProviderSummary>): {
+  providers: unknown[];
+  settings: Record<string, unknown>;
+} {
+  return {
+    providers: providers.map((provider) => ({
+      instanceId: provider.instanceId,
+      driver: provider.driver,
+      displayName: provider.displayName,
+      enabled: provider.enabled,
+      installed: provider.installed,
+      status: provider.status,
+      auth: { status: provider.authStatus },
+      models: provider.models.map((model) => ({
+        slug: model.slug,
+        name: model.name,
+        isCustom: model.isCustom,
+        isDefault: model.isDefault,
+        capabilities: {
+          optionDescriptors: model.efforts.map((effort) => ({
+            id: effort.id,
+            label: effort.label,
+            type: "select",
+            options: effort.choices.map((choice) => ({
+              id: choice.id,
+              label: choice.label,
+              isDefault: choice.isDefault,
+            })),
+            currentValue: effort.currentValue,
+          })),
+        },
+      })),
+      supportedRuntimeModes: provider.supportedRuntimeModes,
+      usageLimits: provider.usageLimits,
+      skills: provider.skills,
+    })),
+    settings: {},
+  };
 }

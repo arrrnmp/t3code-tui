@@ -7,9 +7,6 @@ import { SIDEBAR_WIDTH } from "../../app/constants.js";
 import {
   activityFilePath,
   describeActivity,
-  missingCompletedInput,
-  withCompletedInput,
-  toolCallIdOf,
   type ActivityView,
 } from "../../model/activity.js";
 import { createFileContentCache, diffCachedFiles, snapshotFiles } from "../../model/filecache.js";
@@ -18,7 +15,6 @@ import { markModalDismissed } from "../../model/modalDismiss.js";
 import { findPatchFile, splitPatchByFile, type PatchFile } from "../../model/patch.js";
 import { proportionalTarget, type TurnGroup } from "../../model/turns.js";
 import { type ThreadState } from "../../model/thread.js";
-import { readCompletedToolInputs } from "../../../cli/infra/toolInputs.js";
 import type { T3Project, T3Thread } from "../../../types.js";
 
 /**
@@ -71,10 +67,6 @@ export function useDiffPanel(params: {
    */
   const contentCache = useRef(createFileContentCache());
   const lastSnapshotWanted = useRef<string | null>(null);
-  /** Completed tool calls whose input was already merged back from the
-      local projection database (or confirmed missing) — cleared with the
-      rest of the per-thread caches below. */
-  const mergedToolInput = useRef(new Set<string>());
   const [, bumpTurnPatches] = useState(0);
   const [diffFileIndex, setDiffFileIndex] = useState(0);
   const [collapsedFiles, setCollapsedFiles] = useState<ReadonlySet<string>>(() => new Set());
@@ -85,7 +77,6 @@ export function useDiffPanel(params: {
     turnPatchCache.current.clear();
     gitPatchCache.current = [];
     lastGitWanted.current = null;
-    mergedToolInput.current.clear();
   };
 
   /**
@@ -277,7 +268,6 @@ export function useDiffPanel(params: {
     const gitWanted: string[] = [];
     const gitFullWanted: { full: string; display: string }[] = [];
     const readWanted: string[] = [];
-    const mergeIds: string[] = [];
     for (const group of groups) {
       const turnCount = group.diff?.checkpoint?.checkpointTurnCount;
       const open = runningNow && group.id === lastId;
@@ -305,39 +295,12 @@ export function useDiffPanel(params: {
             if (full !== null) gitFullWanted.push({ full, display: view.path });
           }
         }
-        const missing = missingCompletedInput(entry.activity, view);
-        if (missing !== null && !mergedToolInput.current.has(missing)) mergeIds.push(missing);
       }
       if (turnCount !== undefined && groupBare) ensureTurnPatch(id, turnCount);
     }
-    // Completed rows recover their stripped input from the local projection
-    // database (exact per-edit diffs, no git needed). Merged rows re-render
-    // through the normal pipeline and are marked so they never re-queue;
-    // misses stay unmarked and retry on the next new row instead of
-    // hot-looping, since nothing here re-fires without change. Marking only
-    // on success matters: a read racing the server's own write must not
-    // poison its id for the rest of the session.
-    if (stateDir !== null && mergeIds.length > 0) {
-      void readCompletedToolInputs(stateDir, id)
-        .then((found) => {
-          if (found === null || selectedIdRef.current !== id) return;
-          let changed = false;
-          const activities = threadStateRef.current.activities.map((row) => {
-            const toolCallId = toolCallIdOf(row);
-            const input = toolCallId === null ? undefined : found.get(toolCallId);
-            if (toolCallId === null || input === undefined) return row;
-            const next = withCompletedInput(row, input);
-            if (next !== row) {
-              changed = true;
-              mergedToolInput.current.add(toolCallId);
-            }
-            return next;
-          });
-          if (!changed) return;
-          setThreadState((current) => ({ ...current, activities }));
-        })
-        .catch(() => {});
-    }
+    // Without a projection database the completed-input backfill below is
+    // gone; rows fall through to working-tree and content-cache diffs,
+    // which is the same path non-git projects already used.
     if (root !== null && gitParts.length > 0) {
       gitParts.sort();
       const wanted = `${root}\n${gitParts.join("\n")}`;
