@@ -11,7 +11,7 @@
  * servers, version gate before use.
  */
 import { spawn, type ChildProcess } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import net from "node:net";
 
 import { createOpencodeClient } from "@opencode-ai/sdk/v2";
@@ -32,6 +32,18 @@ import {
 export interface OpencodeTextPart {
   readonly type: "text";
   readonly text: string;
+}
+
+/** Caller-assigned message id in the server's format (`msg_` + 12 hex + 14 base62). */
+export function newOpencodeMessageId(): string {
+  const hex = randomBytes(6).toString("hex");
+  const chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+  const bytes = randomBytes(14);
+  let tail = "";
+  for (let index = 0; index < bytes.length; index += 1) {
+    tail += chars[(bytes[index] ?? 0) % chars.length];
+  }
+  return `msg_${hex}${tail}`;
 }
 
 /** Structural events the driver demuxes (SDK `Event` union, defensively read). */
@@ -163,7 +175,7 @@ class LiveOpencodeServerConnection implements OpencodeServerConnection {
   }): Promise<{ messageID: string }> {
     // promptAsync answers 204 with an empty body ("Prompt accepted") —
     // the message id is caller-assigned, passed in and echoed back.
-    const messageID = input.messageID ?? randomUUID();
+    const messageID = input.messageID ?? newOpencodeMessageId();
     unwrap(
       await this.client.session.promptAsync({
         sessionID: input.sessionID,
