@@ -295,9 +295,63 @@ describe("opencode driver", () => {
     expect(transport.servers.every((server) => server.disposed)).toBe(true);
   });
 
-  it("fails fast without a provider credential", async () => {
+  it("sends without a credential and names the setup step on the server's rejection", async () => {
+    // Never gate the send on our own credential guess: the guess misses
+    // arrangements upstream honors, and the server answers in seconds.
     const transport = new FakeOpencodeTransport();
     const driver = new OpenCodeDriver({ transport, env: {} });
+    drivers.push(driver);
+    await Effect.runPromise(
+      driver.startSession({
+        threadId: "thread-1",
+        workingDirectory: "/repo",
+        modelSelection: { instanceId: "opencode", model: "opencode/claude-sonnet-4-6" },
+      }),
+    );
+    const sent = await Effect.runPromise(driver.sendTurn({ threadId: "thread-1", prompt: "hi" }));
+    expect(transport.servers[0]?.callsTo("session.promptAsync")).toHaveLength(1);
+
+    const outcomePromise = driver.awaitTurn("thread-1", sent.turnId);
+    await transport.servers[0]?.push({
+      type: "session.error",
+      properties: {
+        sessionID: "opencode-session-1",
+        error: { message: "Model not found: opencode/claude-sonnet-4-6." },
+      },
+    });
+    const outcome = await outcomePromise;
+    expect(outcome.status).toBe("failed");
+    expect(outcome.error).toContain("Model not found");
+    expect(outcome.error).toContain("OPENCODE_API_KEY");
+    expect(outcome.error).toContain("opencode auth login");
+  });
+
+  it("adds no credential hint for free opencode models or unknown providers", async () => {
+    for (const model of ["opencode/muse-spark-1.3-contributor-free", "custom-provider/custom-model"]) {
+      const transport = new FakeOpencodeTransport();
+      const driver = new OpenCodeDriver({ transport, env: {} });
+      drivers.push(driver);
+      await Effect.runPromise(
+        driver.startSession({
+          threadId: "thread-1",
+          workingDirectory: "/repo",
+          modelSelection: { instanceId: "opencode", model },
+        }),
+      );
+      const sent = await Effect.runPromise(driver.sendTurn({ threadId: "thread-1", prompt: "hi" }));
+      const outcomePromise = driver.awaitTurn("thread-1", sent.turnId);
+      await transport.servers[0]?.push({
+        type: "session.error",
+        properties: { sessionID: "opencode-session-1", error: { message: `Model not found: ${model}.` } },
+      });
+      const outcome = await outcomePromise;
+      expect(outcome.error).toBe(`Model not found: ${model}.`);
+    }
+  });
+
+  it("fails the open turn on a server error that names no session", async () => {
+    const transport = new FakeOpencodeTransport();
+    const driver = new OpenCodeDriver({ transport, env: { OPENCODE_API_KEY: "k" } });
     drivers.push(driver);
     await Effect.runPromise(
       driver.startSession({
@@ -306,13 +360,56 @@ describe("opencode driver", () => {
         modelSelection: { instanceId: "opencode", model: "opencode/muse-spark-1.3-contributor-free" },
       }),
     );
-    await expect(
-      Effect.runPromise(driver.sendTurn({ threadId: "thread-1", prompt: "hi" })),
-    ).rejects.toMatchObject({ code: "OPENCODE_AUTH_REQUIRED" });
-    expect(transport.servers[0]?.callsTo("session.promptAsync")).toHaveLength(0);
+    const sent = await Effect.runPromise(driver.sendTurn({ threadId: "thread-1", prompt: "hi" }));
+    const outcomePromise = driver.awaitTurn("thread-1", sent.turnId);
+    await transport.servers[0]?.push({
+      type: "session.error",
+      properties: { error: { message: "Failed to load plugin /p/xai.ts: boom" } },
+    });
+    const outcome = await outcomePromise;
+    expect(outcome.status).toBe("failed");
+    expect(outcome.error).toContain("Failed to load plugin");
   });
 
-  it("passes the preflight with an env key or an unknown provider", async () => {
+  it("keeps the prompt's own message parts out of the answer text", async () => {
+    // The server streams the user message back on the same
+    // `message.part.updated` channel as the reply; accumulating both
+    // echoes the prompt into the answer (seen live on a free model).
+    const transport = new FakeOpencodeTransport();
+    const driver = new OpenCodeDriver({ transport, env: { OPENCODE_API_KEY: "k" } });
+    drivers.push(driver);
+    await Effect.runPromise(
+      driver.startSession({
+        threadId: "thread-1",
+        workingDirectory: "/repo",
+        modelSelection: { instanceId: "opencode", model: "opencode/muse-spark-1.3-contributor-free" },
+      }),
+    );
+    const sent = await Effect.runPromise(driver.sendTurn({ threadId: "thread-1", prompt: "ping" }));
+    const prompt = transport.servers[0]?.callsTo("session.promptAsync")[0]?.args as { messageID: string };
+    expect(prompt.messageID).toMatch(/^msg_/);
+
+    const outcomePromise = driver.awaitTurn("thread-1", sent.turnId);
+    await transport.servers[0]?.push({
+      type: "message.part.updated",
+      properties: {
+        sessionID: "opencode-session-1",
+        part: { id: "p-user", messageID: prompt.messageID, type: "text", text: "ping" },
+      },
+    });
+    await transport.servers[0]?.push({
+      type: "message.part.updated",
+      properties: {
+        sessionID: "opencode-session-1",
+        part: { id: "p-1", messageID: "msg_assistant", type: "text", text: "pong" },
+      },
+    });
+    await transport.servers[0]?.push({ type: "session.idle", properties: { sessionID: "opencode-session-1" } });
+    const outcome = await outcomePromise;
+    expect(outcome.text).toBe("pong");
+  });
+
+  it("accepts sends for credentialed and unknown providers alike", async () => {
     const transport = new FakeOpencodeTransport();
     const driver = new OpenCodeDriver({ transport, env: { OPENCODE_API_KEY: "k" } });
     drivers.push(driver);

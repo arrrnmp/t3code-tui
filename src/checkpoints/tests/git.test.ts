@@ -41,6 +41,10 @@ async function initRepo(): Promise<string> {
   git(dir, ["config", "user.email", "test@example.com"]);
   git(dir, ["config", "user.name", "test"]);
   git(dir, ["config", "commit.gpgsign", "false"]);
+  // The byte assertions below compare exact line endings, so pin the
+  // fixture repo against an ambient `core.autocrlf=true` (Git for Windows
+  // default) rewriting them on checkout.
+  git(dir, ["config", "core.autocrlf", "false"]);
   await writeFile(path.join(dir, "file.txt"), "one\n");
   git(dir, ["add", "-A"]);
   git(dir, ["commit", "-m", "init"]);

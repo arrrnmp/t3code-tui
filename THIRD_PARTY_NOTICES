@@ -20,7 +20,9 @@ stays AGPL-3.0-only. Never relicense vendored files; never strip notices.
 
 - Upstream: `opencode/opencode`, `packages/opencode/src/plugin/xai.ts`
   at commit `d870e22` (v1.18.31 era).
-- Vendored as: `src/providers/opencode/plugins/xai.ts`.
+- Vendored as: `src/providers/opencode/plugins/xai.ts`, handed to the
+  server through our own single-export entry module
+  `src/providers/opencode/plugins/xai.plugin.ts` (not vendored).
 - Adaptation: the three import lines only, rewired to the local
   `./shims.js` (same `OAUTH_DUMMY_KEY` value, same `InstallationVersion`
   fallback semantics, same plugin SPI shapes), plus one strictness-only
@@ -36,7 +38,9 @@ stays AGPL-3.0-only. Never relicense vendored files; never strip notices.
 
 - Upstream: `opencode/opencode`, `packages/opencode/src/plugin/openai/codex.ts`
   at commit `d870e22` (v1.18.31 era).
-- Vendored as: `src/providers/opencode/plugins/codex.ts`.
+- Vendored as: `src/providers/opencode/plugins/codex.ts`, handed to the
+  server through our own single-export entry module
+  `src/providers/opencode/plugins/codex.plugin.ts` (not vendored).
 - Adaptations:
   1. Import lines rewired to the local `./shims.js` (same values/
      signatures; `OauthCallbackPage` is a minimal same-signature

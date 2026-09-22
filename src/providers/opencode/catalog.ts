@@ -172,12 +172,7 @@ export function presentApiKeyEnvs(provider: ModelsDevProvider, env: NodeJS.Proce
 
 let snapshotCatalogCache: ModelsDevCatalog | null = null;
 
-/**
- * Required API-key env names for one models.dev provider id, from the
- * pinned snapshot. Null when the provider is unknown (custom servers,
- * newer catalog) — callers must let the server decide then, never block.
- */
-export async function providerEnvNames(providerID: string): Promise<ReadonlyArray<string> | null> {
+async function snapshotCatalog(): Promise<ModelsDevCatalog | null> {
   if (!snapshotCatalogCache) {
     try {
       const snapshot = (await import("./models-snapshot.json")).default as unknown;
@@ -186,8 +181,44 @@ export async function providerEnvNames(providerID: string): Promise<ReadonlyArra
       return null;
     }
   }
-  const found = snapshotCatalogCache.find((provider) => provider.id.toLowerCase() === providerID.toLowerCase());
+  return snapshotCatalogCache;
+}
+
+/**
+ * Required API-key env names for one models.dev provider id, from the
+ * pinned snapshot. Null when the provider is unknown (custom servers,
+ * newer catalog) — callers must let the server decide then, never block.
+ */
+export async function providerEnvNames(providerID: string): Promise<ReadonlyArray<string> | null> {
+  const catalog = await snapshotCatalog();
+  if (!catalog) return null;
+  const found = catalog.find((provider) => provider.id.toLowerCase() === providerID.toLowerCase());
   return found ? [...found.env] : null;
+}
+
+/**
+ * Free-tier bypass for the `opencode` provider: upstream
+ * `packages/opencode/src/provider/provider.ts` (the `opencode` hook)
+ * keeps zero-input-cost models listed with `apiKey: "public"` when no
+ * credential exists, dropping the paid models instead. The send-time
+ * preflight must mirror that rule, or it blocks exactly the models the
+ * server would serve — e.g. `opencode/muse-spark-1.3-contributor-free`
+ * with an empty env (verified live: `opencode run` answers with only
+ * an unrelated `opencode-go` entry in `auth.json`). Only the `opencode`
+ * provider has this fallback; every other provider still requires its
+ * key or stored auth. Missing cost data never bypasses — the server
+ * decides those.
+ */
+export async function isFreeOpencodeModel(providerID: string, modelID: string): Promise<boolean> {
+  if (providerID.toLowerCase() !== "opencode") return false;
+  const catalog = await snapshotCatalog();
+  if (!catalog) return false;
+  const provider = catalog.find((entry) => entry.id.toLowerCase() === "opencode");
+  if (!provider) return false;
+  const model = provider.models.find(
+    (entry) => entry.id === modelID || entry.id.toLowerCase() === modelID.toLowerCase(),
+  );
+  return model?.cost?.input === 0;
 }
 
 export function resolveModelsDevUrl(env: NodeJS.ProcessEnv = process.env): string {

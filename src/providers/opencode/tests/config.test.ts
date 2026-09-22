@@ -39,11 +39,12 @@ describe("opencode config", () => {
     expect(replaced).toMatchObject({ plugin: ["/p/xai.ts"] });
   });
 
-  it("resolves vendored plugin paths next to the built sources", () => {
-    const paths = resolveVendoredPluginPaths();
+  it("resolves vendored plugin entry paths next to the built sources", () => {
+    // `fileURLToPath` yields native separators, so compare on a normalized copy.
+    const paths = resolveVendoredPluginPaths().map((entry) => entry.replaceAll("\\", "/"));
     expect(paths.length).toBe(2);
-    expect(paths[0]?.endsWith("plugins/xai.ts") ?? paths[0]?.endsWith("plugins/xai.js")).toBe(true);
-    expect(paths[1]?.endsWith("plugins/codex.ts") ?? paths[1]?.endsWith("plugins/codex.js")).toBe(true);
+    expect(paths[0]).toMatch(/plugins\/xai\.plugin\.(ts|js)$/);
+    expect(paths[1]).toMatch(/plugins\/codex\.plugin\.(ts|js)$/);
   });
 
   it("compares semver with unparseable reading as too old", () => {

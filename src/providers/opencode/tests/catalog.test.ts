@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import {
   effortValuesOf,
   isFreeModel,
+  isFreeOpencodeModel,
   loadModelsDevCatalog,
   parseModelsDevCatalog,
   presentApiKeyEnvs,
@@ -68,6 +69,16 @@ describe("isFreeModel", () => {
     expect(isFreeModel(models.find((model) => model.id === "anthropic/plain")!)).toBe(true);
     expect(isFreeModel(models.find((model) => model.id === "anthropic/claude-opus-4-6")!)).toBe(false);
     expect(isFreeModel({ id: "x", name: "X", reasoningOptions: [], cost: null })).toBe(false);
+  });
+});
+
+describe("isFreeOpencodeModel", () => {
+  it("bypasses only free models of the opencode provider (upstream public-key rule)", async () => {
+    expect(await isFreeOpencodeModel("opencode", "muse-spark-1.3-contributor-free")).toBe(true);
+    expect(await isFreeOpencodeModel("OpenCode", "muse-spark-1.3-contributor-free")).toBe(true);
+    expect(await isFreeOpencodeModel("opencode", "claude-sonnet-4-6")).toBe(false);
+    expect(await isFreeOpencodeModel("opencode", "no-such-model")).toBe(false);
+    expect(await isFreeOpencodeModel("anthropic", "anything-free")).toBe(false);
   });
 });
 

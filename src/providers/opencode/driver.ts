@@ -44,8 +44,9 @@ import {
   opencodeSignedOutMessage,
   type OpencodeSettings,
 } from "./config.js";
-import { providerEnvNames, readStoredAuthTypes } from "./catalog.js";
+import { isFreeOpencodeModel, providerEnvNames, readStoredAuthTypes } from "./catalog.js";
 import {
+  newOpencodeMessageId,
   SpawnOpencodeTransport,
   type OpencodeServerConnection,
   type OpencodeSubscribedEvent,
@@ -78,8 +79,17 @@ interface OpenCodeTurn {
   status: "running" | OpenCodeTurnStatus;
   text: string;
   error: string | null;
+  /**
+   * Id of the user message this turn sent. Parts of it stream back on the
+   * same `message.part.updated` channel as the answer, so the accumulator
+   * skips them — otherwise the prompt is echoed into the reply text.
+   * Assigned before the send so no part can arrive unattributed.
+   */
+  readonly userMessageId: string;
   /** Latest text per message part (part updates are cumulative snapshots). */
   partTexts: Map<string, string>;
+  /** Setup step to append if the server rejects this turn (see `missingCredentialHint`). */
+  credentialHint: string | null;
   usage: TokenUsageDelta;
 }
 
@@ -292,21 +302,25 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
           session.instanceId,
         )
         : null;
+      const userMessageId = newOpencodeMessageId();
       const turn: OpenCodeTurn = {
         id: `turn-${randomUUID()}`,
         prompt: input.prompt,
+        userMessageId,
         status: "running",
         text: "",
         error: null,
         partTexts: new Map(),
+        credentialHint: null,
         usage: emptyUsage(),
       };
       session.turns.set(turn.id, turn);
       const connection = await this.connectionFor(session);
       try {
-        await this.requireProviderCredential(model);
+        turn.credentialHint = await this.missingCredentialHint(model);
         await connection.promptAsync({
           sessionID: session.nativeSessionId,
+          messageID: userMessageId,
           ...(model ? { model } : {}),
           parts: [{ type: "text", text: input.prompt }],
         });
@@ -320,29 +334,46 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
     });
 
   /**
-   * Credential preflight: the server accepts credential-less prompts
-   * with 204 and then emits nothing (the sync endpoint 500s instead),
-   * stranding the turn `running` until the stall watchdog fires. Fail
-   * fast with the exact setup step instead. Unknown providers and
-   * server-default sends skip the check — the server decides those.
+   * Setup hint for a model whose provider looks uncredentialed here —
+   * advisory only, never a gate.
+   *
+   * An earlier version blocked the send outright, on the theory that the
+   * server accepts credential-less prompts and then goes silent. It does
+   * not: it answers `session.error` within seconds ("Model not found:
+   * <provider>/<model>" when the provider never loaded, or a 401 for a
+   * rejected key). The silence that motivated the gate came from our own
+   * broken plugin entry modules, fixed in `plugins/*.plugin.ts`.
+   *
+   * Blocking on this guess is strictly worse than letting the server
+   * answer, because the guess only models two of the credential
+   * arrangements upstream honors — `env[]` names and `auth.json` — and
+   * misses `opencode.json`'s `provider.<id>.options.apiKey`, plugin
+   * OAuth stored under another id, and anything a newer catalog adds.
+   * Each miss blocks a model the server would have served: exactly the
+   * `opencode/muse-spark-1.3-contributor-free` report this replaced.
+   *
+   * So we keep only the useful half — the actionable setup step — and
+   * attach it to the server's own failure. Computed at send time, where
+   * the model is known; null whenever the provider is unknown to the
+   * pinned snapshot (the server decides those) or credentialed, and for
+   * free `opencode` models, which upstream serves with `apiKey: "public"`
+   * and no credential at all (see `isFreeOpencodeModel`).
    */
-  private async requireProviderCredential(model: { providerID: string; modelID: string } | null): Promise<void> {
-    if (!model) return;
+  private async missingCredentialHint(
+    model: { providerID: string; modelID: string } | null,
+  ): Promise<string | null> {
+    if (!model) return null;
+    if (await isFreeOpencodeModel(model.providerID, model.modelID)) return null;
     const envNames = await providerEnvNames(model.providerID);
-    if (envNames === null) return;
+    if (envNames === null) return null;
     const stored = readStoredAuthTypes(this.baseEnv);
-    if (stored[model.providerID] !== undefined) return;
-    if (envNames.some((name) => (this.baseEnv[name] ?? "").trim().length > 0)) return;
+    const storedHit = Object.keys(stored).some((key) => key.toLowerCase() === model.providerID.toLowerCase());
+    if (storedHit) return null;
+    if (envNames.some((name) => (this.baseEnv[name] ?? "").trim().length > 0)) return null;
     const how = envNames.length > 0
       ? `set ${envNames.join(" or ")}`
       : "add an API key";
-    const login = model.providerID === "xai" || model.providerID === "openai" || model.providerID === "opencode"
-      ? " or run `opencode auth login`"
-      : "";
-    throw new CliError(
-      "OPENCODE_AUTH_REQUIRED",
-      `No credential for provider "${model.providerID}" (${how}${login}).`,
-    );
+    return `No credential found for provider "${model.providerID}" — ${how}, or run \`opencode auth login\`.`;
   }
 
   readonly interruptTurn = (threadId: ThreadId, _turnId?: TurnId): Effect.Effect<void, CliError> =>
@@ -546,7 +577,7 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
         const subscription = await connection.subscribeEvents({ signal: controller.signal });
         for await (const event of subscription.stream) {
           if (controller.signal.aborted) break;
-          this.onServerEvent(event);
+          this.onServerEvent(event, key);
         }
       } catch {
         // Abort or a dropped SSE stream ends the pump; turns already
@@ -565,9 +596,17 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
     return null;
   }
 
-  private onServerEvent(event: OpencodeSubscribedEvent): void {
+  private onServerEvent(event: OpencodeSubscribedEvent, serverKey: string): void {
     const nativeSessionId = asString(event.properties.sessionID);
-    if (!nativeSessionId) return;
+    if (!nativeSessionId) {
+      // The server also publishes `session.error` with no session attached
+      // — plugin install/resolution/compatibility failures and instance
+      // bootstrap faults (upstream `publishPluginError`). Dropping those
+      // strands every turn on that server until the stall watchdog fires,
+      // ten minutes later, with nothing to show for it.
+      if (event.type === "session.error") this.onServerError(serverKey, event);
+      return;
+    }
     const session = this.sessionForNative(nativeSessionId);
     if (!session) return;
     switch (event.type) {
@@ -603,6 +642,9 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
     if (!part) return;
     const turn = this.openTurn(session);
     if (!turn) return;
+    // Our own prompt streams back as parts of the user message; never
+    // accumulate those into the assistant text.
+    if (asString(part.messageID) === turn.userMessageId) return;
     const partId = asString(part.id) ?? `part-${turn.partTexts.size}`;
     const kind = asString(part.type) ?? "unknown";
     if (kind === "text") {
@@ -621,8 +663,17 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
     }
     if (kind === "tool") {
       const tool = asString(part.tool ?? part.name) ?? "tool";
+      // The part's own `state.status` is the lifecycle, not the channel it
+      // arrives on: every tool part streams as `message.part.updated`, so
+      // publishing a flat `updated` left subscribers unable to tell a
+      // started call from a finished one.
+      const status = asString(asRecord(part.state)?.status);
       this.publish({
-        type: "tool.execute.updated",
+        type: status === "completed" || status === "error"
+          ? "tool.execute.completed"
+          : status === "pending"
+            ? "tool.execute.started"
+            : "tool.execute.updated",
         provider: this.provider,
         threadId: session.threadId,
         turnId: turn.id,
@@ -707,6 +758,15 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
       });
   }
 
+  /** Fail every open turn on one server: a fault with no session to blame. */
+  private onServerError(serverKey: string, event: OpencodeSubscribedEvent): void {
+    for (const session of this.sessions.values()) {
+      if (session.closed || session.workingDirectory !== serverKey) continue;
+      if (!this.openTurn(session)) continue;
+      this.onSessionError(session, event);
+    }
+  }
+
   private onSessionError(session: OpenCodeSession, event: OpencodeSubscribedEvent): void {
     const error = asRecord(event.properties.error);
     const message = (error ? asString(error.message ?? error.data ?? error.name) : null) ?? "OpenCode turn failed.";
@@ -714,7 +774,11 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
       this.settleOpenTurn(session, "failed", opencodeSignedOutMessage({ cwd: session.workingDirectory }));
       return;
     }
-    this.settleOpenTurn(session, "failed", message.slice(0, 500));
+    // A provider that never loaded reads as a missing model, which tells
+    // the user nothing about the key they actually need.
+    const hint = this.openTurn(session)?.credentialHint;
+    const detail = hint && /model not found/i.test(message) ? `${message} ${hint}` : message;
+    this.settleOpenTurn(session, "failed", detail.slice(0, 500));
   }
 
   private settleOpenTurn(session: OpenCodeSession, status: OpenCodeTurnStatus, detail: string): void {

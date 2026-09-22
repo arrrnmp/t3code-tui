@@ -46,15 +46,21 @@ export function resolveSpawnedServerPassword(settings: OpencodeSettings, env: No
   return env.OPENCODE_SERVER_PASSWORD ?? "";
 }
 
-/** Absolute paths of the vendored auth plugins to inject into the server. */
+/**
+ * Absolute paths of the vendored auth plugins to inject into the server.
+ *
+ * These point at the `*.plugin.ts` entry modules, never at the vendored
+ * sources themselves: the server calls every export of a file plugin as a
+ * plugin factory, so an entry module must export exactly one function.
+ * See `plugins/xai.plugin.ts` for the failure it prevents.
+ */
 export function resolveVendoredPluginPaths(): string[] {
   // `tsc` emits sibling `.js` for these `.ts` sources, so resolve with the
   // calling module's own extension: `.ts` under bun/vitest, `.js` in dist.
-  const ext = new URL(import.meta.url).pathname.endsWith(".ts") ? "xai.ts" : "xai.js";
-  const codex = new URL(import.meta.url).pathname.endsWith(".ts") ? "codex.ts" : "codex.js";
+  const ext = new URL(import.meta.url).pathname.endsWith(".ts") ? "ts" : "js";
   return [
-    fileURLToPath(new URL(`./plugins/${ext}`, import.meta.url)),
-    fileURLToPath(new URL(`./plugins/${codex}`, import.meta.url)),
+    fileURLToPath(new URL(`./plugins/xai.plugin.${ext}`, import.meta.url)),
+    fileURLToPath(new URL(`./plugins/codex.plugin.${ext}`, import.meta.url)),
   ];
 }
 
