@@ -168,7 +168,7 @@ export async function ensureStoredProject(root: string, input: EnsureProjectInpu
   if (existing) return { project: existing, created: false, command: null };
   const policy = input.policy ?? "create";
   if (policy === "existing") {
-    throw new CliError("PROJECT_NOT_FOUND", `No t3code project exists for ${normalized}.`, {
+    throw new CliError("PROJECT_NOT_FOUND", `No mvx project exists for ${normalized}.`, {
       details: { workspaceRoot: normalized, projectPolicy: policy },
     });
   }

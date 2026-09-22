@@ -27,7 +27,7 @@ import {
 } from "../threads.js";
 
 function storeRoot(): string {
-  return process.env.T3CODE_STORE_ROOT!;
+  return process.env.MONVEX_STORE_ROOT!;
 }
 
 async function seedProject(harness: TestHarness, overrides: Record<string, unknown> = {}) {

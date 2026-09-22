@@ -1,4 +1,5 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -63,14 +64,22 @@ export function expandHome(value: string): string {
 }
 
 export function defaultConfigPath(): string {
-  if (process.env.T3CODE_CLI_CONFIG) return path.resolve(expandHome(process.env.T3CODE_CLI_CONFIG));
-  if (process.platform === "win32" && process.env.APPDATA) {
-    return path.join(process.env.APPDATA, "t3code-cli", "config.json");
-  }
-  const root = process.env.XDG_CONFIG_HOME
-    ? path.resolve(expandHome(process.env.XDG_CONFIG_HOME))
-    : path.join(os.homedir(), ".config");
-  return path.join(root, "t3code-cli", "config.json");
+  const override = process.env.MONVEX_CONFIG ?? process.env.T3CODE_CLI_CONFIG;
+  if (override) return path.resolve(expandHome(override));
+  const dir = (name: string): string => {
+    if (process.platform === "win32" && process.env.APPDATA) {
+      return path.join(process.env.APPDATA, name, "config.json");
+    }
+    const root = process.env.XDG_CONFIG_HOME
+      ? path.resolve(expandHome(process.env.XDG_CONFIG_HOME))
+      : path.join(os.homedir(), ".config");
+    return path.join(root, name, "config.json");
+  };
+  const current = dir("monvex");
+  if (fs.existsSync(current)) return current;
+  // An existing install keeps its settings without a migration step.
+  const legacy = dir("t3code-cli");
+  return fs.existsSync(legacy) ? legacy : current;
 }
 
 function asString(value: unknown, key: string): string {
@@ -139,24 +148,46 @@ export function normalizeConfig(raw: unknown): CliConfig {
   return applyEnvironmentOverrides(result);
 }
 
+/**
+ * `MONVEX_*` wins; the pre-rebrand `T3CODE_*` spelling is still honoured
+ * so existing shell profiles and scripts keep working. Reading both is
+ * the whole migration - nothing to run, nothing to edit.
+ */
+function envOverride(name: string): string | undefined {
+  return process.env[`MONVEX_${name}`] ?? process.env[`T3CODE_CLI_${name}`];
+}
+
 function applyEnvironmentOverrides(config: CliConfig): CliConfig {
   const next = { ...config };
-  if (process.env.T3CODE_HOME) next.t3Home = path.resolve(expandHome(process.env.T3CODE_HOME));
-  if (process.env.T3CODE_CLI_ORIGIN) next.origin = new URL(process.env.T3CODE_CLI_ORIGIN).origin;
-  if (process.env.T3CODE_CLI_PROJECT_POLICY) next.projectPolicy = process.env.T3CODE_CLI_PROJECT_POLICY as ProjectPolicy;
-  if (process.env.T3CODE_CLI_WORKSPACE_MODE) next.workspaceMode = process.env.T3CODE_CLI_WORKSPACE_MODE as WorkspaceMode;
-  if (process.env.T3CODE_CLI_OPEN_MODE) next.openMode = process.env.T3CODE_CLI_OPEN_MODE as OpenMode;
-  if (process.env.T3CODE_CLI_THREAD_ENV_MODE) next.threadEnvMode = process.env.T3CODE_CLI_THREAD_ENV_MODE as ThreadEnvMode;
-  if (process.env.T3CODE_CLI_RUNTIME_MODE) next.runtimeMode = process.env.T3CODE_CLI_RUNTIME_MODE as RuntimeMode;
-  if (process.env.T3CODE_CLI_INTERACTION_MODE) next.interactionMode = process.env.T3CODE_CLI_INTERACTION_MODE as InteractionMode;
-  if (process.env.T3CODE_CLI_PROVIDER) next.provider = process.env.T3CODE_CLI_PROVIDER;
-  if (process.env.T3CODE_CLI_MODEL) next.model = process.env.T3CODE_CLI_MODEL;
-  if (process.env.T3CODE_CLI_SPEED_MODE) next.speedMode = process.env.T3CODE_CLI_SPEED_MODE as SpeedMode;
-  if (process.env.T3CODE_CLI_THINKING_EFFORT) next.thinkingEffort = process.env.T3CODE_CLI_THINKING_EFFORT;
-  if (process.env.T3CODE_CLI_T3_COMMAND) {
-    const parsed = JSON.parse(process.env.T3CODE_CLI_T3_COMMAND) as unknown;
+  const home = process.env.MONVEX_HOME ?? process.env.T3CODE_HOME;
+  if (home) next.t3Home = path.resolve(expandHome(home));
+  const origin = envOverride("ORIGIN");
+  if (origin) next.origin = new URL(origin).origin;
+  const projectPolicy = envOverride("PROJECT_POLICY");
+  if (projectPolicy) next.projectPolicy = projectPolicy as ProjectPolicy;
+  const workspaceMode = envOverride("WORKSPACE_MODE");
+  if (workspaceMode) next.workspaceMode = workspaceMode as WorkspaceMode;
+  const openMode = envOverride("OPEN_MODE");
+  if (openMode) next.openMode = openMode as OpenMode;
+  const threadEnvMode = envOverride("THREAD_ENV_MODE");
+  if (threadEnvMode) next.threadEnvMode = threadEnvMode as ThreadEnvMode;
+  const runtimeMode = envOverride("RUNTIME_MODE");
+  if (runtimeMode) next.runtimeMode = runtimeMode as RuntimeMode;
+  const interactionMode = envOverride("INTERACTION_MODE");
+  if (interactionMode) next.interactionMode = interactionMode as InteractionMode;
+  const provider = envOverride("PROVIDER");
+  if (provider) next.provider = provider;
+  const model = envOverride("MODEL");
+  if (model) next.model = model;
+  const speedMode = envOverride("SPEED_MODE");
+  if (speedMode) next.speedMode = speedMode as SpeedMode;
+  const thinkingEffort = envOverride("THINKING_EFFORT");
+  if (thinkingEffort) next.thinkingEffort = thinkingEffort;
+  const command = envOverride("T3_COMMAND");
+  if (command) {
+    const parsed = JSON.parse(command) as unknown;
     if (!Array.isArray(parsed) || !parsed.every((value) => typeof value === "string")) {
-      throw new CliError("INVALID_CONFIG", "T3CODE_CLI_T3_COMMAND must be a JSON string array.");
+      throw new CliError("INVALID_CONFIG", "MONVEX_T3_COMMAND must be a JSON string array.");
     }
     next.t3Command = parsed;
   }

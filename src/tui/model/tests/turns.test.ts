@@ -214,7 +214,7 @@ describe("groupTurns", () => {
   });
 
   // Deliberately *not* a bug: an ordinary turn often explains itself in text
-  // and then keeps working with no final wrap-up line (t3code-cli's own
+  // and then keeps working with no final wrap-up line (monvex's own
   // sessions do this constantly) — that explanation must stay the visible
   // reply. Only a nudge, or the model actually sending a second reply,
   // proves the first one was superseded.

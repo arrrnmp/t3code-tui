@@ -1,25 +1,26 @@
 {
-  "name": "@arrrnmp/t3code-cli",
+  "name": "@arrrnmp/monvex",
   "version": "0.1.2",
-  "description": "Drive T3 Code projects and threads from the command line.",
+  "description": "Drive Monvex projects and threads from the command line.",
   "license": "AGPL-3.0-only",
   "keywords": [
-    "t3-code",
+    "monvex",
     "cli",
     "handover",
-    "codex"
+    "coding-agent"
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/arrrnmp/t3code-cli.git"
+    "url": "git+https://github.com/arrrnmp/monvex.git"
   },
-  "homepage": "https://github.com/arrrnmp/t3code-cli#readme",
+  "homepage": "https://github.com/arrrnmp/monvex#readme",
   "bugs": {
-    "url": "https://github.com/arrrnmp/t3code-cli/issues"
+    "url": "https://github.com/arrrnmp/monvex/issues"
   },
   "type": "module",
   "bin": {
-    "t3code": "dist/cli/index.js"
+    "mvx": "dist/cli/index.js",
+    "monvex": "dist/cli/index.js"
   },
   "files": [
     "dist",

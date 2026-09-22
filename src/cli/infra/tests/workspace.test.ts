@@ -15,7 +15,7 @@ afterEach(async () => {
 
 describe("resolveWorkspace", () => {
   it("resolves a nested folder to the Git root in repo mode", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "t3code-cli-workspace-"));
+    const root = await mkdtemp(path.join(os.tmpdir(), "monvex-workspace-"));
     cleanup.push(root);
     await runProcess("git", ["init", "-b", "main"], { cwd: root });
     const nested = path.join(root, "packages", "app");
@@ -29,7 +29,7 @@ describe("resolveWorkspace", () => {
   });
 
   it("keeps the exact nested folder in folder mode", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "t3code-cli-folder-"));
+    const root = await mkdtemp(path.join(os.tmpdir(), "monvex-folder-"));
     cleanup.push(root);
     await runProcess("git", ["init", "-b", "main"], { cwd: root });
     const nested = path.join(root, "packages", "app");

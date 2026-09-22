@@ -65,7 +65,7 @@ import type {
 
 const program = new Command();
 program
-  .name("t3code")
+  .name("mvx")
   .description("Create projects and handover threads from the current folder.")
   .version("0.1.0")
   .option("--json", "Emit stable JSON envelopes.")
@@ -325,12 +325,12 @@ program.command("doctor").description("Check provider binaries, auth, store, and
   action(async () => {
     const context = await commandContext();
     const result = await doctor(context.config, context.configPath, context.configExists);
-    writeSuccess(result, context, result.ok ? "t3code CLI is ready." : "t3code CLI has failing checks.");
+    writeSuccess(result, context, result.ok ? "mvx CLI is ready." : "mvx CLI has failing checks.");
     if (!result.ok) process.exitCode = 1;
   }),
 );
 
-const configCommand = program.command("config").description("Inspect or update t3code-cli settings.");
+const configCommand = program.command("config").description("Inspect or update monvex settings.");
 configCommand.command("path").action(() =>
   action(async () => {
     const context = await commandContext();

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Monvex CLI settings"
+  short_description: "View or change mvx CLI settings"
+  default_prompt: "Use $mvx-config to view or change the mvx CLI settings."

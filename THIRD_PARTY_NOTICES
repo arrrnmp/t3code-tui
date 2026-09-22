@@ -1,6 +1,6 @@
-# Third-party notices for t3code-tui
+# Third-party notices for monvex
 
-`t3code-tui` as a whole is **AGPL-3.0-only** (see `LICENSE`).
+`monvex` as a whole is **AGPL-3.0-only** (see `LICENSE`).
 This file records every third-party file vendored into this repo, per
 `DECOUPLE.md` §1 and §14. MIT-licensed reuse is permitted provided the
 copyright and permission notice travel with the file; the combined work
@@ -66,7 +66,7 @@ stays AGPL-3.0-only. Never relicense vendored files; never strip notices.
 
 ### 3. T3 bundled model manifest (data) — MIT, (c) 2026 T3 Tools Inc.
 
-- Upstream: `t3code` (local `upstream/` reference),
+- Upstream: `mvx` (local `upstream/` reference),
   `apps/server/src/provider/model-manifest.json` at the pinned checkout
   (manifest `updatedAt: 2026-09-12T00:41:55Z`).
 - Vendored as: `src/providers/claude/claude-manifest.json`, byte-identical.

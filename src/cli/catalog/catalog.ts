@@ -104,7 +104,7 @@ function asBoolean(value: unknown): boolean | null {
 function contractChanged(detail: string, received: unknown): CliError {
   return new CliError(
     "T3_CONTRACT_CHANGED",
-    `T3 changed a load-bearing response shape (${detail}). Update t3code-cli against the installed T3 version.`,
+    `T3 changed a load-bearing response shape (${detail}). Update monvex against the installed T3 version.`,
     { details: { detail, received: typeof received } },
   );
 }

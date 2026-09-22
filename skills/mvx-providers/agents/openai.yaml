@@ -1,0 +1,4 @@
+interface:
+  display_name: "Monvex providers"
+  short_description: "Pick valid T3 provider, model, and effort values"
+  default_prompt: "Use $mvx-providers to pick valid provider, model, and effort values."

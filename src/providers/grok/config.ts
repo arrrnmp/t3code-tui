@@ -3,7 +3,7 @@
  * `acp/GrokAcpSupport.ts` (spawn argv per mode, referrer env, auth switch).
  *
  * Rules we keep: per-mode argv (`approval-required→--permission-mode
- * default`, `full-access→--always-approve`), `GROK_OAUTH2_REFERRER=t3code`
+ * default`, `full-access→--always-approve`), `GROK_OAUTH2_REFERRER=mvx`
  * injected, auth switch (`XAI_API_KEY` set → `xai.api_key`, else the CLI's
  * `cached_token`) — never our own OAuth. Unauthenticated → `grok login`.
  * The `grok-build` slug means "the CLI's current model" and is never sent

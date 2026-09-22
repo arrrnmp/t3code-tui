@@ -2,7 +2,7 @@
  * Handover/thread-create over the own store. Same envelope keys as the T3
  * era, with two documented replacements:
  * - The server-side `bootstrap.prepareWorktree` round-trip is gone: the
- *   worktree is provisioned locally with git (`t3code/<short>` branch off
+ *   worktree is provisioned locally with git (`mvx/<short>` branch off
  *   the base or its origin) and reported in a top-level `worktree` field
  *   instead of inside the turn command. There is no setup-script step —
  *   no config source names one.
@@ -93,7 +93,7 @@ async function gitOk(cwd: string, args: ReadonlyArray<string>): Promise<boolean>
 }
 
 /**
- * Provision `t3code/<thread-short>` off the base branch (or its origin
+ * Provision `mvx/<thread-short>` off the base branch (or its origin
  * when `startFromOrigin`) under the store worktrees dir. Throws
  * WORKTREE_PROVISION_FAILED with best-effort cleanup; callers create the
  * thread only after this resolves, so failures leave nothing behind.
@@ -109,7 +109,7 @@ export async function provisionWorktree(input: {
   // Inside the store root so store cleanup owns the checkout too.
   const dir = path.join(input.storeRoot, "worktrees", input.threadId);
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    const branch = attempt === 0 ? `t3code/${short}` : `t3code/${short}-${attempt + 1}`;
+    const branch = attempt === 0 ? `mvx/${short}` : `mvx/${short}-${attempt + 1}`;
     try {
       let startPoint = input.baseBranch;
       if (input.startFromOrigin) {

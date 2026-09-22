@@ -126,7 +126,7 @@ interface CodexSession {
   startedAt: string;
 }
 
-const CLIENT_INFO = { name: "t3code-tui", title: "t3code-tui", version: "0.0.0" };
+const CLIENT_INFO = { name: "monvex", title: "monvex", version: "0.0.0" };
 
 // Serialized per CODEX_HOME so concurrent reset-credit consumes never race.
 const resetCreditLocks = new Map<string, Promise<void>>();

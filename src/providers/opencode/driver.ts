@@ -265,7 +265,7 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
       const existing = this.sessions.get(input.threadId);
       if (existing && !existing.closed) return this.describeSession(existing);
       const connection = await this.connectionForSession(input.threadId, input.workingDirectory);
-      const created = await connection.createSession({ title: `t3code ${input.threadId}` });
+      const created = await connection.createSession({ title: `mvx ${input.threadId}` });
       const session: OpenCodeSession = {
         threadId: input.threadId,
         nativeSessionId: created.sessionID,

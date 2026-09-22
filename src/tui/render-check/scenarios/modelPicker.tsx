@@ -57,7 +57,7 @@ export async function runModelPicker(setup: TestRendererSetup): Promise<void> {
         kind: "snapshot",
         snapshot: {
           snapshotSequence: 1,
-          projects: [{ id: "p-cli", title: "t3code-cli", workspaceRoot: "C:\\repo" }],
+          projects: [{ id: "p-cli", title: "monvex", workspaceRoot: "C:\\repo" }],
           threads: [],
         },
       });

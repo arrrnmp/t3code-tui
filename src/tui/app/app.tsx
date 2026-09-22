@@ -737,7 +737,7 @@ export function App({
   // extra timer.
   useEffect(() => {
     if (setTerminalTitle === undefined) return;
-    const threadTitleText = selected?.title !== undefined && selected.title.length > 0 ? String(selected.title) : "T3 Code";
+    const threadTitleText = selected?.title !== undefined && selected.title.length > 0 ? String(selected.title) : "Monvex";
     if (!sessionRunning) {
       setTerminalTitle(threadTitleText);
       return;
@@ -750,7 +750,7 @@ export function App({
   }, [setTerminalTitle, selected?.title, selected?.latestTurn, sessionRunning, now]);
 
   /**
-   * Stop the open thread's in-flight turn, mirroring `t3code threads
+   * Stop the open thread's in-flight turn, mirroring `mvx threads
    * interrupt`. Fire-and-forget: the thread subscription projects the
    * interruption once the server accepts it. Returns whether a turn was
    * running. Only the composer's stop button reaches this — escape paths
@@ -1765,7 +1765,7 @@ export function App({
           onClose={closeQuitConfirm}
         >
           <box style={{ flexDirection: "column", flexGrow: 1 }}>
-            <text fg={COLOR.bright} selectable={false}>{"Quit t3code?"}</text>
+            <text fg={COLOR.bright} selectable={false}>{"Quit mvx?"}</text>
             <box style={{ height: 1, flexShrink: 0 }} />
             <text fg={COLOR.dim} selectable={false}>
               {selected === null

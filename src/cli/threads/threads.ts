@@ -351,8 +351,8 @@ export async function listThreads(config: CliConfig, options: ThreadListOptions 
     throw new CliError(
       "PROJECT_NOT_FOUND",
       requestedProjectId
-        ? `No active T3 Code project exists with id ${requestedProjectId}.`
-        : `No T3 Code project exists for ${workspace!.workspaceRoot}.`,
+        ? `No active Monvex project exists with id ${requestedProjectId}.`
+        : `No Monvex project exists for ${workspace!.workspaceRoot}.`,
       { exitCode: 3 },
     );
   }

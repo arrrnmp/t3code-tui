@@ -95,7 +95,7 @@ describe("runEditorAttached", () => {
   // A `.cmd` shim only executes through a shell on Windows — without one
   // `spawn` rejects ENOENT and the editor never opens (VS Code's `code`).
   it.skipIf(process.platform !== "win32")("executes .cmd shims on Windows", async () => {
-    const dir = mkdtempSync(path.join(tmpdir(), "t3code-editor-test-"));
+    const dir = mkdtempSync(path.join(tmpdir(), "mvx-editor-test-"));
     try {
       const shim = path.join(dir, "probe.cmd");
       writeFileSync(shim, "@exit 0\r\n", "utf8");

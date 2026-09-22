@@ -137,7 +137,7 @@ export class AcpClient {
   async initialize(): Promise<{ agentCapabilities: unknown; authMethods: unknown; _meta: unknown }> {
     const response = (await this.peer.request("initialize", {
       protocolVersion: ACP_PROTOCOL_VERSION,
-      clientInfo: { name: "t3code-tui", version: "0.0.0" },
+      clientInfo: { name: "monvex", version: "0.0.0" },
       clientCapabilities: { fs: { readTextFile: true, writeTextFile: false }, terminal: false },
     })) as Record<string, unknown>;
     return {

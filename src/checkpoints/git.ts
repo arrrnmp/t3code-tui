@@ -9,14 +9,29 @@
  *   files are not captured (documented gap — `git stash -u` would touch
  *   the worktree). Returns null outside git repos or when there is
  *   nothing to capture.
- * - Each capture is pinned under `refs/t3code/checkpoints/<thread>/<turn>`
- *   so GC can prune per thread without touching user refs.
+ * - Each capture is pinned under `refs/monvex/checkpoints/<thread>/<turn>`
+ *   so GC can prune per thread without touching user refs. Pre-rebrand
+ *   captures under `refs/t3code/` stay readable: the GC sweep covers both
+ *   namespaces, so an existing repo keeps its rollback history.
  * - Diff = `git diff <pre> <post>`; rollback = `git checkout <pre> -- .`
  *   (tracked files only, same untracked caveat).
  */
 import { spawn } from "node:child_process";
 
-export const CHECKPOINT_REF_NAMESPACE = "refs/t3code/checkpoints";
+export const CHECKPOINT_REF_NAMESPACE = "refs/monvex/checkpoints";
+
+/**
+ * Namespace used before the rebrand. New captures never land here, but
+ * refs already pinned in a user's repo do, and a checkpoint that cannot
+ * be found is a rollback that silently does nothing — so the GC sweep
+ * covers it too rather than leaving orphans behind forever.
+ */
+export const LEGACY_CHECKPOINT_REF_NAMESPACES: ReadonlyArray<string> = ["refs/t3code/checkpoints"];
+
+/** Every namespace a checkpoint may live under, newest first. */
+export function checkpointRefNamespaces(): ReadonlyArray<string> {
+  return [CHECKPOINT_REF_NAMESPACE, ...LEGACY_CHECKPOINT_REF_NAMESPACES];
+}
 
 export function checkpointRef(threadId: string, turnId: string, which: "pre" | "post" = "post"): string {
   return `${CHECKPOINT_REF_NAMESPACE}/${sanitizeRefComponent(threadId)}/${sanitizeRefComponent(turnId)}/${which}`;
@@ -155,12 +170,15 @@ export async function restoreWorktree(cwd: string, sha: string): Promise<boolean
 /** Drop checkpoint refs for turns outside `keepTurnIds`. Never throws. */
 export async function pruneCheckpointRefs(cwd: string, threadId: string, keepTurnIds: ReadonlyArray<string>): Promise<void> {
   try {
-    const prefix = `${CHECKPOINT_REF_NAMESPACE}/${sanitizeRefComponent(threadId)}/`;
-    const { stdout } = await runGit(cwd, ["for-each-ref", "--format=%(refname)", prefix]);
-    const keep = new Set(keepTurnIds.flatMap((turnId) => {
-      const turn = sanitizeRefComponent(turnId);
-      return [`${prefix}${turn}/pre`, `${prefix}${turn}/post`];
-    }));
+    const thread = sanitizeRefComponent(threadId);
+    const prefixes = checkpointRefNamespaces().map((namespace) => `${namespace}/${thread}/`);
+    const { stdout } = await runGit(cwd, ["for-each-ref", "--format=%(refname)", ...prefixes]);
+    const keep = new Set(prefixes.flatMap((prefix) =>
+      keepTurnIds.flatMap((turnId) => {
+        const turn = sanitizeRefComponent(turnId);
+        return [`${prefix}${turn}/pre`, `${prefix}${turn}/post`];
+      }),
+    ));
     for (const ref of stdout.split("\n").map((line) => line.trim()).filter((line) => line.length > 0)) {
       if (!keep.has(ref)) await runGit(cwd, ["update-ref", "-d", ref]).catch(() => undefined);
     }

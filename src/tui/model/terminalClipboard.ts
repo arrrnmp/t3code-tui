@@ -200,7 +200,7 @@ export async function queryTerminalClipboardImages(
 ): Promise<TerminalClipboardOutcome> {
   const maxBytes = options?.maxBytes ?? Math.ceil((MAX_IMAGE_BYTES * 4) / 3) + 1024;
   const password = crypto.randomUUID();
-  const queryOptions = { password, humanName: "t3code" };
+  const queryOptions = { password, humanName: "mvx" };
   const send = (query: string) => {
     deps.write(isTmuxSession(deps.env) ? wrapOscForTmux(query) : query);
   };

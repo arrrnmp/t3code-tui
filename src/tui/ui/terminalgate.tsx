@@ -53,7 +53,7 @@ export function MinSizeGate({ children, onQuit }: { children: ReactNode; onQuit:
         </text>
         <box style={{ height: 1, flexShrink: 0 }} />
         <text fg={COLOR.dim} selectable={false}>
-          {truncate(`This terminal is ${width} × ${height} — t3code needs at least`, inner)}
+          {truncate(`This terminal is ${width} × ${height} — mvx needs at least`, inner)}
         </text>
         <text fg={COLOR.text} selectable={false}>
           {truncate(`${MIN_TERMINAL_WIDTH} × ${MIN_TERMINAL_HEIGHT}.`, inner)}

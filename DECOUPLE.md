@@ -1,7 +1,7 @@
 # DECOUPLE.md — Dropping the T3 Code server, owning threads + providers
 
 **Status:** planning handoff. **Decision:** remove the T3 Code server from the loop.
-`t3code-tui` keeps its CLI envelopes (`{ ok, data }`) and its TUI, but talks to
+`monvex` keeps its CLI envelopes (`{ ok, data }`) and its TUI, but talks to
 provider runtimes directly and owns threads, projects, and orchestration itself.
 
 **Scope (locked): 4 provider surfaces.**
@@ -19,16 +19,16 @@ instead of dispatch-then-poll-projection.
 
 Research backing: two depth-1 clones at
 `C:\Users\Usuario\AppData\Local\Temp\opencode\` (`opencode-upstream` @ `ebb7b76`,
-`t3code-upstream`). File refs below are relative to those clones unless prefixed
-with `t3code-tui:`.
+`mvx-upstream`). File refs below are relative to those clones unless prefixed
+with `monvex:`.
 
 ---
 
 ## 1. License ground rules (read before vendoring anything)
 
-* `t3code-tui` is **AGPL-3.0-only** (`LICENSE`, 661 lines; `package.json: private: true`
+* `monvex` is **AGPL-3.0-only** (`LICENSE`, 661 lines; `package.json: private: true`
   means "not on npm", not "not AGPL").
-* T3 Code (`t3code-upstream/LICENSE`): **MIT, (c) 2026 T3 Tools Inc.**
+* T3 Code (`mvx-upstream/LICENSE`): **MIT, (c) 2026 T3 Tools Inc.**
 * OpenCode (`opencode-upstream/LICENSE` + `license: MIT` in
   `packages/{opencode,sdk/js,plugin,core}/package.json`): **MIT, (c) 2025 opencode.**
   No NOTICE file, no proprietary headers (only a third-party snippet header in
@@ -37,21 +37,21 @@ with `t3code-tui:`.
   vendored file in a `THIRD_PARTY_NOTICES` file (create it) and/or file headers.
   Combined work stays AGPL-3.0-only. Never relicense vendored files; never strip notices.
 * If outside contributors land, use DCO sign-off (inbound = AGPL outbound) so copyright
-  stays consolidatable for enforcement/relicensing. Trademark intent on the `t3code`
+  stays consolidatable for enforcement/relicensing. Trademark intent on the `mvx`
   name is the credit-protection layer licenses can't give (see §14).
 
 ---
 
 ## 2. What exists today (what we're replacing)
 
-* `t3code-tui/src/cli/infra/api.ts` — `T3Api` (`GET /api/orchestration/snapshot`,
+* `monvex/src/cli/infra/api.ts` — `T3Api` (`GET /api/orchestration/snapshot`,
   `POST /api/orchestration/dispatch`), session mint/revoke via `t3 auth session issue`.
-* `t3code-tui/src/cli/catalog/` — providers/models/efforts via WS `server.getConfig` /
+* `monvex/src/cli/catalog/` — providers/models/efforts via WS `server.getConfig` /
   `server.refreshProviders` (`t3ws.ts`).
-* `t3code-tui/src/cli/threads/`, `handover/`, `projects/` — thread CRUD, send with
+* `monvex/src/cli/threads/`, `handover/`, `projects/` — thread CRUD, send with
   `reject/inject/queue/steer/restart` preflights, settle/unsettle/snooze/interrupt,
   delegate/task-status/task-cancel, workspace→project resolution.
-* `t3code-tui/src/tui/` — sidebar, timeline with per-turn diffs, composer with
+* `monvex/src/tui/` — sidebar, timeline with per-turn diffs, composer with
   model/effort pickers, tasks/answer/diff panels; projections in `tui/model/`.
 * Pain this removes: dispatch-then-poll acceptance, snapshot preflights that aren't
   atomic locks, `THREAD_BUSY`/`THREAD_RESTART_FAILED` races, version-gated capability
@@ -66,7 +66,7 @@ with `t3code-tui:`.
 ## 3. Target architecture
 
 ```
-t3code-tui
+monvex
 ├── src/providers/            NEW — provider SPI + 4 drivers (own code, T3-shaped)
 │   ├── spi.ts                ProviderDriver / ProviderAdapterShape (§4)
 │   ├── claude/               Agent SDK spawn, permissions, usage (§5)
@@ -105,7 +105,7 @@ state: readThread / rollbackThread / uploadFeedback? / compaction?
 streaming: streamEvents: Stream<ProviderRuntimeEvent>
 ```
 
-Lift `t3code-upstream/packages/contracts` schema thinking as-is (sole dep `effect`):
+Lift `mvx-upstream/packages/contracts` schema thinking as-is (sole dep `effect`):
 thread/turn IDs, session inputs, `ProviderRuntimeEvent` union (keep per-backend `raw`
 source tags — `providerRuntime.ts:23-33` pattern), model catalogs, settings schemas.
 Do **not** lift `Layers/*Adapter.ts` (16k lines) directly — they drag 15–30k lines of
@@ -119,7 +119,7 @@ drivers against the CLIs; §5–8 give the per-provider spec.
 
 ## 5. Claude Code driver
 
-Reference: `t3code-upstream/apps/server/src/provider/{Drivers/ClaudeDriver.ts,
+Reference: `mvx-upstream/apps/server/src/provider/{Drivers/ClaudeDriver.ts,
 Layers/ClaudeAdapter.ts (5,218 lines), Layers/ClaudeProvider.ts,
 Layers/claudeUsageLimits.ts, Drivers/ClaudeHome.ts}`,
 SDK `@anthropic-ai/claude-agent-sdk ^0.3.276`.
@@ -161,7 +161,7 @@ SDK `@anthropic-ai/claude-agent-sdk ^0.3.276`.
 
 ## 6. Codex driver
 
-Reference: `t3code-upstream/apps/server/src/provider/{Drivers/CodexDriver.ts,
+Reference: `mvx-upstream/apps/server/src/provider/{Drivers/CodexDriver.ts,
 Layers/CodexAdapter.ts (2,594), Layers/CodexSessionRuntime.ts (2,534),
 Layers/CodexProvider.ts, Layers/codexUsageLimits.ts, Layers/codexLaunchArgs.ts,
 Drivers/CodexHomeLayout.ts}`.
@@ -199,14 +199,14 @@ Drivers/CodexHomeLayout.ts}`.
 
 ## 7. Grok driver
 
-Reference: `t3code-upstream/apps/server/src/provider/{acp/GrokAcpSupport.ts,
+Reference: `mvx-upstream/apps/server/src/provider/{acp/GrokAcpSupport.ts,
 Layers/GrokAdapter.ts (2,107), Layers/GrokProvider.ts, Layers/grokUsageLimits.ts,
 Drivers/GrokDriver.ts}`, `textGeneration/GrokTextGeneration.ts`.
 
 * **Transport:** spawn `grok agent stdio` over ACP (`GrokAcpSupport.ts:33-63`),
   per-mode argv (`approval-required→--permission-mode default`,
-  `full-access→--always-approve`), `GROK_OAUTH2_REFERRER=t3code` injected
-  (keep a `t3code` referrer value). Binary path user-configurable (`settings.ts:723-729`).
+  `full-access→--always-approve`), `GROK_OAUTH2_REFERRER=mvx` injected
+  (keep a `mvx` referrer value). Binary path user-configurable (`settings.ts:723-729`).
   Probes: `grok --version` (4s), `grok models`, ACP `initialize()` (8s, warning-only).
 * **Auth:** env switch — `XAI_API_KEY` set → `xai.api_key`, else CLI `cached_token`
   (`GrokAcpSupport.ts:65-69`); unauthenticated → `grok login`. No own OAuth.
@@ -354,7 +354,7 @@ provider — `PROVIDER_NOT_FOUND`/`MODEL_NOT_FOUND`-style errors keep listing wh
 ## 14. Credit, trademark, and contribution posture
 
 * Notices: `THIRD_PARTY_NOTICES` (new) records every vendored file + MIT text.
-* Trademark intent on the `t3code` name (names can't be forked even when code can).
+* Trademark intent on the `mvx` name (names can't be forked even when code can).
 * Public history stays public; architecture writing establishes prior art.
 * DCO sign-off on PRs; inbound = AGPL outbound. No CLA until/unless commercial
   relicensing is ever on the table.

@@ -16,7 +16,7 @@ export async function runTui(config: CliConfig): Promise<void> {
   // error beats a garbled one. Real resizes — local, tmux, or over SSH —
   // are handled live inside the app by `MinSizeGate` via SIGWINCH.
   if (process.stdout.isTTY !== true) {
-    throw new CliError("TERMINAL_REQUIRED", "t3code tui needs an interactive terminal (over SSH, connect with ssh -t).", {
+    throw new CliError("TERMINAL_REQUIRED", "mvx tui needs an interactive terminal (over SSH, connect with ssh -t).", {
       exitCode: 2,
     });
   }

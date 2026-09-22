@@ -1,0 +1,4 @@
+interface:
+  display_name: "Monvex projects"
+  short_description: "Resolve folders to Monvex projects and ensure they exist"
+  default_prompt: "Use $mvx-projects to resolve this folder to its Monvex project."

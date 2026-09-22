@@ -695,10 +695,10 @@ describe("describeActivity", () => {
         toolCallId: "toolu_011wH3XQHvvtjdNcJKvkPFhC",
         status: "completed",
         title: "Tool call",
-        detail: 'Read: {"file_path":"/Users/aaron/Documents/t3code-cli/src/tui/timeline.tsx","offset":213,"limit":15}',
+        detail: 'Read: {"file_path":"/Users/aaron/Documents/monvex/src/tui/timeline.tsx","offset":213,"limit":15}',
         data: {
           toolName: "Read",
-          input: { file_path: "/Users/aaron/Documents/t3code-cli/src/tui/timeline.tsx", offset: 213, limit: 15 },
+          input: { file_path: "/Users/aaron/Documents/monvex/src/tui/timeline.tsx", offset: 213, limit: 15 },
         },
       }),
     );
@@ -735,7 +735,7 @@ describe("describeActivity", () => {
         status: "completed",
         title: "src/tui/timeline.tsx",
         detail:
-          "<path>/Users/aaron/Documents/t3code-cli/src/tui/timeline.tsx</path>\n<type>file</type>\n<content>\n1: import type { RefObject } from \"react\";",
+          "<path>/Users/aaron/Documents/monvex/src/tui/timeline.tsx</path>\n<type>file</type>\n<content>\n1: import type { RefObject } from \"react\";",
         data: {},
       }),
     );
@@ -748,11 +748,11 @@ describe("describeActivity", () => {
         toolCallId: "oc-read-2",
         status: "completed",
         title: null,
-        detail: "<path>/Users/aaron/Documents/t3code-cli/package.json</path>\n<type>file</type>\n<content>\n1: {",
+        detail: "<path>/Users/aaron/Documents/monvex/package.json</path>\n<type>file</type>\n<content>\n1: {",
         data: {},
       }),
     );
-    expect(untitled).toMatchObject({ kind: "read", path: "t3code-cli/package.json" });
+    expect(untitled).toMatchObject({ kind: "read", path: "monvex/package.json" });
 
     // A listing row whose input survived (or came back via backfill) keeps
     // its section range instead of rendering bare.
@@ -775,11 +775,11 @@ describe("describeActivity", () => {
         toolCallId: "oc-list-1",
         status: "completed",
         title: "src",
-        detail: "<path>/Users/aaron/Documents/t3code-cli/src</path>\n<type>directory</type>\n<entries>\ncatalog/",
+        detail: "<path>/Users/aaron/Documents/monvex/src</path>\n<type>directory</type>\n<entries>\ncatalog/",
         data: {},
       }),
     );
-    expect(dir).toMatchObject({ kind: "list", path: "t3code-cli/src" });
+    expect(dir).toMatchObject({ kind: "list", path: "monvex/src" });
   });
 
   it("matches subtitle counts to the hunks that actually render", () => {

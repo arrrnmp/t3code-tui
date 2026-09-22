@@ -41,7 +41,7 @@ const shellFrames = [
     snapshot: {
       snapshotSequence: 10,
       projects: [
-        { id: "p-cli", title: "t3code-cli", workspaceRoot: "C:\\repo" },
+        { id: "p-cli", title: "monvex", workspaceRoot: "C:\\repo" },
         { id: "p-xash", title: "Xash3D RT Streamline", workspaceRoot: "C:\\xash" },
         { id: "p-vibe", title: "vibecheck", workspaceRoot: "C:\\vibe" },
       ],
@@ -431,7 +431,7 @@ const threadFrames = [
               status: "completed",
               title: "src/tui",
               detail:
-                "<path>/Users/aaron/Documents/t3code-cli/src/tui</path>\n<type>directory</type>\n<entries>\napp.tsx",
+                "<path>/Users/aaron/Documents/monvex/src/tui</path>\n<type>directory</type>\n<entries>\napp.tsx",
               data: {},
             },
           },

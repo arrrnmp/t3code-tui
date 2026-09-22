@@ -102,7 +102,7 @@ export function isModelHidden(prefs: ModelPrefs, instanceId: string, slug: strin
 }
 
 function t3HomeDir(env: NodeJS.ProcessEnv = process.env): string {
-  const override = env.T3CODE_HOME?.trim();
+  const override = (env.MONVEX_HOME ?? env.T3CODE_HOME)?.trim();
   if (override) return override;
   return path.join(os.homedir(), ".t3");
 }

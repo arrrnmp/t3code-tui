@@ -1,0 +1,4 @@
+interface:
+  display_name: "Monvex CLI"
+  short_description: "Create handovers and manage Monvex threads"
+  default_prompt: "Use $use-monvex to hand this repository over to a new Monvex thread or manage an existing Monvex thread."

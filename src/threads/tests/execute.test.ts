@@ -34,7 +34,7 @@ describe("driverForInstance", () => {
 
 describe("executeTurn", () => {
   it("converges completion, usage, checkpoints, and events into the ledger", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "t3code-execute-"));
+    const root = await mkdtemp(path.join(os.tmpdir(), "mvx-execute-"));
     cleanup.push(() => rm(root, { recursive: true, force: true }));
     const store = await openThreadStore(root);
     const thread = await createThread(store, {
@@ -94,7 +94,7 @@ describe("executeTurn", () => {
   });
 
   it("records the turn's tool calls as replayable activity rows", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "t3code-execute-"));
+    const root = await mkdtemp(path.join(os.tmpdir(), "mvx-execute-"));
     cleanup.push(() => rm(root, { recursive: true, force: true }));
     const store = await openThreadStore(root);
     const thread = await createThread(store, {
@@ -160,7 +160,7 @@ describe("executeTurn", () => {
   });
 
   it("records failures without losing the prompt", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "t3code-execute-"));
+    const root = await mkdtemp(path.join(os.tmpdir(), "mvx-execute-"));
     cleanup.push(() => rm(root, { recursive: true, force: true }));
     const store = await openThreadStore(root);
     const thread = await createThread(store, {

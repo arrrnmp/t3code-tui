@@ -20,7 +20,7 @@ function fakeLister(models: Array<{ id: string }>, failWith?: string): () => Nat
 }
 
 function binDir(names: string[]): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "t3code-bin-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mvx-bin-"));
   for (const name of names) fs.writeFileSync(path.join(dir, name), "#!/bin/sh\n");
   return dir;
 }
@@ -41,7 +41,7 @@ const MODELS_DEV = {
 };
 
 function tmpStore(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "t3code-catalog-"));
+  return fs.mkdtempSync(path.join(os.tmpdir(), "mvx-catalog-"));
 }
 
 describe("buildDirectProviders", () => {

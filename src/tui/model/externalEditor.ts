@@ -72,7 +72,7 @@ export async function preferredEditorCommand(
 
 /** Writes the current draft to a temp file for the editor to open. */
 export async function createTempDraftFile(initialText: string): Promise<{ dir: string; file: string }> {
-  const dir = await mkdtemp(path.join(tmpdir(), "t3code-draft-"));
+  const dir = await mkdtemp(path.join(tmpdir(), "mvx-draft-"));
   const file = path.join(dir, "draft.md");
   await writeFile(file, initialText, "utf8");
   return { dir, file };

@@ -31,13 +31,13 @@ export function LoadingScreen({ stage }: { stage: BootStage }) {
       </box>
       <box style={{ height: 1, flexShrink: 0 }} selectable={false}>
         <text fg={COLOR.faint} bg={SURFACE.base} selectable={false}>
-          {"waiting for the T3 Code snapshot"}
+          {"waiting for the Monvex snapshot"}
         </text>
       </box>
       {tick - mountedAt < SLOW_MS ? null : (
         <box style={{ height: 1, flexShrink: 0 }} selectable={false}>
           <text fg={COLOR.warn} bg={SURFACE.base} selectable={false}>
-            {"still waiting — is T3 Code running?"}
+            {"still waiting — is Monvex running?"}
           </text>
         </box>
       )}

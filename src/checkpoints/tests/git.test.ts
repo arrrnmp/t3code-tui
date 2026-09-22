@@ -35,7 +35,7 @@ function git(cwd: string, args: string[]): void {
 }
 
 async function initRepo(): Promise<string> {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "t3code-checkpoints-"));
+  const dir = await mkdtemp(path.join(os.tmpdir(), "monvex-checkpoints-"));
   cleanup.push(() => rm(dir, { recursive: true, force: true }));
   git(dir, ["init"]);
   git(dir, ["config", "user.email", "test@example.com"]);
@@ -53,9 +53,9 @@ async function initRepo(): Promise<string> {
 
 describe("checkpointRef", () => {
   it("namespaces and sanitizes thread/turn ids", () => {
-    expect(checkpointRef("thread-1", "turn-1")).toBe("refs/t3code/checkpoints/thread-1/turn-1/post");
-    expect(checkpointRef("thread-1", "turn-1", "pre")).toBe("refs/t3code/checkpoints/thread-1/turn-1/pre");
-    expect(checkpointRef("a/b", "c d")).toBe("refs/t3code/checkpoints/a-b/c-d/post");
+    expect(checkpointRef("thread-1", "turn-1")).toBe("refs/monvex/checkpoints/thread-1/turn-1/post");
+    expect(checkpointRef("thread-1", "turn-1", "pre")).toBe("refs/monvex/checkpoints/thread-1/turn-1/pre");
+    expect(checkpointRef("a/b", "c d")).toBe("refs/monvex/checkpoints/a-b/c-d/post");
   });
 });
 
@@ -86,6 +86,25 @@ describe.runIf(GIT_AVAILABLE)("git checkpoints", () => {
 
     await pinCheckpointRef("thread-1", "turn-2", post!, dir, "post");
     await pruneCheckpointRefs(dir, "thread-1", ["turn-2"]);
+    const refs = spawnSync("git", ["for-each-ref", "--format=%(refname)", "refs/monvex/checkpoints/"], {
+      cwd: dir,
+      encoding: "utf8",
+    }).stdout;
+    expect(refs).not.toContain("turn-1");
+    expect(refs).toContain("turn-2/post");
+  });
+
+  it("sweeps pre-rebrand refs so they do not outlive their thread", async () => {
+    // Captures pinned before the rebrand live under `refs/t3code/`. GC has
+    // to cover that namespace too, or every old checkpoint is an orphan
+    // the store no longer tracks but git keeps alive forever.
+    const dir = await initRepo();
+    await writeFile(path.join(dir, "file.txt"), "one\ntwo\n");
+    const sha = await captureWorktree(dir, "legacy");
+    for (const turn of ["turn-1", "turn-2"]) {
+      git(dir, ["update-ref", `refs/t3code/checkpoints/thread-1/${turn}/post`, sha!]);
+    }
+    await pruneCheckpointRefs(dir, "thread-1", ["turn-2"]);
     const refs = spawnSync("git", ["for-each-ref", "--format=%(refname)", "refs/t3code/checkpoints/"], {
       cwd: dir,
       encoding: "utf8",
@@ -95,7 +114,7 @@ describe.runIf(GIT_AVAILABLE)("git checkpoints", () => {
   });
 
   it("returns null outside git repos", async () => {
-    const dir = await mkdtemp(path.join(os.tmpdir(), "t3code-nogit-"));
+    const dir = await mkdtemp(path.join(os.tmpdir(), "monvex-nogit-"));
     cleanup.push(() => rm(dir, { recursive: true, force: true }));
     expect(await captureWorktree(dir, "msg")).toBeNull();
     expect(await diffCheckpointRange(dir, "a", "b")).toBeNull();

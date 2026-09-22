@@ -10,7 +10,7 @@ import { createThread, readThread } from "../../../threads/threads.js";
 import { DirectConnection } from "../direct.js";
 
 function storeRoot(): string {
-  return process.env.T3CODE_STORE_ROOT!;
+  return process.env.MONVEX_STORE_ROOT!;
 }
 
 async function waitFor(label: string, check: () => Promise<boolean>, timeoutMs = 5000): Promise<void> {

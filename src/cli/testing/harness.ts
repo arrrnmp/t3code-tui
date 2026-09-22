@@ -1,6 +1,6 @@
 /**
  * Store-backed CLI test harness. Each test gets a tmp store root (wired
- * through `T3CODE_STORE_ROOT`, restored afterwards) plus a git repo
+ * through `MONVEX_STORE_ROOT`, restored afterwards) plus a git repo
  * workdir, so CLI commands run the real ledger path with fake provider
  * drivers — no servers, no tokens, no network.
  *
@@ -115,12 +115,12 @@ function harnessDrivers(options: TestHarnessOptions): TurnDriverFactories {
 }
 
 export async function testHarness(options: TestHarnessOptions = {}) {
-  const root = await mkdtemp(path.join(os.tmpdir(), "t3code-cli-store-"));
-  const previousStoreRoot = process.env.T3CODE_STORE_ROOT;
-  process.env.T3CODE_STORE_ROOT = root;
+  const root = await mkdtemp(path.join(os.tmpdir(), "monvex-store-"));
+  const previousStoreRoot = process.env.MONVEX_STORE_ROOT;
+  process.env.MONVEX_STORE_ROOT = root;
   cleanup.push(async () => {
-    if (previousStoreRoot === undefined) delete process.env.T3CODE_STORE_ROOT;
-    else process.env.T3CODE_STORE_ROOT = previousStoreRoot;
+    if (previousStoreRoot === undefined) delete process.env.MONVEX_STORE_ROOT;
+    else process.env.MONVEX_STORE_ROOT = previousStoreRoot;
     await rm(root, { recursive: true, force: true });
   });
   const work = path.join(root, "work");

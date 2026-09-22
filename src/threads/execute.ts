@@ -322,7 +322,7 @@ async function runExecuteTurn(args: ExecuteTurnArgs): Promise<void> {
     onEvent?.(event);
   });
   // Pre-turn capture first: the diff base must predate any provider write.
-  const pre = cwd ? await captureWorktree(cwd, `t3code ${threadId}/${storeTurnId} pre`) : null;
+  const pre = cwd ? await captureWorktree(cwd, `mvx ${threadId}/${storeTurnId} pre`) : null;
   const controller = new AbortController();
   store.trackRunning(storeTurnId, () => controller.abort());
   const onAbort = (): void => {
@@ -391,7 +391,7 @@ async function settleCheckpoints(
   cwd: string | null,
   pre: string | null,
 ): Promise<void> {
-  const post = cwd ? await captureWorktree(cwd, `t3code ${args.threadId}/${args.storeTurnId} post`) : null;
+  const post = cwd ? await captureWorktree(cwd, `mvx ${args.threadId}/${args.storeTurnId} post`) : null;
   const available = pre !== null && post !== null;
   if (cwd && pre) await pinCheckpointRef(args.threadId, args.storeTurnId, pre, cwd, "pre").catch(() => undefined);
   if (cwd && post) await pinCheckpointRef(args.threadId, args.storeTurnId, post, cwd, "post").catch(() => undefined);

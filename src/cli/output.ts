@@ -30,7 +30,7 @@ export function writeError(error: unknown, options: OutputOptions): CliError {
       )}\n`,
     );
   } else {
-    process.stderr.write(`t3code: ${cliError.message}\n`);
+    process.stderr.write(`mvx: ${cliError.message}\n`);
   }
   return cliError;
 }

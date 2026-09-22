@@ -1,0 +1,4 @@
+interface:
+  display_name: "Monvex handoff"
+  short_description: "Hand the current conversation off to a fresh Monvex thread"
+  default_prompt: "Use $mvx-handoff to hand this conversation off to a fresh thread in Monvex."

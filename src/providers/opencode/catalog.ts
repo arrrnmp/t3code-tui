@@ -12,7 +12,7 @@
  *   (one CLI invocation), so a stale cache triggers one blocking
  *   refresh with snapshot fallback on failure.
  * - Upstream caches in its own `Global.Path.cache`; we keep our own
- *   `~/.t3code/cache/opencode-models.json` so we never contend with the
+ *   `~/.monvex/cache/opencode-models.json` so we never contend with the
  *   server's lock/refresh protocol.
  *
  * Auth status mirrors upstream `packages/opencode/src/auth/index.ts`:
@@ -227,7 +227,11 @@ export function resolveModelsDevUrl(env: NodeJS.ProcessEnv = process.env): strin
 }
 
 export function defaultModelsDevCachePath(): string {
-  return path.join(os.homedir(), ".t3code", "cache", "opencode-models.json");
+  const current = path.join(os.homedir(), ".monvex", "cache", "opencode-models.json");
+  if (fs.existsSync(current)) return current;
+  // Reuse a pre-rebrand cache rather than re-downloading 4.7MB on first run.
+  const legacy = path.join(os.homedir(), ".t3code", "cache", "opencode-models.json");
+  return fs.existsSync(legacy) ? legacy : current;
 }
 
 /**
@@ -353,7 +357,7 @@ async function fetchLiveCatalog(
   const timer = setTimeout(() => controller.abort(), MODELS_DEV_FETCH_TIMEOUT_MS);
   try {
     const response = await fetchImpl(`${resolveModelsDevUrl(env)}${MODELS_DEV_API_PATH}`, {
-      headers: { "User-Agent": "t3code/models-dev-snapshot" },
+      headers: { "User-Agent": "mvx/models-dev-snapshot" },
       signal: controller.signal,
     });
     if (!response.ok) return null;

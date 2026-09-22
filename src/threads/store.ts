@@ -11,6 +11,7 @@
  */
 import { appendFile, mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -32,11 +33,21 @@ export interface ThreadStoreOptions {
   readonly clock?: () => number;
 }
 
-/** Home of the JSONL thread store + the projects registry. */
+/**
+ * Home of the JSONL thread store + the projects registry.
+ *
+ * `~/.monvex` is where we write. A pre-rebrand `~/.t3code` is used
+ * instead when it already holds threads, so an existing install keeps
+ * its history without a migration step: nothing is copied or moved, we
+ * just keep reading where the data already is.
+ */
 export function resolveStoreRoot(env: NodeJS.ProcessEnv = process.env): string {
-  const raw = env.T3CODE_STORE_ROOT?.trim();
+  const raw = (env.MONVEX_STORE_ROOT ?? env.T3CODE_STORE_ROOT)?.trim();
   if (raw) return path.resolve(raw);
-  return path.join(os.homedir(), ".t3code", "threads");
+  const current = path.join(os.homedir(), ".monvex", "threads");
+  if (fs.existsSync(current)) return current;
+  const legacy = path.join(os.homedir(), ".t3code", "threads");
+  return fs.existsSync(legacy) ? legacy : current;
 }
 
 type LedgerName = "turns" | "messages" | "activity" | "checkpoints";

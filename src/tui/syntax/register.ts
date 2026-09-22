@@ -15,7 +15,7 @@ export function registerSyntaxParsers(): Promise<void> {
     try {
       addDefaultParsers(await getParsers());
     } catch (error) {
-      process.stderr.write(`t3code: extra syntax parsers unavailable (${String(error).slice(0, 120)})\n`);
+      process.stderr.write(`mvx: extra syntax parsers unavailable (${String(error).slice(0, 120)})\n`);
     }
   })();
   return registered;

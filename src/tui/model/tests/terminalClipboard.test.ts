@@ -48,7 +48,7 @@ function fakeTerminal(script: (emit: (sequence: string) => void) => void): {
 
 describe("buildOsc5522ReadQuery", () => {
   it("frames a read request with metadata and base64 mime list", () => {
-    const query = buildOsc5522ReadQuery("image/png", { id: "abc123", password: "pw", humanName: "t3code" });
+    const query = buildOsc5522ReadQuery("image/png", { id: "abc123", password: "pw", humanName: "mvx" });
     expect(query.startsWith(`${ESC}]5522;`)).toBe(true);
     expect(query.endsWith(ST)).toBe(true);
     const [, meta, payload] = query.slice(2, -ST.length).split(";");

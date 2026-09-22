@@ -1,6 +1,6 @@
 # AGENTS.md
 
-`t3code-tui` is an interactive terminal UI plus CLI for T3 Code threads (Bun + TypeScript + React via `@opentui/react`).
+`monvex` is an interactive terminal UI plus CLI for T3 Code threads (Bun + TypeScript + React via `@opentui/react`).
 
 ## Layout
 
@@ -39,4 +39,4 @@
 - Install: `bun install`
 - Typecheck and test: `bun run check`
 - TUI snapshot harness: `bun src/tui/render-check.tsx`
-- Diagnose live integration: `t3code --json doctor`
+- Diagnose live integration: `mvx --json doctor`

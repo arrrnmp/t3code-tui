@@ -35,7 +35,7 @@ afterEach(async () => {
 });
 
 async function testStore(options: { clock?: () => number; bus?: ReturnType<typeof createEventBus<BackendEvent>> } = {}) {
-  const root = await mkdtemp(path.join(os.tmpdir(), "t3code-threads-"));
+  const root = await mkdtemp(path.join(os.tmpdir(), "mvx-threads-"));
   cleanup.push(() => rm(root, { recursive: true, force: true }));
   return await openThreadStore(root, options);
 }
@@ -69,7 +69,7 @@ describe("thread store", () => {
   });
 
   it("persists across reopen", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "t3code-threads-"));
+    const root = await mkdtemp(path.join(os.tmpdir(), "mvx-threads-"));
     cleanup.push(() => rm(root, { recursive: true, force: true }));
     const first = await openThreadStore(root);
     const thread = await createThread(first, {

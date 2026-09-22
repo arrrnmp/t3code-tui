@@ -10,7 +10,7 @@ import { testHarness } from "../../testing/harness.js";
 import { createHandoverThread } from "../handover.js";
 
 function storeRoot(): string {
-  return process.env.T3CODE_STORE_ROOT!;
+  return process.env.MONVEX_STORE_ROOT!;
 }
 
 describe("createHandoverThread", () => {
@@ -179,7 +179,7 @@ describe("createHandoverThread", () => {
       baseBranch: "main",
       startFromOrigin: true,
     });
-    expect(result.worktree?.branch?.startsWith("t3code/")).toBe(true);
+    expect(result.worktree?.branch?.startsWith("mvx/")).toBe(true);
     expect(result.thread.createCommand.worktreePath).toBe(result.worktree?.path);
     const stored = await readThread(harness.store, result.thread.id);
     expect(stored.thread.env.mode).toBe("worktree");

@@ -18,7 +18,7 @@ afterEach(async () => {
 });
 
 async function tmpRoot(): Promise<string> {
-  const root = await mkdtemp(path.join(os.tmpdir(), "t3code-projects-"));
+  const root = await mkdtemp(path.join(os.tmpdir(), "mvx-projects-"));
   cleanup.push(() => rm(root, { recursive: true, force: true }));
   return root;
 }
