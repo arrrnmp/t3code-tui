@@ -208,6 +208,13 @@ export class DirectConnection implements TuiClient {
         onError(cause);
       }
     };
+    // Live assistant text only. Tool calls are *not* recorded here: the
+    // turn runner already writes them to the activity ledger with their
+    // full payload (`threads/toolactivity.ts`), and the poll above picks
+    // them up. A second recorder on this path wrote a payload-less row per
+    // event — undeduped, and with no `toolCallId` for the transcript to
+    // fold — so any turn run with the TUI attached got bare rows beside
+    // the real tool cards.
     const onEvent = (event: ProviderRuntimeEvent): void => {
       if (stopped || this.closed) return;
       if (event.type === "message.part.updated" && event.turnId) {
@@ -234,14 +241,6 @@ export class DirectConnection implements TuiClient {
           },
         });
         return;
-      }
-      if (
-        (event.type === "tool.execute.started" ||
-          event.type === "tool.execute.updated" ||
-          event.type === "tool.execute.completed") &&
-        event.turnId
-      ) {
-        void this.recordToolActivity(threadId, event.turnId, event.tool).catch(() => undefined);
       }
     };
     // The bridge attaches lazily per active driver session: poll for a
@@ -287,18 +286,6 @@ export class DirectConnection implements TuiClient {
       messages: read.messages,
       activities: read.activities,
       checkpoints: read.checkpoints,
-    });
-  }
-
-  private async recordToolActivity(threadId: string, turnId: string, tool: string): Promise<void> {
-    const store = await this.store();
-    await store.appendLedger(threadId, "activity", {
-      id: store.newId(),
-      threadId,
-      turnId,
-      kind: "tool_execution",
-      summary: tool.slice(0, 200),
-      createdAt: store.nowIso(),
     });
   }
 

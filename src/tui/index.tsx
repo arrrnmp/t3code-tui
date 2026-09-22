@@ -35,7 +35,6 @@ export async function runTui(config: CliConfig): Promise<void> {
             client={connection}
             onQuit={resolve}
             cwd={process.cwd()}
-            stateDir={null}
             setTerminalTitle={(title) => renderer.setTerminalTitle(title)}
           />
         </MinSizeGate>,

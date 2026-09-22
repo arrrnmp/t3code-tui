@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { describeActivity, fileRowCounts, formatMs, missingCompletedInput, readRangeLabel, toolCallIdOf, withCompletedInput } from "../activity.js";
+import { describeActivity, fileRowCounts, formatMs, readRangeLabel } from "../activity.js";
 import type { T3ThreadActivity } from "../../../types.js";
 
 function activity(kind: string, payload: Record<string, unknown>): T3ThreadActivity {
@@ -726,78 +726,6 @@ describe("describeActivity", () => {
     expect(write.diff).toContain("+line1");
   });
 
-  it("recovers stripped wire payloads from the detail echo instead of rendering … or Tool call", () => {
-    // Wire shape (what the TUI actually receives): the subscription strips
-    // every `input` object, so completed Claude rows carry only
-    // `data: {toolName}` plus the `Name: {json}` echo in `detail`.
-    const read = describeActivity(
-      activity("tool.completed", {
-        itemType: "dynamic_tool_call",
-        toolCallId: "toolu_01MxgYMc15m1DYfFwUWd39yD",
-        status: "completed",
-        title: "Tool call",
-        detail: 'Read: {"file_path":"/Users/aaron/Documents/t3code-cli/node_modules/@opentui/core/renderables/Diff.d.ts"}',
-        data: { toolName: "Read" },
-      }),
-    );
-    expect(read).toMatchObject({ kind: "read", path: "renderables/Diff.d.ts" });
-
-    // In-flight rows have no path anywhere (empty input, bare title), so
-    // they render `Read(…)` — never the meaningless `Read(Tool call)`.
-    const running = describeActivity(
-      activity("tool.updated", {
-        itemType: "dynamic_tool_call",
-        toolCallId: "toolu_011wH3XQHvvtjdNcJKvkPFhC",
-        status: "inProgress",
-        title: "Tool call",
-        data: { tool: "read", state: { status: "pending", input: {} } },
-      }),
-    );
-    expect(running).toMatchObject({ kind: "read", path: "…", running: true });
-
-    // Edit echoes are truncated to ~180 chars: the path still recovers via
-    // the leading `file_path`, while the cut-off strings yield no diff.
-    const edit = describeActivity(
-      activity("tool.completed", {
-        itemType: "file_change",
-        toolCallId: "toolu_01JgXz1MGfkzznhH4qMZfQAb",
-        status: "completed",
-        title: "File change",
-        detail:
-          'Edit: {"file_path":"/Users/aaron/Documents/t3code-cli/src/catalog/catalog.ts","old_string":"export interface ProviderUsageLimits {\\n  checkedAt: string;\\n  windows: ProviderUsag...',
-        data: { toolName: "Edit" },
-      }),
-    );
-    expect(edit).toMatchObject({ kind: "file", verb: "Update", path: "src/catalog/catalog.ts", diff: null });
-
-    // A tiny edit whose echo survives truncation still diffs normally.
-    const tiny = describeActivity(
-      activity("tool.completed", {
-        itemType: "file_change",
-        toolCallId: "toolu_tiny1",
-        status: "completed",
-        title: "File change",
-        detail: 'Edit: {"file_path":"C:/repo/src/tui/a.ts","old_string":"x","new_string":"x\\ny"}',
-        data: { toolName: "Edit" },
-      }),
-    );
-    expect(tiny).toMatchObject({ kind: "file", verb: "Update", path: "src/tui/a.ts", added: 1, removed: 0 });
-    if (tiny.kind !== "file") throw new Error("unreachable");
-    expect(tiny.diff).not.toBeNull();
-
-    // In-flight edits show the verb with an honest … path.
-    const editing = describeActivity(
-      activity("tool.updated", {
-        itemType: "file_change",
-        toolCallId: "toolu_01JgXz1MGfkzznhH4qMZfQAb",
-        status: "inProgress",
-        title: "File change",
-        data: { toolName: "Edit", input: {} },
-      }),
-    );
-    expect(editing).toMatchObject({ kind: "file", verb: "Update", path: "…" });
-  });
-
   it("reads OpenCode's nameless XML result dumps as Read/List instead of a raw dump", () => {
     // File read: title already carries the relative path.
     const read = describeActivity(
@@ -852,82 +780,6 @@ describe("describeActivity", () => {
       }),
     );
     expect(dir).toMatchObject({ kind: "list", path: "t3code-cli/src" });
-  });
-
-  it("merges stripped inputs back without clobbering what the wire carried", () => {
-    const stripped = activity("tool.completed", {
-      itemType: "file_change",
-      toolCallId: "call-db-1",
-      status: "completed",
-      title: "File change",
-      data: { toolName: "Edit" },
-    });
-    expect(toolCallIdOf(stripped)).toBe("call-db-1");
-    expect(toolCallIdOf(activity("tool.completed", {}))).toBeNull();
-    // Bare diff-less file row wants its input back.
-    expect(missingCompletedInput(stripped)).toBe("call-db-1");
-    const merged = withCompletedInput(stripped, { file_path: "C:/repo/src/tui/a.ts", old_string: "x", new_string: "x\ny" });
-    const view = describeActivity(merged);
-    expect(view).toMatchObject({ kind: "file", verb: "Update", path: "src/tui/a.ts", added: 1, removed: 0 });
-    // Never clobbers: rows that already carry input are left alone.
-    const full = activity("tool.completed", {
-      itemType: "file_change",
-      toolCallId: "call-db-2",
-      status: "completed",
-      title: "File change",
-      data: { toolName: "Edit", state: { status: "completed", input: { file_path: "C:/repo/keep.ts" } } },
-    });
-    expect(missingCompletedInput(full)).toBeNull();
-    expect(withCompletedInput(full, { file_path: "C:/repo/other.ts" })).toBe(full);
-    // In-flight and contentful rows never qualify.
-    expect(missingCompletedInput(activity("tool.updated", { itemType: "file_change", toolCallId: "call-db-3", status: "inProgress", title: "edit", data: {} }))).toBeNull();
-  });
-
-  it("backfills stripped grep patterns and commands from the local DB", () => {
-    const bareGrep = activity("tool.completed", {
-      itemType: "dynamic_tool_call",
-      toolCallId: "call-db-4",
-      status: "completed",
-      title: "grep",
-      detail: "Found 2 matches\nC:/repo/src/tui/a.ts:\n",
-      data: {},
-    });
-    expect(missingCompletedInput(bareGrep)).toBe("call-db-4");
-    const mergedGrep = withCompletedInput(bareGrep, { pattern: "name", include: "*.ts" });
-    expect(describeActivity(mergedGrep)).toMatchObject({ kind: "grep", pattern: "name", scope: "*.ts" });
-    // A row whose pattern survived needs no backfill.
-    const fullGrep = activity("tool.completed", {
-      itemType: "dynamic_tool_call",
-      toolCallId: "call-db-5",
-      status: "completed",
-      title: "grep",
-      data: { toolName: "grep", input: { pattern: "name" } },
-    });
-    expect(missingCompletedInput(fullGrep)).toBeNull();
-  });
-
-  it("backfills stripped read ranges so repeated section reads stay distinct", () => {
-    const bareRead = activity("tool.completed", {
-      itemType: "dynamic_tool_call",
-      toolCallId: "call-db-6",
-      status: "completed",
-      title: "src/tui/model/activity.ts",
-      data: { toolName: "read" },
-    });
-    expect(describeActivity(bareRead)).toMatchObject({ kind: "read", startLine: null });
-    expect(missingCompletedInput(bareRead)).toBe("call-db-6");
-    const mergedRead = withCompletedInput(bareRead, {
-      filePath: "C:/repo/src/tui/model/activity.ts",
-      offset: 487,
-      limit: 30,
-    });
-    expect(describeActivity(mergedRead)).toMatchObject({
-      kind: "read",
-      path: "src/tui/model/activity.ts",
-      startLine: 487,
-      endLine: 516,
-    });
-    expect(readRangeLabel(487, 516)).toBe("L487-L516");
   });
 
   it("matches subtitle counts to the hunks that actually render", () => {

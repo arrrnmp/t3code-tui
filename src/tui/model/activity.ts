@@ -170,55 +170,19 @@ export function activityFilePath(activity: T3ThreadActivity): string | null {
   const payload = asRecord(activity.payload) ?? {};
   const data = asRecord(payload.data) ?? {};
   const state = asRecord(data.state) ?? {};
-  const echoInput = parseDetailInput(asString(payload.detail));
-  const echoPath = detailFilePath(asString(payload.detail));
-  const input = asRecord(state.input) ?? asRecord(data.input) ?? echoInput ?? {};
+  const input = asRecord(state.input) ?? asRecord(data.input) ?? {};
   const files = Array.isArray(data.files) ? data.files : [];
   const firstFile = asString(asRecord(files[0])?.path);
   const inputPath = asString(input.file_path) ?? asString(input.filePath);
   const title = asString(payload.title) ?? asString(activity.summary) ?? "";
   const titlePath = looksLikePath(title) ? title : null;
-  return firstFile ?? inputPath ?? titlePath ?? echoPath;
+  return firstFile ?? inputPath ?? titlePath;
 }
 
 /** Titles double as paths on completed rows (`src\tui\app.tsx`) but are bare
     verbs while running (`edit`), so only treat them as paths with evidence. */
 function looksLikePath(value: string): boolean {
   return value.includes("/") || value.includes("\\") || /\.[a-zA-Z0-9]{1,8}$/.test(value.trim());
-}
-
-/**
- * Provider-native rows echo the call as `Name: {json}` in `detail`
- * (`Read: {"file_path":…}`, `Edit: {…}`) — and the wire keeps `detail`
- * while stripping every `input` object. Parse that echo as a last-resort
- * input source so completed rows still resolve their path (and small edits
- * their diff) after stripping.
- */
-function parseDetailInput(detail: string | null): Record<string, unknown> | null {
-  if (detail === null) return null;
-  const match = /^[A-Za-z]+: (\{[\s\S]*\})$/.exec(detail.trim());
-  if (match === null) return null;
-  try {
-    return asRecord(JSON.parse(match[1] as string));
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Edit/Write echoes are truncated to ~180 chars, so the JSON above rarely
- * survives — but `file_path` leads the object and is always complete.
- * Recover just the path from the truncated echo.
- */
-function detailFilePath(detail: string | null): string | null {
-  if (detail === null) return null;
-  const match = /"(?:file_path|filePath)"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(detail);
-  if (match === null) return null;
-  try {
-    return asString(JSON.parse(`"${match[1]}"`));
-  } catch {
-    return null;
-  }
 }
 
 /**
@@ -452,12 +416,7 @@ export function describeActivity(activity: T3ThreadActivity): ActivityView {
   const payload = asRecord(activity.payload) ?? {};
   const data = asRecord(payload.data) ?? {};
   const state = asRecord(data.state) ?? {};
-  // The wire strips every `input` object but keeps `detail`, so a
-  // `Name: {json}` echo there is the last-resort input source for completed
-  // provider-native rows.
-  const echoInput = parseDetailInput(asString(payload.detail));
-  const echoPath = detailFilePath(asString(payload.detail));
-  const input = asRecord(state.input) ?? asRecord(data.input) ?? echoInput ?? {};
+  const input = asRecord(state.input) ?? asRecord(data.input) ?? {};
   const running = isRunning(payload);
   const tool = asString(data.tool) ?? asString(data.toolName) ?? null;
   const title = asString(payload.title) ?? asString(activity.summary) ?? activity.kind;
@@ -496,7 +455,7 @@ export function describeActivity(activity: T3ThreadActivity): ActivityView {
     const titlePath = looksLikePath(title) ? title : null;
     // In-flight rows ("edit" title, empty input) genuinely have no path yet;
     // completed provider-native rows recover it from the `detail` echo.
-    const filePath = firstFile ?? inputPath ?? titlePath ?? echoPath ?? "…";
+    const filePath = firstFile ?? inputPath ?? titlePath ?? "…";
     const oldString = asString(input.old_string) ?? asString(input.oldString);
     const newString = asString(input.new_string) ?? asString(input.newString) ?? asString(input.content);
     const path = filePath === "…" ? filePath : shortenPath(filePath);
@@ -552,7 +511,7 @@ export function describeActivity(activity: T3ThreadActivity): ActivityView {
       // they render `Read(…)` until the completed row resolves — a bare
       // title like "Tool call" is never a path and must not leak in.
       const readPath =
-        asString(input.file_path) ?? asString(input.filePath) ?? (looksLikePath(title) ? title : null) ?? echoPath ?? "…";
+        asString(input.file_path) ?? asString(input.filePath) ?? (looksLikePath(title) ? title : null) ?? "…";
       return {
         kind: "read",
         path: readPath === "…" ? readPath : shortenPath(readPath),
@@ -780,82 +739,6 @@ function decodeTodos(raw: unknown): TodoItem[] {
     if (content === null) return [];
     return [{ content, status: record === null ? "pending" : (asString(record.status) ?? "pending") }];
   });
-}
-
-/**
- * Fills a completed row's stripped tool input from the local projection
- * database (same read-only pattern as the local project discovery). Never
- * clobbers input the wire already carried — in-flight rows keep their
- * empty input until their own completion lands. Rows that resolve keep
- * everything downstream (diffs, stats, stacking) with no other changes.
- */
-export function withCompletedInput(
-  activity: T3ThreadActivity,
-  input: Record<string, unknown>,
-): T3ThreadActivity {
-  if (Object.keys(input).length === 0) return activity;
-  const payload = asRecord(activity.payload);
-  if (payload === null) return activity;
-  const data = asRecord(payload.data);
-  if (data === null) return activity;
-  const hasInput = (value: unknown): boolean => {
-    const record = asRecord(value);
-    return record !== null && Object.keys(record).length > 0;
-  };
-  const state = asRecord(data.state);
-  if (hasInput(state?.input) || hasInput(data.input)) return activity;
-  const nextData =
-    state !== null ? { ...data, state: { ...state, input } } : { ...data, input };
-  return { ...activity, payload: { ...payload, data: nextData } };
-}
-
-/** This row's tool call id, when the payload carries one. */
-export function toolCallIdOf(activity: T3ThreadActivity): string | null {
-  const toolCallId = asRecord(activity.payload)?.toolCallId;
-  return typeof toolCallId === "string" && toolCallId.length > 0 ? toolCallId : null;
-}
-
-/**
- * A completed row whose input the wire stripped resolves to its tool call
- * id for a local-DB backfill — diff-less file views, path-less reads, reads
- * missing their section range, and empty grep patterns / commands, which
- * re-render with the recovered input once merged. Null when there is
- * nothing to recover. Pass an already computed view to avoid describing
- * twice.
- */
-export function missingCompletedInput(activity: T3ThreadActivity, view?: ActivityView): string | null {
-  if (activity.kind !== "tool.completed") return null;
-  const id = toolCallIdOf(activity);
-  if (id === null) return null;
-  let resolved = view;
-  if (resolved === undefined) {
-    try {
-      resolved = describeActivity(activity);
-    } catch {
-      return null;
-    }
-  }
-  const payload = asRecord(activity.payload);
-  const data = payload === null ? null : asRecord(payload.data);
-  const state = data === null ? null : asRecord(data.state);
-  const hasInput = (value: unknown): boolean => {
-    const record = asRecord(value);
-    return record !== null && Object.keys(record).length > 0;
-  };
-  // Rows that already carry input need nothing, whatever they render.
-  if (hasInput(state?.input) || hasInput(data?.input)) return null;
-  // ...while content-less file/read rows and grep/command rows (whose
-  // headline is a result summary, not the call) resolve for a backfill
-  // that may restore the stripped pattern or command. Reads with a known
-  // path but no section range resolve too — a repeated section read would
-  // otherwise stay indistinguishable from a whole-file one.
-  const bare =
-    (resolved.kind === "file" && resolved.diff === null) ||
-    (resolved.kind === "read" && (resolved.path === "…" || resolved.startLine === null)) ||
-    resolved.kind === "grep" ||
-    resolved.kind === "command";
-  if (!bare) return null;
-  return id;
 }
 
 /**

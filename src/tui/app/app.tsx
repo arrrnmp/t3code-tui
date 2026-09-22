@@ -96,7 +96,6 @@ export function App({
   cwd,
   launchView,
   setTerminalTitle,
-  stateDir = null,
 }: {
   client: TuiClient;
   onQuit: () => void;
@@ -110,12 +109,6 @@ export function App({
   launchView?: "create" | "thread";
   /** Wired to the renderer's own terminal-title API; omitted in tests. */
   setTerminalTitle?: (title: string) => void;
-  /**
-   * Local T3 projection database dir (null when undiscoverable, e.g. the
-   * snapshot harness). Feeds the completed-tool-input backfill below; the
-   * UI never depends on it.
-   */
-  stateDir?: string | null;
 }) {
   const { width, height } = useTerminalDimensions();
   const [shell, setShell] = useState<ShellState>(emptyShellState);
@@ -382,7 +375,6 @@ export function App({
     shellProjects: shell.projects,
     threadState,
     threadStateRef,
-    stateDir,
     groups,
     selectedIdRef,
     chatScrollRef,

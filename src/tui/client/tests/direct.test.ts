@@ -245,4 +245,67 @@ describe("DirectConnection subscriptions", () => {
       await connection.close();
     }
   });
+
+  it("records a tool call once, with its payload, while the TUI watches", async () => {
+    // The turn runner owns tool rows. This path used to record its own
+    // payload-less row per event as well, so a tool-using turn run with the
+    // TUI attached got bare duplicates beside the real cards.
+    const harness = await testHarness();
+    const transport = new FakeOpencodeTransport();
+    const connection = new DirectConnection({
+      storeRoot: harness.root,
+      drivers: { opencode: () => new OpenCodeDriver({ transport, env: { ANTHROPIC_API_KEY: "test-key" } }) },
+      shellPollMs: 30,
+      threadPollMs: 30,
+    });
+    try {
+      const workspaceRoot = await realpath(harness.work);
+      const ensured = await ensureStoredProject(storeRoot(), { workspaceRoot });
+      await createThread(harness.store, {
+        id: "thread-tools",
+        projectId: ensured.project.id,
+        title: "Tools",
+        modelSelection: { instanceId: "opencode/anthropic", model: "claude-opus-4-6" },
+      });
+      const unsubscribe = connection.subscribeThread("thread-tools", {}, () => undefined, () => undefined);
+      try {
+        await connection.dispatch({
+          type: "thread.turn.start",
+          threadId: "thread-tools",
+          message: { messageId: "m-1", role: "user", text: "run it", attachments: [] },
+        });
+        await waitFor("prompt on the wire", async () => transport.servers[0]?.callsTo("session.promptAsync").length === 1);
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        const part = (status: string) => ({
+          type: "message.part.updated" as const,
+          properties: {
+            sessionID: "opencode-session-1",
+            part: {
+              id: "prt-1",
+              callID: "call-1",
+              type: "tool",
+              tool: "bash",
+              state: { status, input: { command: "git status" } },
+            },
+          },
+        });
+        await transport.servers[0]?.push(part("running"));
+        await transport.servers[0]?.push(part("completed"));
+        await transport.servers[0]?.push({ type: "session.idle", properties: { sessionID: "opencode-session-1" } });
+        await waitFor("tool rows on disk", async () =>
+          (await harness.store.readActivities("thread-tools")).some((row) => row.kind === "tool-call.completed"),
+        );
+        const rows = await harness.store.readActivities("thread-tools");
+        const tools = rows.filter((row) => row.kind.startsWith("tool-call."));
+        expect(tools.map((row) => row.kind)).toEqual(["tool-call.started", "tool-call.completed"]);
+        expect(tools.every((row) => row.payload !== undefined)).toBe(true);
+        // No payload-less echo of the same call alongside them.
+        expect(rows.some((row) => row.kind === "tool_execution")).toBe(false);
+      } finally {
+        unsubscribe();
+      }
+    } finally {
+      await connection.close();
+    }
+  });
 });

@@ -30,7 +30,6 @@ export function useDiffPanel(params: {
   shellProjects: T3Project[];
   threadState: ThreadState;
   threadStateRef: MutableRefObject<ThreadState>;
-  stateDir: string | null;
   groups: TurnGroup[];
   selectedIdRef: MutableRefObject<string | null>;
   chatScrollRef: MutableRefObject<ScrollBoxRenderable | null>;
@@ -38,7 +37,7 @@ export function useDiffPanel(params: {
   setFocus: (focus: "chat" | "diff") => void;
   setError: (message: string) => void;
 }) {
-  const { client, width, openThreadId, selected, shellProjects, threadState, threadStateRef, stateDir, groups, selectedIdRef, chatScrollRef, setThreadState, setFocus, setError } = params;
+  const { client, width, openThreadId, selected, shellProjects, threadState, threadStateRef, groups, selectedIdRef, chatScrollRef, setThreadState, setFocus, setError } = params;
 
   const [expandedTurn, setExpandedTurn] = useState<number | null>(null);
   const [patch, setPatch] = useState<string | null>(null);
@@ -298,9 +297,6 @@ export function useDiffPanel(params: {
       }
       if (turnCount !== undefined && groupBare) ensureTurnPatch(id, turnCount);
     }
-    // Without a projection database the completed-input backfill below is
-    // gone; rows fall through to working-tree and content-cache diffs,
-    // which is the same path non-git projects already used.
     if (root !== null && gitParts.length > 0) {
       gitParts.sort();
       const wanted = `${root}\n${gitParts.join("\n")}`;
@@ -342,7 +338,7 @@ export function useDiffPanel(params: {
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [groups, openThreadId, client, selected, shellProjects, stateDir]);
+  }, [groups, openThreadId, client, selected, shellProjects]);
 
   const diffWidth = Math.max(40, Math.floor((width - SIDEBAR_WIDTH) / 2));
 
