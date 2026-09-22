@@ -13,9 +13,9 @@ import {
   saveConfig,
   setConfigValue,
   type ConfigKey,
-} from "../config.js";
+} from "../core/config.js";
 import { doctor } from "./doctor.js";
-import { CliError } from "../errors.js";
+import { CliError } from "../core/errors.js";
 import { writeError, writeSuccess } from "./output.js";
 import {
   createHandoverThread,
@@ -61,7 +61,7 @@ import type {
   T3Thread,
   ThreadEnvMode,
   WorkspaceMode,
-} from "../types.js";
+} from "../core/types.js";
 
 const program = new Command();
 program

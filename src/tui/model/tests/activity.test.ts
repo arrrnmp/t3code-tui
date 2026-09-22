@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { describeActivity, fileRowCounts, formatMs, readRangeLabel } from "../activity.js";
-import type { T3ThreadActivity } from "../../../types.js";
+import type { T3ThreadActivity } from "../../../core/types.js";
 
 function activity(kind: string, payload: Record<string, unknown>): T3ThreadActivity {
   return {

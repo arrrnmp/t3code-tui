@@ -1,9 +1,9 @@
 import { realpath, stat } from "node:fs/promises";
 import path from "node:path";
 
-import { CliError } from "../../errors.js";
+import { CliError } from "../../core/errors.js";
 import { runProcess } from "./process.js";
-import type { WorkspaceMode, WorkspaceResolution } from "../../types.js";
+import type { WorkspaceMode, WorkspaceResolution } from "../../core/types.js";
 
 async function gitOutput(cwd: string, args: readonly string[]): Promise<string | null> {
   const result = await runProcess("git", args, { cwd, allowFailure: true, timeoutMs: 10_000 }).catch(

@@ -1,11 +1,11 @@
 import { createCliRenderer } from "@opentui/core";
 import { createRoot } from "@opentui/react";
 
-import { CliError } from "../errors.js";
-import { resolveStoreRoot } from "../threads/store.js";
-import type { CliConfig } from "../types.js";
+import { CliError } from "../core/errors.js";
+import { resolveStoreRoot } from "../core/threads/store.js";
+import type { CliConfig } from "../core/types.js";
 import { App } from "./app/app.js";
-import { DirectConnection } from "./client/direct.js";
+import { DirectConnection } from "../server/connection.js";
 import { registerSyntaxParsers } from "./syntax/register.js";
 import { SURFACE } from "./theme.js";
 import { MinSizeGate } from "./ui/terminalgate.js";

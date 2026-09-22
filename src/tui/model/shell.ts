@@ -1,4 +1,4 @@
-import type { T3Project, T3Thread } from "../../types.js";
+import type { T3Project, T3Thread } from "../../core/types.js";
 
 export interface ShellState {
   snapshotSequence: number;

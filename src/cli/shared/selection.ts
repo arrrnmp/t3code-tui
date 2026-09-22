@@ -1,10 +1,10 @@
-import { CliError } from "../../errors.js";
+import { CliError } from "../../core/errors.js";
 import type {
   CliConfig,
   ModelSelection,
   ProviderOptionSelection,
   SpeedMode,
-} from "../../types.js";
+} from "../../core/types.js";
 
 const LEGACY_DEFAULT_MODEL_SELECTION: ModelSelection = { instanceId: "codex", model: "gpt-5.4" };
 

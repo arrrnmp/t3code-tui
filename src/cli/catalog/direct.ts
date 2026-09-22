@@ -22,11 +22,11 @@ import path from "node:path";
 
 import * as Effect from "effect/Effect";
 
-import { CodexDriver, type CodexListedModel } from "../../providers/codex/driver.js";
-import { GrokDriver } from "../../providers/grok/driver.js";
-import { claudeCatalogModels } from "../../providers/claude/catalog.js";
-import { resolveStoreRoot } from "../../threads/store.js";
-import { ensureImportedFromT3, isModelHidden, loadModelPrefs } from "../../catalog/prefs.js";
+import { CodexDriver, type CodexListedModel } from "../../core/providers/codex/driver.js";
+import { GrokDriver } from "../../core/providers/grok/driver.js";
+import { claudeCatalogModels } from "../../core/providers/claude/catalog.js";
+import { resolveStoreRoot } from "../../core/threads/store.js";
+import { ensureImportedFromT3, isModelHidden, loadModelPrefs } from "../../core/catalog/prefs.js";
 import {
   effortValuesOf,
   isFreeModel,
@@ -36,7 +36,7 @@ import {
   type LoadedModelsDevCatalog,
   type ModelsDevModel,
   type ModelsDevProvider,
-} from "../../providers/opencode/catalog.js";
+} from "../../core/providers/opencode/catalog.js";
 import type { EffortDescriptor, ModelSummary, ProviderSummary } from "./catalog.js";
 
 /** Codex `reasoningEffort` values (app-server turn params; DECOUPLE.md §6). */
@@ -366,7 +366,7 @@ export async function buildDirectProviders(options: DirectCatalogOptions = {}): 
  * the TUI's `extractProviders` keeps working unmodified — including
  * effort descriptors, which become `capabilities.optionDescriptors`.
  * Hidden-model preferences have no direct equivalent yet: nothing is
- * hidden. Consumed by `tui/client/direct.ts` `getConfig`.
+ * hidden. Consumed by `server/connection.ts` `getConfig`.
  */
 export function toWsConfigPayload(providers: ReadonlyArray<ProviderSummary>): {
   providers: unknown[];

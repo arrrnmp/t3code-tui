@@ -1,5 +1,5 @@
 /**
- * Direct TUI client: implements the `TuiClient` surface over the own
+ * In-process implementation of `ClientApi` (`./api.ts`) over the own
  * store, drivers, and git checkpoints — no server, no websocket.
  *
  * - Subscriptions are poll-based snapshots in the exact frame shapes the
@@ -19,10 +19,10 @@
  */
 import * as Effect from "effect/Effect";
 
-import { buildDirectProviders, toWsConfigPayload } from "../../cli/catalog/direct.js";
-import { ensureStoredProject, listStoredProjects } from "../../projects/projects.js";
-import { diffCheckpointRange } from "../../checkpoints/git.js";
-import { CliError } from "../../errors.js";
+import { buildDirectProviders, toWsConfigPayload } from "../cli/catalog/direct.js";
+import { ensureStoredProject, listStoredProjects } from "../core/projects/projects.js";
+import { diffCheckpointRange } from "../core/checkpoints/git.js";
+import { CliError } from "../core/errors.js";
 import {
   archiveThread,
   createThread,
@@ -37,25 +37,25 @@ import {
   unsettleThread,
   unsnoozeThread,
   updateThreadMeta,
-} from "../../threads/threads.js";
+} from "../core/threads/threads.js";
 import {
   driverForInstance,
   executeTurn,
   subscribeDriverThread,
   type TurnDriver,
   type TurnDriverFactories,
-} from "../../threads/execute.js";
-import { toT3Thread } from "../../threads/project.js";
-import { openThreadStore, resolveStoreRoot, type ThreadStore } from "../../threads/store.js";
-import type { ProviderRuntimeEvent } from "../../providers/spi.js";
+} from "../core/threads/execute.js";
+import { toT3Thread } from "../core/threads/project.js";
+import { openThreadStore, resolveStoreRoot, type ThreadStore } from "../core/threads/store.js";
+import type { ProviderRuntimeEvent } from "../core/providers/spi.js";
 import type {
   InteractionMode,
   ModelSelection,
   RuntimeMode,
   T3Thread,
-} from "../../types.js";
-import type { ImageAttachmentUpload } from "../model/attachments.js";
-import type { TuiClient } from "../app/app.js";
+} from "../core/types.js";
+import type { ImageAttachmentUpload } from "../tui/model/attachments.js";
+import type { ClientApi } from "./api.js";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -112,7 +112,7 @@ export interface DirectConnectionOptions {
   readonly catalog?: () => Promise<unknown>;
 }
 
-export class DirectConnection implements TuiClient {
+export class DirectConnection implements ClientApi {
   private readonly storeRoot: string;
   private readonly factories: TurnDriverFactories;
   private readonly shellPollMs: number;

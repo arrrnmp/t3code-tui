@@ -13,9 +13,9 @@ import { access, constants } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { readStoredAuthTypes } from "../providers/opencode/catalog.js";
-import { resolveStoreRoot } from "../threads/store.js";
-import type { CliConfig } from "../types.js";
+import { readStoredAuthTypes } from "../core/providers/opencode/catalog.js";
+import { resolveStoreRoot } from "../core/threads/store.js";
+import type { CliConfig } from "../core/types.js";
 import { commandExists, runProcess } from "./infra/process.js";
 
 interface ProviderCheck {

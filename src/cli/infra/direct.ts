@@ -5,7 +5,7 @@
  * envelope keys stay so `--json` consumers keep parsing: values say
  * `direct` instead of naming a T3 origin/version.
  */
-import type { T3Runtime } from "../../types.js";
+import type { T3Runtime } from "../../core/types.js";
 
 export function directRuntime(): T3Runtime {
   return {

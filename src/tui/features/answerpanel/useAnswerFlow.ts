@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { dispatchErrorMessage } from "../../../errors.js";
+import { dispatchErrorMessage } from "../../../core/errors.js";
 import { pendingUserInputRequests, type PendingUserInputQuestion, type ThreadState } from "../../model/thread.js";
 import type { useToasts } from "../../hooks/useToasts.js";
 import { COPY_TOAST_MS } from "../../app/constants.js";
-import type { TuiClient } from "../../app/app.js";
+import type { ClientApi } from "../../../server/api.js";
 
 /**
  * Draft answers for the open agent question, keyed by question id: picked
@@ -19,7 +19,7 @@ export interface AnswerDraft {
 }
 
 export function useAnswerFlow(
-  client: TuiClient,
+  client: ClientApi,
   threadState: ThreadState,
   threadStateRef: { current: ThreadState },
   openThreadId: string | null,

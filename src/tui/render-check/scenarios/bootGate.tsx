@@ -1,7 +1,8 @@
 import { act } from "react";
 import { testRender } from "@opentui/react/test-utils";
 
-import { App, type TuiClient } from "../../app/app.js";
+import { App } from "../../app/app.js";
+import type { ClientApi } from "../../../server/api.js";
 import { client } from "../fixtures.js";
 import { fail } from "../helpers.js";
 
@@ -15,7 +16,7 @@ import { fail } from "../helpers.js";
 export async function runBootGate(): Promise<void> {
   let shellEmit: ((item: unknown) => void) | null = null;
   const threadEmits = new Map<string, (item: unknown) => void>();
-  const deferred: TuiClient = {
+  const deferred: ClientApi = {
     ...client,
     subscribeShell(_options, onItem) {
       shellEmit = onItem;

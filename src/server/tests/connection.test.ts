@@ -2,12 +2,12 @@ import { realpath } from "node:fs/promises";
 
 import { describe, expect, it } from "vitest";
 
-import { testHarness } from "../../../cli/testing/harness.js";
-import { ensureStoredProject } from "../../../projects/projects.js";
-import { OpenCodeDriver } from "../../../providers/opencode/driver.js";
-import { FakeOpencodeTransport } from "../../../providers/opencode/tests/fakes.js";
-import { createThread, readThread } from "../../../threads/threads.js";
-import { DirectConnection } from "../direct.js";
+import { testHarness } from "../../cli/testing/harness.js";
+import { ensureStoredProject } from "../../core/projects/projects.js";
+import { OpenCodeDriver } from "../../core/providers/opencode/driver.js";
+import { FakeOpencodeTransport } from "../../core/providers/opencode/tests/fakes.js";
+import { createThread, readThread } from "../../core/threads/threads.js";
+import { DirectConnection } from "../connection.js";
 
 function storeRoot(): string {
   return process.env.MONVEX_STORE_ROOT!;

@@ -15,16 +15,16 @@ import path from "node:path";
 
 import * as Effect from "effect/Effect";
 
-import { CliError } from "../../errors.js";
-import { ensureStoredProject, resolveStoredProject } from "../../projects/projects.js";
-import { openThreadStore, resolveStoreRoot } from "../../threads/store.js";
+import { CliError } from "../../core/errors.js";
+import { ensureStoredProject, resolveStoredProject } from "../../core/projects/projects.js";
+import { openThreadStore, resolveStoreRoot } from "../../core/threads/store.js";
 import {
   createThread as createStoredThread,
   deleteThread as deleteStoredThread,
   interruptTurn as interruptStoredTurn,
   sendTurn as sendStoredTurn,
-} from "../../threads/threads.js";
-import { driverForInstance, executeTurn, waitForTurnTerminal, type TurnDriverFactories } from "../../threads/execute.js";
+} from "../../core/threads/threads.js";
+import { driverForInstance, executeTurn, waitForTurnTerminal, type TurnDriverFactories } from "../../core/threads/execute.js";
 import { runProcess } from "../infra/process.js";
 import { resolveWorkspace } from "../infra/workspace.js";
 import { directAuth, directRuntime } from "../infra/direct.js";
@@ -39,7 +39,7 @@ import type {
   ProjectPolicy,
   RuntimeMode,
   ThreadEnvMode,
-} from "../../types.js";
+} from "../../core/types.js";
 
 export interface ThreadCreateOptions extends WorkspaceOptions, ModelSelectionRequest {
   prompt: string;

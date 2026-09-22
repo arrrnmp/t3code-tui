@@ -1,5 +1,5 @@
-import { CliError } from "../../errors.js";
-import type { RuntimeMode } from "../../types.js";
+import { CliError } from "../../core/errors.js";
+import type { RuntimeMode } from "../../core/types.js";
 
 /**
  * Runtime modes a provider driver understands. Unknown strings are dropped

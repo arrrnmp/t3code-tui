@@ -13,8 +13,8 @@ import { PickerModal, type PickerBody } from "../features/pickers/pickermodal.js
 import { ModalShell } from "../ui/modalshell.js";
 import { RenameModal } from "../ui/renamemodal.js";
 import { AnswerPanel } from "../features/answerpanel/answerpanel.js";
-import { dispatchErrorMessage } from "../../errors.js";
-import type { ModelSelection, RuntimeMode } from "../../types.js";
+import { dispatchErrorMessage } from "../../core/errors.js";
+import type { ModelSelection, RuntimeMode } from "../../core/types.js";
 import { compatibleRuntimeMode } from "../../cli/catalog/permissions.js";
 import { offerableModels, offerableProviders } from "../../cli/catalog/catalog.js";
 import {
@@ -71,23 +71,8 @@ import { useProviderCatalog } from "../features/pickers/useProviderCatalog.js";
 import { useThreadCreation } from "./hooks/useThreadCreation.js";
 import { useThreadOps } from "./hooks/useThreadOps.js";
 import type { PickerName } from "../features/pickers/pickerTypes.js";
+import type { ClientApi } from "../../server/api.js";
 
-export interface TuiClient {
-  subscribeShell(
-    options: { afterSequence?: number },
-    onItem: (item: unknown) => void,
-    onError: (error: unknown) => void,
-  ): () => void;
-  subscribeThread(
-    threadId: string,
-    options: { afterSequence?: number },
-    onItem: (item: unknown) => void,
-    onError: (error: unknown) => void,
-  ): () => void;
-  dispatch(command: unknown): Promise<unknown>;
-  turnDiff(threadId: string, toTurnCount: number): Promise<string | null>;
-  getConfig(): Promise<unknown>;
-}
 
 export function App({
   client,
@@ -97,7 +82,7 @@ export function App({
   launchView,
   setTerminalTitle,
 }: {
-  client: TuiClient;
+  client: ClientApi;
   onQuit: () => void;
   t3Home?: string;
   /** Resolves relative `@path` mentions. Defaults to the launch directory. */

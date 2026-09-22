@@ -1,6 +1,6 @@
 import { createPatch } from "diff";
 
-import type { T3ThreadActivity } from "../../types.js";
+import type { T3ThreadActivity } from "../../core/types.js";
 import { detectFiletype } from "./patch.js";
 
 export interface CommandView {

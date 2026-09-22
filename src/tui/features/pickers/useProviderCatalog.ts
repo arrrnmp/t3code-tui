@@ -6,10 +6,10 @@ import {
   displayRuntimeMode,
   runtimeModeChoicesForProvider,
 } from "../../../cli/catalog/permissions.js";
-import type { ModelSelection, ProviderOptionSelection, RuntimeMode } from "../../../types.js";
+import type { ModelSelection, ProviderOptionSelection, RuntimeMode } from "../../../core/types.js";
 import { defaultEffortChoice, displayEffort, displayModelName, isEffortDescriptor } from "../../model/display.js";
 import { providerColor } from "../../theme.js";
-import type { TuiClient } from "../../app/app.js";
+import type { ClientApi } from "../../../server/api.js";
 import type { PickerName } from "./pickerTypes.js";
 
 /**
@@ -19,7 +19,7 @@ import type { PickerName } from "./pickerTypes.js";
  * subscription projects the change back into the footer.
  */
 export function useProviderCatalog(params: {
-  client: TuiClient;
+  client: ClientApi;
   selected: { id: string } | null;
   openThreadId: string | null;
   creating: boolean;

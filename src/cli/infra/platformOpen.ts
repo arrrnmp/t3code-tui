@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 
-import { CliError } from "../../errors.js";
+import { CliError } from "../../core/errors.js";
 import { runProcess } from "./process.js";
 
 export async function hasProtocolHandler(scheme: string): Promise<boolean> {

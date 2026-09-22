@@ -1,4 +1,5 @@
-import { App, type TuiClient } from "../app/app.js";
+import { App } from "../app/app.js";
+import type { ClientApi } from "../../server/api.js";
 
 export { App };
 
@@ -569,7 +570,7 @@ export function userInputRequestedFrame(requestId: string): unknown {
   };
 }
 
-export const client: TuiClient = {
+export const client: ClientApi = {
   subscribeShell(_options, onItem) {
     for (const frame of shellFrames) onItem(frame);
     emitShellRef.current = (item: unknown) => onItem(item);

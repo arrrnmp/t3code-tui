@@ -1,14 +1,17 @@
 /**
- * The mapper's contract is that the TUI renderer can read what it writes,
- * so each case asserts the payload *through* `describeActivity` rather
- * than field by field — a shape that only looks right is the bug this
- * whole path had.
+ * The mapper's contract is that the TUI renderer can read what core
+ * writes, so each case asserts the payload *through* `describeActivity`
+ * rather than field by field — a shape that only looks right is the bug
+ * this whole path had.
+ *
+ * It lives on the client side deliberately: it is the reader asserting it
+ * can read, which keeps `core/` free of any import of a client.
  */
 import { describe, expect, it } from "vitest";
 
-import { describeActivity } from "../../tui/model/activity.js";
-import type { T3ThreadActivity } from "../../types.js";
-import { toolActivityRow, type ToolRuntimeEvent } from "../toolactivity.js";
+import { describeActivity } from "../activity.js";
+import type { T3ThreadActivity } from "../../../core/types.js";
+import { toolActivityRow, type ToolRuntimeEvent } from "../../../core/threads/toolactivity.js";
 
 function view(row: { payload: Record<string, unknown>; summary: string; kind: string }) {
   const activity: T3ThreadActivity = {

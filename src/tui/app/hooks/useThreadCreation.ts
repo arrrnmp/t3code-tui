@@ -1,10 +1,10 @@
 import { basename, resolve } from "node:path";
 
 import { buildImageAttachments, extractMentions } from "../../model/attachments.js";
-import { dispatchErrorMessage } from "../../../errors.js";
-import type { ModelSelection, RuntimeMode, T3Project, T3Thread } from "../../../types.js";
+import { dispatchErrorMessage } from "../../../core/errors.js";
+import type { ModelSelection, RuntimeMode, T3Project, T3Thread } from "../../../core/types.js";
 import type { ImageAttachmentUpload } from "../../model/attachments.js";
-import type { TuiClient } from "../app.js";
+import type { ClientApi } from "../../../server/api.js";
 import type { PickerName } from "../../features/pickers/pickerTypes.js";
 import { threadTitle } from "../utils.js";
 
@@ -18,7 +18,7 @@ import { threadTitle } from "../utils.js";
  * here; the state stays where all those readers already look for it.
  */
 export function useThreadCreation(params: {
-  client: TuiClient;
+  client: ClientApi;
   cwd: string | undefined;
   selected: T3Thread | null;
   pending: ImageAttachmentUpload[];

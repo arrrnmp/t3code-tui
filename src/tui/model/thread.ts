@@ -1,4 +1,4 @@
-import type { T3Message, T3Session, T3Thread, T3ThreadActivity } from "../../types.js";
+import type { T3Message, T3Session, T3Thread, T3ThreadActivity } from "../../core/types.js";
 import { describeActivity } from "./activity.js";
 
 export interface TimelineEntry {

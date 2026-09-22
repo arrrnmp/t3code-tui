@@ -2,14 +2,14 @@ import { realpath } from "node:fs/promises";
 
 import { describe, expect, it } from "vitest";
 
-import { ensureStoredProject } from "../../../projects/projects.js";
+import { ensureStoredProject } from "../../../core/projects/projects.js";
 import {
   archiveThread,
   createThread,
   readThread as readStoredThread,
   sendTurn,
   settleThread as settleStoredThread,
-} from "../../../threads/threads.js";
+} from "../../../core/threads/threads.js";
 import { testHarness, type TestHarness } from "../../testing/harness.js";
 import {
   cancelTask,

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { renderMessage } from "../message.js";
-import type { T3Message } from "../../../types.js";
+import type { T3Message } from "../../../core/types.js";
 
 function message(overrides: Partial<T3Message> & { text: string }): T3Message {
   return {

@@ -10,9 +10,9 @@ import { randomUUID } from "node:crypto";
 
 import * as Effect from "effect/Effect";
 
-import { CliError } from "../../errors.js";
-import { listStoredProjects } from "../../projects/projects.js";
-import { openThreadStore, resolveStoreRoot, ThreadStore } from "../../threads/store.js";
+import { CliError } from "../../core/errors.js";
+import { listStoredProjects } from "../../core/projects/projects.js";
+import { openThreadStore, resolveStoreRoot, ThreadStore } from "../../core/threads/store.js";
 import {
   archiveThread as archiveStoredThread,
   createThread as createStoredThread,
@@ -25,10 +25,10 @@ import {
   snoozeThread as snoozeStoredThread,
   unsettleThread as unsettleStoredThread,
   unsnoozeThread as unsnoozeStoredThread,
-} from "../../threads/threads.js";
-import { delegationForChild } from "../../threads/threads.js";
-import { driverForInstance, executeTurn, waitForTurnTerminal, type TurnDriverFactories } from "../../threads/execute.js";
-import { toT3Thread } from "../../threads/project.js";
+} from "../../core/threads/threads.js";
+import { delegationForChild } from "../../core/threads/threads.js";
+import { driverForInstance, executeTurn, waitForTurnTerminal, type TurnDriverFactories } from "../../core/threads/execute.js";
+import { toT3Thread } from "../../core/threads/project.js";
 import type {
   CliConfig,
   InteractionMode,
@@ -38,7 +38,7 @@ import type {
   SpeedMode,
   T3Project,
   T3Thread,
-} from "../../types.js";
+} from "../../core/types.js";
 import { directAuth, directRuntime } from "../infra/direct.js";
 import { resolveWorkspace } from "../infra/workspace.js";
 import { projectForWorkspace, type WorkspaceOptions } from "../projects/projects.js";

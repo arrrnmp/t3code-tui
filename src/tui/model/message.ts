@@ -1,7 +1,7 @@
 import os from "node:os";
 import path from "node:path";
 
-import type { T3Message } from "../../types.js";
+import type { T3Message } from "../../core/types.js";
 
 export interface ImageReference {
   contextId: string;

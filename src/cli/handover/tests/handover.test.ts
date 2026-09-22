@@ -3,9 +3,9 @@ import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { CliError } from "../../../errors.js";
-import { ensureStoredProject, listStoredProjects } from "../../../projects/projects.js";
-import { readThread } from "../../../threads/threads.js";
+import { CliError } from "../../../core/errors.js";
+import { ensureStoredProject, listStoredProjects } from "../../../core/projects/projects.js";
+import { readThread } from "../../../core/threads/threads.js";
 import { testHarness } from "../../testing/harness.js";
 import { createHandoverThread } from "../handover.js";
 

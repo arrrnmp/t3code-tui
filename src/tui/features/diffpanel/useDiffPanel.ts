@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import type { ScrollBoxRenderable } from "@opentui/core";
 
-import type { TuiClient } from "../../app/app.js";
+import type { ClientApi } from "../../../server/api.js";
 import { SIDEBAR_WIDTH } from "../../app/constants.js";
 import {
   activityFilePath,
@@ -15,7 +15,7 @@ import { markModalDismissed } from "../../model/modalDismiss.js";
 import { findPatchFile, splitPatchByFile, type PatchFile } from "../../model/patch.js";
 import { proportionalTarget, type TurnGroup } from "../../model/turns.js";
 import { type ThreadState } from "../../model/thread.js";
-import type { T3Project, T3Thread } from "../../../types.js";
+import type { T3Project, T3Thread } from "../../../core/types.js";
 
 /**
  * Owns the diff panel: which turn is expanded, its patch, the checkpoint /
@@ -23,7 +23,7 @@ import type { T3Project, T3Thread } from "../../../types.js";
  * diffs, and the timeline-jump scroll math the diff-turn picker uses.
  */
 export function useDiffPanel(params: {
-  client: TuiClient;
+  client: ClientApi;
   width: number;
   openThreadId: string | null;
   selected: T3Thread | null;

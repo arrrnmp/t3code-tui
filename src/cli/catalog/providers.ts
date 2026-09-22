@@ -1,8 +1,8 @@
 import { buildDirectProviders } from "./direct.js";
 import { selectModel, selectProvider, type ProviderSummary } from "./catalog.js";
-import { loadModelPrefs, saveModelPrefs } from "../../catalog/prefs.js";
-import { resolveStoreRoot } from "../../threads/store.js";
-import type { CliConfig } from "../../types.js";
+import { loadModelPrefs, saveModelPrefs } from "../../core/catalog/prefs.js";
+import { resolveStoreRoot } from "../../core/threads/store.js";
+import type { CliConfig } from "../../core/types.js";
 import { directAuth, directRuntime } from "../infra/direct.js";
 
 export async function listProviders(config: CliConfig, options: { refresh?: boolean }) {

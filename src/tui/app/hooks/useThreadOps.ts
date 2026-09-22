@@ -4,8 +4,8 @@ import { threadStatus } from "../../model/shell.js";
 import { emptyThreadState, type TimelineEntry } from "../../model/thread.js";
 import { wasModalJustDismissed } from "../../model/modalDismiss.js";
 import type { useToasts } from "../../hooks/useToasts.js";
-import type { ModelSelection, RuntimeMode, T3Thread } from "../../../types.js";
-import type { TuiClient } from "../app.js";
+import type { ModelSelection, RuntimeMode, T3Thread } from "../../../core/types.js";
+import type { ClientApi } from "../../../server/api.js";
 import type { PickerName } from "../../features/pickers/pickerTypes.js";
 import { COPY_TOAST_MS } from "../constants.js";
 
@@ -18,7 +18,7 @@ import { COPY_TOAST_MS } from "../constants.js";
  * command-palette rows, so only the handlers that *write* them move here.
  */
 export function useThreadOps(params: {
-  client: TuiClient;
+  client: ClientApi;
   renderer: CliRenderer | null;
   openThreadId: string | null;
   selected: T3Thread | null;

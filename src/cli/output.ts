@@ -1,4 +1,4 @@
-import { CliError, toCliError } from "../errors.js";
+import { CliError, toCliError } from "../core/errors.js";
 
 export interface OutputOptions {
   json: boolean;

@@ -1,6 +1,6 @@
 import type { ProviderSummary } from "../../cli/catalog/catalog.js";
 import type { EffortDescriptor } from "../../cli/catalog/catalog.js";
-import type { ModelSelection } from "../../types.js";
+import type { ModelSelection } from "../../core/types.js";
 
 /**
  * btop-style viewport floor enforced by `MinSizeGate`. Below either

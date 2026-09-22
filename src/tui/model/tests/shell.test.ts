@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { T3Thread } from "../../../types.js";
+import type { T3Thread } from "../../../core/types.js";
 import { isSettledThread, threadSortTime, threadStatus } from "../shell.js";
 
 function thread(overrides: Partial<T3Thread> = {}): T3Thread {

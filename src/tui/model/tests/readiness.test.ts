@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { T3Thread } from "../../../types.js";
+import type { T3Thread } from "../../../core/types.js";
 import { emptyShellState, type ShellState } from "../shell.js";
 import { emptyThreadState, type ThreadState } from "../thread.js";
 import { bootLoadingStage, isBootReady } from "../readiness.js";

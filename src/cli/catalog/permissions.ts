@@ -1,5 +1,5 @@
 import type { ProviderSummary } from "./catalog.js";
-import type { RuntimeMode } from "../../types.js";
+import type { RuntimeMode } from "../../core/types.js";
 
 export interface RuntimeModeChoice {
   mode: RuntimeMode;

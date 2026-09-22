@@ -13,10 +13,10 @@ import {
   ensureStoredProject,
   listStoredProjects,
   resolveStoredProject,
-} from "../../projects/projects.js";
-export { activeProjects, projectForWorkspace } from "../../projects/projects.js";
-import { resolveStoreRoot } from "../../threads/store.js";
-import type { CliConfig, ProjectPolicy, WorkspaceMode } from "../../types.js";
+} from "../../core/projects/projects.js";
+export { activeProjects, projectForWorkspace } from "../../core/projects/projects.js";
+import { resolveStoreRoot } from "../../core/threads/store.js";
+import type { CliConfig, ProjectPolicy, WorkspaceMode } from "../../core/types.js";
 import { directAuth, directRuntime } from "../infra/direct.js";
 import { resolveWorkspace } from "../infra/workspace.js";
 

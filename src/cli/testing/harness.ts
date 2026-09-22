@@ -17,14 +17,14 @@ import { afterEach } from "vitest";
 import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
 
-import { DEFAULT_CONFIG } from "../../config.js";
-import { CliError } from "../../errors.js";
-import type { ProviderRuntimeEvent } from "../../providers/spi.js";
+import { DEFAULT_CONFIG } from "../../core/config.js";
+import { CliError } from "../../core/errors.js";
+import type { ProviderRuntimeEvent } from "../../core/providers/spi.js";
 import { runProcess } from "../infra/process.js";
-import { openThreadStore, type ThreadStore } from "../../threads/store.js";
-import { flushTurnRunners } from "../../threads/execute.js";
-import type { TurnDriver, TurnDriverFactories, TurnOutcome } from "../../threads/execute.js";
-import type { CliConfig } from "../../types.js";
+import { openThreadStore, type ThreadStore } from "../../core/threads/store.js";
+import { flushTurnRunners } from "../../core/threads/execute.js";
+import type { TurnDriver, TurnDriverFactories, TurnOutcome } from "../../core/threads/execute.js";
+import type { CliConfig } from "../../core/types.js";
 
 const cleanup: Array<() => Promise<void>> = [];
 

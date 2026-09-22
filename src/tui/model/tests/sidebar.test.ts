@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { T3Thread } from "../../../types.js";
+import type { T3Thread } from "../../../core/types.js";
 import type { ShellState } from "../shell.js";
 import { buildSidebarSections } from "../sidebar.js";
 
