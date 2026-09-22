@@ -1,6 +1,6 @@
 # AGENTS.md
 
-`monvex` (command: `mvx`) is an interactive terminal UI plus CLI for coding-agent threads, running `claude`, `codex`, `grok` and `opencode` directly (Bun + TypeScript + React via `@opentui/react`). There is no T3 Code server; see `DECOUPLE.md`.
+`monvex` (command: `mvx`) is an interactive terminal UI plus CLI for coding-agent threads, running `claude`, `codex`, `grok` and `opencode` directly (Bun + TypeScript + React via `@opentui/react`). See `ARCHITECTURE.md` for the provider and thread design.
 
 ## Layout
 
@@ -38,7 +38,7 @@ drives `core/` directly**, ~56 imports' worth. Routing it through
   - `model/` — pure projection logic (`thread.ts`, `turns.ts`, `activity.ts`, …), genuinely cross-cutting across features.
   - `hooks/` — shared runtime hooks used across features (`useToasts`, `useClipboard`, `useHover`, `useAnimTick`).
   - `render-check/` — snapshot harness: `fixtures.ts` (mock client/builders), `helpers.ts`, `scenarios/*.ts` (one file per feature area); `render-check.tsx` at the top level is the slim orchestrator that runs them in sequence against a mock client with scripted input and captures char frames. No live terminal needed.
-- `upstream/` — read-only depth-1 clones of T3 Code and OpenCode, kept for behavior parity (banner triggers, compaction rules, plugin/loader contracts). Gitignored. Verify there before copying upstream behavior — never guess it.
+- `upstream/` — read-only depth-1 clones of the reference implementations we check behavior against (OpenCode's plugin/loader contracts, compaction rules). Gitignored. Verify there before copying upstream behavior — never guess it.
 
 ## Workflow
 

@@ -82,7 +82,7 @@ export function driverForInstance(
   factories: TurnDriverFactories = defaultFactories,
 ): TurnDriver {
   const rawKey = instanceId.trim().toLowerCase();
-  // Legacy T3 instance id for the Claude surface; migrated threads and
+  // Historical instance id for the Claude surface; existing threads and
   // configs still carry it.
   const key = rawKey === "opencode" || rawKey.startsWith("opencode/")
     ? "opencode"
@@ -259,7 +259,7 @@ export function executeTurn(args: ExecuteTurnArgs): Promise<void> {
  * Persist the turn's tool calls as activity rows while it runs.
  *
  * Without this the ledger records only lifecycle bookkeeping and the
- * transcript has nothing to show for a turn's work (DECOUPLE.md §9). Rows
+ * transcript has nothing to show for a turn's work (ARCHITECTURE.md §9). Rows
  * are append-only — the TUI collapses started/completed onto one card by
  * `toolCallId` — but a provider that streams output deltas would append
  * hundreds per call, so a row is written only when its signature changes.

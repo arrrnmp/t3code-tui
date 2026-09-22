@@ -1,4 +1,4 @@
 interface:
   display_name: "Monvex orchestrator"
-  short_description: "Plan and run multi-model delegations across T3 threads"
+  short_description: "Plan and run multi-model delegations across Monvex threads"
   default_prompt: "Use $mvx-orchestrate to plan and run this task across the best models for each part."

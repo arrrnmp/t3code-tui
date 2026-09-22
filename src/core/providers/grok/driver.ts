@@ -4,7 +4,7 @@
  * round-trips with allow_always→allow_once fallback, fork-less operation
  * (rollback explicitly unsupported), delegated `/compact`, a stall
  * watchdog, and a billing-probe usage window. Auth is the CLI login or
- * `XAI_API_KEY` — never our own OAuth. See DECOUPLE.md §7.
+ * `XAI_API_KEY` — never our own OAuth. See ARCHITECTURE.md §7.
  */
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";

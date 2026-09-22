@@ -1,12 +1,12 @@
 /**
- * Own projects registry: the ID table T3's projection database used to be.
+ * Own projects registry: the ID table mapping folders to projects.
  *
  * Projects live in `<storeRoot>/projects.json` (`{version, projects}`),
  * keyed by normalized workspace root with soft deletes. `list/resolve`
  * are reads; `ensure` with `create` policy inserts (title = basename,
  * null default model — the explicit-default decision lands at send
  * time, replacing the old version-dependent passthrough).
- * See DECOUPLE.md §10.
+ * See ARCHITECTURE.md §10.
  */
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
@@ -17,12 +17,12 @@ import type {
   EffectiveThreadEnvMode,
   ModelSelection,
   ProjectPolicy,
-  T3Project,
+  ProjectEnvelope,
 } from "../types.js";
 
 /**
  * A `type` (not interface) so values carry an implicit index signature and
- * stay assignable to `T3Project` for envelope projection.
+ * stay assignable to `ProjectEnvelope` for envelope projection.
  */
 export type StoredProject = {
   readonly id: string;
@@ -149,16 +149,16 @@ export function projectTitle(workspaceRoot: string): string {
   return path.basename(workspaceRoot) || "project";
 }
 
-/** Non-deleted projects. Pure; kept for envelope assembly over T3Project rows. */
-export function activeProjects(projects: readonly T3Project[]): T3Project[] {
+/** Non-deleted projects. Pure; kept for envelope assembly over ProjectEnvelope rows. */
+export function activeProjects(projects: readonly ProjectEnvelope[]): ProjectEnvelope[] {
   return projects.filter((project) => project.deletedAt == null);
 }
 
 /** First active project whose normalized root matches. Pure. */
 export function projectForWorkspace(
-  projects: readonly T3Project[],
+  projects: readonly ProjectEnvelope[],
   workspaceRoot: string,
-): T3Project | null {
+): ProjectEnvelope | null {
   return activeProjects(projects).find((project) => workspaceRootsEqual(project.workspaceRoot, workspaceRoot)) ?? null;
 }
 

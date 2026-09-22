@@ -10,11 +10,11 @@
 import { describe, expect, it } from "vitest";
 
 import { describeActivity } from "../activity.js";
-import type { T3ThreadActivity } from "../../../core/types.js";
+import type { ActivityEnvelope } from "../../../core/types.js";
 import { toolActivityRow, type ToolRuntimeEvent } from "../../../core/threads/toolactivity.js";
 
 function view(row: { payload: Record<string, unknown>; summary: string; kind: string }) {
-  const activity: T3ThreadActivity = {
+  const activity: ActivityEnvelope = {
     id: "a1",
     tone: "info",
     kind: row.kind,

@@ -2,22 +2,22 @@
  * Tool calls → activity ledger rows.
  *
  * The TUI's `describeActivity` renders rich tool rows (`$ command`,
- * `Update path +3 -1`, `Read path`, `Grep pattern`…) off T3's activity
+ * `Update path +3 -1`, `Read path`, `Grep pattern`…) off the activity
  * payload shape. After the decouple nothing produced those rows: the
  * store only appended lifecycle bookkeeping (`turn.started` carrying the
  * prompt, `turn.completed` carrying a turn id), so a plain chat turn
  * rendered as "Worked for 4s · 2 steps" over a prompt echo and a UUID,
- * and a turn that really did work showed none of it. DECOUPLE.md §9 puts
+ * and a turn that really did work showed none of it. ARCHITECTURE.md §9 puts
  * `tool.execute.*` on the bus and §12 owns the harness; this is the
  * missing half — the drivers already publish the events.
  *
  * Each provider's `raw` payload is normalized to one `NativeToolCall`,
  * then shaped into the payload the renderer expects. We emit the *full*
  * shape (`data.state.input`, `data.files[].diff`, exit codes, timings)
- * rather than T3's stripped wire form, so rows resolve directly instead
+ * rather than a stripped wire form, so rows resolve directly instead
  * of through the renderer's degraded-input fallbacks.
  *
- * Rows are append-only, as they were on T3: `collapseToolActivities`
+ * Rows are append-only: `collapseToolActivities`
  * folds started/updated/completed onto the first row's position by
  * `payload.toolCallId`, keeping the newest payload.
  */

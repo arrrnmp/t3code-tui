@@ -1,9 +1,7 @@
 /**
  * Model preferences: favorites, per-instance hidden slugs, and ordering.
- * Mirrors the T3 desktop shape (`favorites: [{provider, model}]`,
- * `providerModelPreferences: {instance: {hiddenModels, modelOrder}}`)
- * so a first run can import them; afterwards this file is the source of
- * truth. Lives in the store root (`model-prefs.json`) so test stores stay
+ *
+ * Lives in the store root (`model-prefs.json`) so test stores stay
  * hermetic. Reads never throw — listing must degrade, not fail.
  */
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
@@ -99,68 +97,4 @@ export async function saveModelPrefs(storeRoot: string, prefs: ModelPrefs): Prom
 
 export function isModelHidden(prefs: ModelPrefs, instanceId: string, slug: string): boolean {
   return prefs.hidden[instanceId]?.includes(slug) ?? false;
-}
-
-function t3HomeDir(env: NodeJS.ProcessEnv = process.env): string {
-  const override = (env.MONVEX_HOME ?? env.T3CODE_HOME)?.trim();
-  if (override) return override;
-  return path.join(os.homedir(), ".t3");
-}
-
-/**
- * One-time import of T3 desktop model curation (`favorites` plus
- * per-instance `hiddenModels`/`modelOrder` from `client-settings.json`).
- * Runs only when our prefs file does not exist yet; always writes the
- * file afterwards (possibly empty) so later reads never re-scan.
- * Best-effort throughout — a missing or corrupt T3 home simply yields an
- * empty import. Returns true when T3 data was found.
- */
-export async function ensureImportedFromT3(
-  storeRoot: string,
-  env: NodeJS.ProcessEnv = process.env,
-): Promise<boolean> {
-  try {
-    await readFile(prefsFile(storeRoot), "utf8");
-    return false;
-  } catch {
-    // No prefs yet — try the import below.
-  }
-  const prefs = importT3ClientSettings(await readT3ClientSettings(t3HomeDir(env)));
-  await saveModelPrefs(storeRoot, prefs).catch(() => undefined);
-  return prefs.favorites.length > 0 || Object.keys(prefs.hidden).length > 0;
-}
-
-async function readT3ClientSettings(t3Home: string): Promise<unknown> {
-  try {
-    return JSON.parse(await readFile(path.join(t3Home, "userdata", "client-settings.json"), "utf8")) as unknown;
-  } catch {
-    return null;
-  }
-}
-
-export function importT3ClientSettings(raw: unknown): ModelPrefs {
-  const root = asRecord(raw);
-  if (!root) return emptyModelPrefs();
-  const favorites = Array.isArray(root.favorites)
-    ? root.favorites.flatMap((entry) => {
-      const row = asRecord(entry);
-      // T3 stores the instance id under `provider` (see contracts
-      // settings.ts: the field name is kept for storage stability).
-      const instanceId = row ? asString(row.provider) : null;
-      const model = row ? asString(row.model) : null;
-      return instanceId && model ? [{ instanceId, model }] : [];
-    })
-    : [];
-  const hidden: Record<string, string[]> = {};
-  const order: Record<string, string[]> = {};
-  const prefs = asRecord(root.providerModelPreferences) ?? {};
-  for (const [instanceId, entry] of Object.entries(prefs)) {
-    const row = asRecord(entry);
-    if (!row) continue;
-    const hiddenSlugs = asStringArray(row.hiddenModels);
-    if (hiddenSlugs.length > 0) hidden[instanceId] = hiddenSlugs;
-    const orderSlugs = asStringArray(row.modelOrder);
-    if (orderSlugs.length > 0) order[instanceId] = orderSlugs;
-  }
-  return { favorites, hidden, order };
 }

@@ -1,9 +1,9 @@
 /**
- * Direct catalog: `providers/models/efforts list` without the T3 server.
+ * Direct catalog: `providers/models/efforts list` straight from the drivers.
  *
  * Same `ProviderSummary[]` envelopes as the WS path (`catalog.ts`
- * extraction is T3-payload-specific, so this module builds the summaries
- * directly), values from our own sources (DECOUPLE.md §15.4):
+ * extraction is wire-payload-specific, so this module builds the summaries
+ * directly), values from our own sources (ARCHITECTURE.md §15.4):
  * - claude/codex/grok: binary presence + best-effort live model listings
  *   through ephemeral driver sessions. Nothing is cached: every call
  *   probes, failures degrade to `models: []` with the reason in `status`.
@@ -26,7 +26,7 @@ import { CodexDriver, type CodexListedModel } from "../../core/providers/codex/d
 import { GrokDriver } from "../../core/providers/grok/driver.js";
 import { claudeCatalogModels } from "../../core/providers/claude/catalog.js";
 import { resolveStoreRoot } from "../../core/threads/store.js";
-import { ensureImportedFromT3, isModelHidden, loadModelPrefs } from "../../core/catalog/prefs.js";
+import { isModelHidden, loadModelPrefs } from "../../core/catalog/prefs.js";
 import {
   effortValuesOf,
   isFreeModel,
@@ -39,7 +39,7 @@ import {
 } from "../../core/providers/opencode/catalog.js";
 import type { EffortDescriptor, ModelSummary, ProviderSummary } from "./catalog.js";
 
-/** Codex `reasoningEffort` values (app-server turn params; DECOUPLE.md §6). */
+/** Codex `reasoningEffort` values (app-server turn params; ARCHITECTURE.md §6). */
 export const CODEX_REASONING_EFFORTS: ReadonlyArray<string> = [
   "none",
   "minimal",
@@ -254,14 +254,14 @@ function opencodeProviders(
   });
 }
 
-/** T3 addressing: source ids keep their slash, bare ids gain the provider. */
+/** Instance addressing: source ids keep their slash, bare ids gain the provider. */
 function slugOf(provider: ModelsDevProvider, model: ModelsDevModel): string {
   return model.id.includes("/") ? model.id : `${provider.id}/${model.id}`;
 }
 
 /**
- * The single `opencode` instance (T3 parity): every models.dev model with
- * T3 addressing, ALL marked hidden. Invisible in the creating-picker (its
+ * The single `opencode` instance: every models.dev model with
+ * legacy addressing, ALL marked hidden. Invisible in the creating-picker (its
  * section drops for having zero offerable models) but resolvable for
  * migrated threads, favorites, effort lookups, and `selectProvider` —
  * the raw find paths ignore `isHidden`, only the pickers filter on it.
@@ -309,15 +309,13 @@ export async function buildDirectProviders(options: DirectCatalogOptions = {}): 
     listNative("codex", "Codex", "codex", options, env, (model, reasoningEfforts) => ({ ...model, efforts: codexEfforts(reasoningEfforts) })),
     listNative("grok", "Grok", "grok", options, env, (model) => model),
     (options.modelsDev ?? loadModelsDevCatalog)().catch((): LoadedModelsDevCatalog => ({ catalog: [], source: "empty" })),
-    // One-time T3 curation import, then our own prefs (hidden models feed
-    // the pickers through `isHidden` below).
-    ensureImportedFromT3(storeRoot, env)
-      .catch(() => false)
-      .then(() => loadModelPrefs(storeRoot)),
+    // Our own model prefs; hidden models feed the pickers through
+    // `isHidden` below.
+    loadModelPrefs(storeRoot),
   ]);
 
-  // Claude has no list API; the pinned manifest is the catalog. The
-  // instance id matches T3's (`claudeAgent`) so migrated threads and the
+  // Claude has no list API; the bundled model file is the catalog. The
+  // instance id stays `claudeAgent` so existing threads and the
   // manifest's provider key resolve without translation.
   const claude: ProviderSummary = {
     instanceId: "claudeAgent",

@@ -81,7 +81,7 @@ const threadFrames = [
           {
             id: "m1",
             role: "user",
-            text: "Render **markdown**, plus diffs and commands ![image.png](t3-context://v1/image/image_abc)",
+            text: "Render **markdown**, plus diffs and commands ![image.png](monvex-context://v1/image/image_abc)",
             context: {
               version: 1,
               records: [
@@ -392,7 +392,7 @@ const threadFrames = [
           },
           // A section read: the range comes from the call's own input, and
           // `detail` carries the tool's *output*, never an echo of the call.
-          // (Under T3 this row arrived with `input` stripped and the call
+          // (This row once arrived with `input` stripped and the call
           // echoed as `Read: {json}` in `detail`; we own the payload now, so
           // the row states what it did instead of being reverse-engineered.)
           {

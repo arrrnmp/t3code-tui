@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { T3Thread } from "../../../core/types.js";
+import type { ThreadEnvelope } from "../../../core/types.js";
 import { emptyShellState, type ShellState } from "../shell.js";
 import { emptyThreadState, type ThreadState } from "../thread.js";
 import { bootLoadingStage, isBootReady } from "../readiness.js";
@@ -10,7 +10,7 @@ function syncedShell(): ShellState {
 }
 
 function shellWithThread(): ShellState {
-  const thread: T3Thread = {
+  const thread: ThreadEnvelope = {
     id: "t-1",
     projectId: "p1",
     title: "t-1",

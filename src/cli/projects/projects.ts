@@ -3,7 +3,7 @@
  * (`src/projects`). No server, no bearer tokens, no dispatch round-trip —
  * writes apply synchronously, so `dispatch` is always null and
  * `verification` is folded into the result itself. Envelope keys are
- * unchanged from the T3 era.
+ * unchanged.
  */
 import { mkdir } from "node:fs/promises";
 import { randomUUID } from "node:crypto";

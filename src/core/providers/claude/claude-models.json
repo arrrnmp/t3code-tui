@@ -1,0 +1,435 @@
+{
+  "note": "Claude models the Agent SDK can be asked for. The SDK exposes no model-listing API, so this list is maintained by hand; slugs drift as Anthropic ships, and `updatedAt` makes staleness visible.",
+  "updatedAt": "2026-09-22",
+  "default": "claude-fable-5-1",
+  "models": [
+    {
+      "slug": "claude-fable-5-1",
+      "name": "Claude Fable 5.1",
+      "options": [
+        {
+          "id": "effort",
+          "label": "Reasoning",
+          "default": "medium",
+          "choices": [
+            {
+              "id": "low",
+              "label": "Low"
+            },
+            {
+              "id": "medium",
+              "label": "Medium"
+            },
+            {
+              "id": "high",
+              "label": "High"
+            },
+            {
+              "id": "xhigh",
+              "label": "Extra High"
+            },
+            {
+              "id": "max",
+              "label": "Max"
+            },
+            {
+              "id": "ultracode",
+              "label": "Ultracode"
+            },
+            {
+              "id": "ultrathink",
+              "label": "Ultrathink"
+            }
+          ]
+        },
+        {
+          "id": "contextWindow",
+          "label": "Context Window",
+          "default": "1m",
+          "choices": [
+            {
+              "id": "200k",
+              "label": "200k"
+            },
+            {
+              "id": "1m",
+              "label": "1M"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "slug": "claude-fable-5",
+      "name": "Claude Fable 5",
+      "options": [
+        {
+          "id": "effort",
+          "label": "Reasoning",
+          "default": "medium",
+          "choices": [
+            {
+              "id": "low",
+              "label": "Low"
+            },
+            {
+              "id": "medium",
+              "label": "Medium"
+            },
+            {
+              "id": "high",
+              "label": "High"
+            },
+            {
+              "id": "xhigh",
+              "label": "Extra High"
+            },
+            {
+              "id": "max",
+              "label": "Max"
+            },
+            {
+              "id": "ultracode",
+              "label": "Ultracode"
+            },
+            {
+              "id": "ultrathink",
+              "label": "Ultrathink"
+            }
+          ]
+        },
+        {
+          "id": "contextWindow",
+          "label": "Context Window",
+          "default": "1m",
+          "choices": [
+            {
+              "id": "200k",
+              "label": "200k"
+            },
+            {
+              "id": "1m",
+              "label": "1M"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "slug": "claude-opus-5",
+      "name": "Claude Opus 5",
+      "options": [
+        {
+          "id": "effort",
+          "label": "Reasoning",
+          "default": "high",
+          "choices": [
+            {
+              "id": "low",
+              "label": "Low"
+            },
+            {
+              "id": "medium",
+              "label": "Medium"
+            },
+            {
+              "id": "high",
+              "label": "High"
+            },
+            {
+              "id": "xhigh",
+              "label": "Extra High"
+            },
+            {
+              "id": "max",
+              "label": "Max"
+            },
+            {
+              "id": "ultracode",
+              "label": "Ultracode"
+            },
+            {
+              "id": "ultrathink",
+              "label": "Ultrathink"
+            }
+          ]
+        },
+        {
+          "id": "contextWindow",
+          "label": "Context Window",
+          "default": "1m",
+          "choices": [
+            {
+              "id": "200k",
+              "label": "200k"
+            },
+            {
+              "id": "1m",
+              "label": "1M"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "slug": "claude-opus-4-8",
+      "name": "Claude Opus 4.8",
+      "options": [
+        {
+          "id": "effort",
+          "label": "Reasoning",
+          "default": "high",
+          "choices": [
+            {
+              "id": "low",
+              "label": "Low"
+            },
+            {
+              "id": "medium",
+              "label": "Medium"
+            },
+            {
+              "id": "high",
+              "label": "High"
+            },
+            {
+              "id": "xhigh",
+              "label": "Extra High"
+            },
+            {
+              "id": "max",
+              "label": "Max"
+            },
+            {
+              "id": "ultracode",
+              "label": "Ultracode"
+            },
+            {
+              "id": "ultrathink",
+              "label": "Ultrathink"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "slug": "claude-opus-4-7",
+      "name": "Claude Opus 4.7",
+      "options": [
+        {
+          "id": "effort",
+          "label": "Reasoning",
+          "default": "xhigh",
+          "choices": [
+            {
+              "id": "low",
+              "label": "Low"
+            },
+            {
+              "id": "medium",
+              "label": "Medium"
+            },
+            {
+              "id": "high",
+              "label": "High"
+            },
+            {
+              "id": "xhigh",
+              "label": "Extra High"
+            },
+            {
+              "id": "max",
+              "label": "Max"
+            },
+            {
+              "id": "ultrathink",
+              "label": "Ultrathink"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "slug": "claude-opus-4-6",
+      "name": "Claude Opus 4.6",
+      "options": [
+        {
+          "id": "effort",
+          "label": "Reasoning",
+          "default": "high",
+          "choices": [
+            {
+              "id": "low",
+              "label": "Low"
+            },
+            {
+              "id": "medium",
+              "label": "Medium"
+            },
+            {
+              "id": "high",
+              "label": "High"
+            },
+            {
+              "id": "max",
+              "label": "Max"
+            },
+            {
+              "id": "ultrathink",
+              "label": "Ultrathink"
+            }
+          ]
+        },
+        {
+          "id": "contextWindow",
+          "label": "Context Window",
+          "default": "1m",
+          "choices": [
+            {
+              "id": "200k",
+              "label": "200k"
+            },
+            {
+              "id": "1m",
+              "label": "1M"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "slug": "claude-opus-4-5",
+      "name": "Claude Opus 4.5",
+      "options": [
+        {
+          "id": "effort",
+          "label": "Reasoning",
+          "default": "high",
+          "choices": [
+            {
+              "id": "low",
+              "label": "Low"
+            },
+            {
+              "id": "medium",
+              "label": "Medium"
+            },
+            {
+              "id": "high",
+              "label": "High"
+            },
+            {
+              "id": "max",
+              "label": "Max"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "slug": "claude-sonnet-5",
+      "name": "Claude Sonnet 5",
+      "options": [
+        {
+          "id": "effort",
+          "label": "Reasoning",
+          "default": "high",
+          "choices": [
+            {
+              "id": "low",
+              "label": "Low"
+            },
+            {
+              "id": "medium",
+              "label": "Medium"
+            },
+            {
+              "id": "high",
+              "label": "High"
+            },
+            {
+              "id": "xhigh",
+              "label": "Extra High"
+            },
+            {
+              "id": "max",
+              "label": "Max"
+            },
+            {
+              "id": "ultrathink",
+              "label": "Ultrathink"
+            }
+          ]
+        },
+        {
+          "id": "contextWindow",
+          "label": "Context Window",
+          "default": "200k",
+          "choices": [
+            {
+              "id": "200k",
+              "label": "200k"
+            },
+            {
+              "id": "1m",
+              "label": "1M"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "slug": "claude-sonnet-4-6",
+      "name": "Claude Sonnet 4.6",
+      "options": [
+        {
+          "id": "effort",
+          "label": "Reasoning",
+          "default": "high",
+          "choices": [
+            {
+              "id": "low",
+              "label": "Low"
+            },
+            {
+              "id": "medium",
+              "label": "Medium"
+            },
+            {
+              "id": "high",
+              "label": "High"
+            },
+            {
+              "id": "max",
+              "label": "Max"
+            },
+            {
+              "id": "ultrathink",
+              "label": "Ultrathink"
+            }
+          ]
+        },
+        {
+          "id": "contextWindow",
+          "label": "Context Window",
+          "default": "200k",
+          "choices": [
+            {
+              "id": "200k",
+              "label": "200k"
+            },
+            {
+              "id": "1m",
+              "label": "1M"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "slug": "claude-haiku-4-5",
+      "name": "Claude Haiku 4.5",
+      "options": []
+    }
+  ]
+}

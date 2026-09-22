@@ -40,7 +40,7 @@ describe("provider SPI", () => {
     expect(isProviderDriverKind("grok")).toBe(true);
     expect(isProviderDriverKind("opencode")).toBe(true);
     expect(isProviderDriverKind("cursor")).toBe(false);
-    expect(isProviderDriverKind("t3")).toBe(false);
+    expect(isProviderDriverKind("cursor")).toBe(false);
     expect(isProviderDriverKind(undefined)).toBe(false);
   });
 

@@ -9,7 +9,7 @@
  * stdin loop deadlocks). Token usage is a baseline delta over thread-wide
  * cumulative totals; compaction is native; rollback prefers
  * `thread/revert` with a `thread/rollback` fallback. Auth is the CLI's own
- * `auth.json` under `CODEX_HOME` — never ours. See DECOUPLE.md §6.
+ * `auth.json` under `CODEX_HOME` — never ours. See ARCHITECTURE.md §6.
  */
 import { randomUUID } from "node:crypto";
 

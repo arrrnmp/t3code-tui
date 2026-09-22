@@ -226,16 +226,16 @@ describe("extractProviders", () => {
 
   it("rejects responses without a providers array", () => {
     expect(() => extractProviders({})).toThrowError(
-      expect.objectContaining({ code: "T3_CONTRACT_CHANGED" }),
+      expect.objectContaining({ code: "CATALOG_CONTRACT_CHANGED" }),
     );
     expect(() => extractProviders({ providers: {} })).toThrowError(
-      expect.objectContaining({ code: "T3_CONTRACT_CHANGED" }),
+      expect.objectContaining({ code: "CATALOG_CONTRACT_CHANGED" }),
     );
   });
 
   it("rejects provider entries without routing keys", () => {
     expect(() => extractProviders({ providers: [{ driver: "codex" }] })).toThrowError(
-      expect.objectContaining({ code: "T3_CONTRACT_CHANGED" }),
+      expect.objectContaining({ code: "CATALOG_CONTRACT_CHANGED" }),
     );
   });
 });

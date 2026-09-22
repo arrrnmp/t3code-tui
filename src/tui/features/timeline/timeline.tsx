@@ -419,16 +419,16 @@ function ActivityRow({ entry, now, turnFiles = [], onOpenUrl }: { entry: Timelin
 
 function MessageBody({
   entry,
-  t3Home,
+  homeDir,
   background,
 }: {
   entry: TimelineEntry;
-  t3Home: string | undefined;
+  homeDir: string | undefined;
   /** The card background behind this body — must match the caller's own
       background so the blank separator and image row never seam against it. */
   background: string;
 }) {
-  const rendered = entry.message === null ? { text: entry.text, images: [] } : renderMessage(entry.message, t3Home);
+  const rendered = entry.message === null ? { text: entry.text, images: [] } : renderMessage(entry.message, homeDir);
 
   return (
     <box style={{ flexDirection: "column", flexGrow: 1 }}>
@@ -489,12 +489,12 @@ function SpeakerHeader({
 
 function PromptBlock({
   entry,
-  t3Home,
+  homeDir,
   now,
   onOpenActions,
 }: {
   entry: TimelineEntry;
-  t3Home: string | undefined;
+  homeDir: string | undefined;
   now: number;
   /** Opens the message-actions modal — on mouse *up* (not down), so a
       text-selection drag ending on the prompt doesn't trigger it; the app
@@ -531,7 +531,7 @@ function PromptBlock({
     >
       <SpeakerHeader label="you" time={clockTime(entry.at, now)} color={hovered ? COLOR.bright : COLOR.user} background={SURFACE.user} />
       <box style={{ height: 1, flexShrink: 0 }} backgroundColor={SURFACE.user} />
-      <MessageBody entry={entry} t3Home={t3Home} background={SURFACE.user} />
+      <MessageBody entry={entry} homeDir={homeDir} background={SURFACE.user} />
     </box>
   );
 }
@@ -540,7 +540,7 @@ function ReplyBlock({
   entry,
   model,
   modelColor,
-  t3Home,
+  homeDir,
   duration,
   now,
   onOpenActions,
@@ -548,7 +548,7 @@ function ReplyBlock({
   entry: TimelineEntry;
   model: string;
   modelColor?: string | null | undefined;
-  t3Home: string | undefined;
+  homeDir: string | undefined;
   /** Total elapsed time for the turn this reply closes; omitted while the
       turn is still the live one. */
   duration?: string | undefined;
@@ -591,7 +591,7 @@ function ReplyBlock({
         background={SURFACE.agent}
       />
       <box style={{ height: 1, flexShrink: 0 }} backgroundColor={SURFACE.agent} />
-      <MessageBody entry={entry} t3Home={t3Home} background={SURFACE.agent} />
+      <MessageBody entry={entry} homeDir={homeDir} background={SURFACE.agent} />
     </box>
   );
 }
@@ -775,7 +775,7 @@ function WorkSegment({
 function TurnBlock({  group,
   model,
   modelColor,
-  t3Home,
+  homeDir,
   open,
   now,
   workExpanded,
@@ -790,7 +790,7 @@ function TurnBlock({  group,
   group: TurnGroup;
   model: string;
   modelColor?: string | null | undefined;
-  t3Home: string | undefined;
+  homeDir: string | undefined;
   /** The turn is still in flight on the server — the finished-signal gate. */
   open: boolean;
   now: number;
@@ -865,7 +865,7 @@ function TurnBlock({  group,
           background={SURFACE.base}
         />
         <box style={{ height: 1, flexShrink: 0 }} backgroundColor={SURFACE.base} />
-        <MessageBody entry={entry} t3Home={t3Home} background={SURFACE.base} />
+        <MessageBody entry={entry} homeDir={homeDir} background={SURFACE.base} />
       </box>
     );
 
@@ -893,7 +893,7 @@ function TurnBlock({  group,
   return (
     <box style={{ flexDirection: "column", flexShrink: 0, marginBottom: 1 }}>
       {group.prompts.map((entry) => (
-        <PromptBlock key={entry.id} entry={entry} t3Home={t3Home} now={now} onOpenActions={() => onOpenMessageActions(entry)} />
+        <PromptBlock key={entry.id} entry={entry} homeDir={homeDir} now={now} onOpenActions={() => onOpenMessageActions(entry)} />
       ))}
 
       <WorkFold group={group} open={open} now={now} expanded={workExpanded} onToggle={() => onToggleWork(group.id)} />
@@ -941,7 +941,7 @@ function TurnBlock({  group,
               color={COLOR.dim}
               background={SURFACE.base}
             />
-            <MessageBody entry={live} t3Home={t3Home} background={SURFACE.base} />
+            <MessageBody entry={live} homeDir={homeDir} background={SURFACE.base} />
             {open ? <LiveCaret /> : null}
           </box>
         </box>
@@ -952,7 +952,7 @@ function TurnBlock({  group,
           entry={closing}
           model={model}
           modelColor={modelColor}
-          t3Home={t3Home}
+          homeDir={homeDir}
           duration={open ? undefined : formatDuration(group.durationMs)}
           now={now}
           onOpenActions={() => onOpenMessageActions(closing)}
@@ -1029,7 +1029,7 @@ export function Timeline({
   subtitle,
   model,
   modelColor,
-  t3Home,
+  homeDir,
   expandedTurn,
   expandedWork,
   scrollRef,
@@ -1051,7 +1051,7 @@ export function Timeline({
   subtitle: string;
   model: string;
   modelColor?: string | null | undefined;
-  t3Home: string | undefined;
+  homeDir: string | undefined;
   expandedTurn: number | null;
   expandedWork: ReadonlySet<string>;
   scrollRef: RefObject<ScrollBoxRenderable | null>;
@@ -1163,7 +1163,7 @@ export function Timeline({
               group={group}
               model={model}
               modelColor={modelColor}
-              t3Home={t3Home}
+              homeDir={homeDir}
               open={open}
               now={now}
               // The turn in flight stays open so live tool calls remain visible.

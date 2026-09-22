@@ -22,7 +22,7 @@
  *   `packages/plugin/src/index.ts` that the vendored plugins touch
  *   (`auth.loader` + `client.auth.set` + `provider.models` +
  *   `chat.headers`/`chat.params`). The full SPI ( widens to `AuthHook +
- *   ProviderHook + chat.headers/params + PluginInput`, DECOUPLE.md §8) is
+ *   ProviderHook + chat.headers/params + PluginInput`, ARCHITECTURE.md §8) is
  *   implemented by the `opencode serve` server itself — this file only
  *   types the plugin side so the vendored modules compile standalone and
  *   stay loadable by the server (type-only imports are erased at runtime).

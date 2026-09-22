@@ -1,6 +1,6 @@
 /**
  * Grok usage: a billing probe against the CLI chat proxy, plus generic
- * retry/backoff T3 never had. The probe reads the OAuth credential for the
+ * retry/backoff of our own. The probe reads the OAuth credential for the
  * Grok-CLI client id out of `~/.grok/auth.json` (never an arbitrary account)
  * and maps `creditUsagePercent` + the current period to a single
  * `subscription` window. API-key and custom deployments report unavailable.

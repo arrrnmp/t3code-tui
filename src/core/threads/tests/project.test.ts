@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { toT3Activity, toT3Checkpoint, toT3Message, toT3Thread } from "../project.js";
+import { toActivityEnvelope, toCheckpointEnvelope, toMessageEnvelope, toThreadEnvelope } from "../project.js";
 import type { StoredThread, StoredTurn } from "../types.js";
 
 function thread(overrides: Partial<StoredThread> = {}): StoredThread {
@@ -47,9 +47,9 @@ function turn(overrides: Partial<StoredTurn> = {}): StoredTurn {
   };
 }
 
-describe("toT3Thread", () => {
+describe("toThreadEnvelope", () => {
   it("projects catalog rows without ledgers", () => {
-    const projected = toT3Thread(thread(), [turn()]);
+    const projected = toThreadEnvelope(thread(), [turn()]);
     expect(projected.latestTurn).toMatchObject({ turnId: "turn-1", state: "completed" });
     expect(projected.session).toMatchObject({ status: "idle", providerName: "codex", activeTurnId: null });
     expect(projected.branch).toBe("main");
@@ -59,31 +59,31 @@ describe("toT3Thread", () => {
   });
 
   it("marks running sessions and skips queued turns", () => {
-    const projected = toT3Thread(thread(), [
+    const projected = toThreadEnvelope(thread(), [
       turn({ id: "t1", status: "completed" }),
       turn({ id: "t2", status: "queued" }),
-      turn({ id: "t3", status: "running" }),
+      turn({ id: "turn-3", status: "running" }),
     ]);
-    expect(projected.latestTurn).toMatchObject({ turnId: "t3", state: "running" });
-    expect(projected.session).toMatchObject({ status: "running", activeTurnId: "t3" });
+    expect(projected.latestTurn).toMatchObject({ turnId: "turn-3", state: "running" });
+    expect(projected.session).toMatchObject({ status: "running", activeTurnId: "turn-3" });
 
-    const queuedOnly = toT3Thread(thread(), [turn({ id: "q", status: "queued" })]);
+    const queuedOnly = toThreadEnvelope(thread(), [turn({ id: "q", status: "queued" })]);
     expect(queuedOnly.latestTurn).toBeNull();
     expect(queuedOnly.session?.status).toBe("idle");
   });
 
   it("maps failure states and worktree env", () => {
-    const failed = toT3Thread(thread(), [turn({ status: "failed" })]);
+    const failed = toThreadEnvelope(thread(), [turn({ status: "failed" })]);
     expect(failed.latestTurn?.state).toBe("error");
-    const interrupted = toT3Thread(thread(), [turn({ status: "interrupted" })]);
+    const interrupted = toThreadEnvelope(thread(), [turn({ status: "interrupted" })]);
     expect(interrupted.latestTurn?.state).toBe("interrupted");
-    const worktree = toT3Thread(thread({ env: { mode: "worktree", path: "/wt", branch: "feat" } }), []);
+    const worktree = toThreadEnvelope(thread({ env: { mode: "worktree", path: "/wt", branch: "feat" } }), []);
     expect(worktree.worktreePath).toBe("/wt");
     expect(worktree.latestTurn).toBeNull();
   });
 
   it("attaches ledgers with checkpoint turn counts", () => {
-    const projected = toT3Thread(
+    const projected = toThreadEnvelope(
       thread(),
       [turn({ id: "t1" }), turn({ id: "t2" })],
       {
@@ -102,13 +102,13 @@ describe("toT3Thread", () => {
 describe("row projections", () => {
   it("maps messages, activities, and checkpoints", () => {
     expect(
-      toT3Message({ id: "m", threadId: "t", turnId: "u", role: "assistant", text: "x", createdAt: "c" }),
+      toMessageEnvelope({ id: "m", threadId: "t", turnId: "u", role: "assistant", text: "x", createdAt: "c" }),
     ).toMatchObject({ streaming: false, updatedAt: "c" });
     expect(
-      toT3Activity({ id: "a", threadId: "t", turnId: null, kind: "k", summary: "s", createdAt: "c" }),
+      toActivityEnvelope({ id: "a", threadId: "t", turnId: null, kind: "k", summary: "s", createdAt: "c" }),
     ).toMatchObject({ tone: "info", turnId: null });
     expect(
-      toT3Checkpoint({ id: "c", threadId: "t", turnId: "u", status: "available", ref: "r", baseRef: "b", createdAt: "c" }, 3),
+      toCheckpointEnvelope({ id: "c", threadId: "t", turnId: "u", status: "available", ref: "r", baseRef: "b", createdAt: "c" }, 3),
     ).toMatchObject({ checkpointTurnCount: 3, ref: "r" });
   });
 });

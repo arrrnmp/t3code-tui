@@ -1,9 +1,9 @@
-import type { T3Project, T3Thread } from "../../core/types.js";
+import type { ProjectEnvelope, ThreadEnvelope } from "../../core/types.js";
 
 export interface ShellState {
   snapshotSequence: number;
-  projects: T3Project[];
-  threads: T3Thread[];
+  projects: ProjectEnvelope[];
+  threads: ThreadEnvelope[];
   synchronized: boolean;
   unhandled: Record<string, number>;
 }
@@ -40,8 +40,8 @@ export function applyShellFrame(state: ShellState, frame: unknown): ShellState {
     return {
       ...state,
       snapshotSequence: typeof snapshot.snapshotSequence === "number" ? snapshot.snapshotSequence : state.snapshotSequence,
-      projects: asRows(snapshot.projects) as unknown as T3Project[],
-      threads: asRows(snapshot.threads) as unknown as T3Thread[],
+      projects: asRows(snapshot.projects) as unknown as ProjectEnvelope[],
+      threads: asRows(snapshot.threads) as unknown as ThreadEnvelope[],
     };
   }
   if (kind === "synchronized") return { ...state, synchronized: true };
@@ -49,11 +49,11 @@ export function applyShellFrame(state: ShellState, frame: unknown): ShellState {
   const sequence = typeof record.sequence === "number" ? record.sequence : state.snapshotSequence;
   const thread = asRecord(record.thread);
   if (thread !== null && typeof thread.id === "string") {
-    return { ...state, snapshotSequence: sequence, threads: upsert(state.threads, thread as unknown as T3Thread) };
+    return { ...state, snapshotSequence: sequence, threads: upsert(state.threads, thread as unknown as ThreadEnvelope) };
   }
   const project = asRecord(record.project);
   if (project !== null && typeof project.id === "string") {
-    return { ...state, snapshotSequence: sequence, projects: upsert(state.projects, project as unknown as T3Project) };
+    return { ...state, snapshotSequence: sequence, projects: upsert(state.projects, project as unknown as ProjectEnvelope) };
   }
   if (typeof record.threadId === "string") {
     return { ...state, snapshotSequence: sequence, threads: state.threads.filter((row) => row.id !== record.threadId) };
@@ -72,7 +72,7 @@ export type ThreadStatus = "active" | "running" | "settled" | "snoozed" | "block
  * While a turn is in flight the order stays pinned to the user's send time;
  * once the turn reaches a terminal state its completion bumps the thread up.
  */
-export function threadSortTime(thread: T3Thread): number {
+export function threadSortTime(thread: ThreadEnvelope): number {
   const turn = thread.latestTurn;
   const candidates = [thread.latestUserMessageAt, turn?.requestedAt];
   if (turn !== undefined && turn !== null && turn.state !== "running" && turn.completedAt !== null) {
@@ -98,7 +98,7 @@ export function threadSortTime(thread: T3Thread): number {
  * session still reads as running, since a turn in flight means the thread
  * woke back up.
  */
-export function isSettledThread(thread: T3Thread): boolean {
+export function isSettledThread(thread: ThreadEnvelope): boolean {
   if (thread.settledOverride === "settled") return true;
   if (thread.settledOverride === "active") return false;
   if (thread.settledAt == null) return false;
@@ -106,7 +106,7 @@ export function isSettledThread(thread: T3Thread): boolean {
   return Date.parse(thread.settledAt) >= Date.parse(thread.unsettledAt);
 }
 
-export function threadStatus(thread: T3Thread, now = Date.now()): ThreadStatus {
+export function threadStatus(thread: ThreadEnvelope, now = Date.now()): ThreadStatus {
   const session = thread.session;
   if (session?.status === "running" || session?.status === "starting") return "running";
   if (isSettledThread(thread)) return "settled";
@@ -116,7 +116,7 @@ export function threadStatus(thread: T3Thread, now = Date.now()): ThreadStatus {
   return "active";
 }
 
-export function visibleThreads(state: ShellState): T3Thread[] {
+export function visibleThreads(state: ShellState): ThreadEnvelope[] {
   const now = Date.now();
   const rank: Record<ThreadStatus, number> = { running: 0, blocked: 1, active: 2, snoozed: 3, settled: 4 };
   return state.threads

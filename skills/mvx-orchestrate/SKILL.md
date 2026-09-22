@@ -47,7 +47,7 @@ mvx --json efforts list --provider <instance-id> --model <slug>
 
 - Offer only providers with `enabled: true`.
 - Skip models with `isHidden: true` unless the caller names one explicitly. That flag means the
-  user hid it from T3's own picker — a preference, not an entitlement check. A hidden model still
+  user hid it from the picker — a preference, not an entitlement check. A hidden model still
   dispatches fine if you route a task to it on purpose.
 - All three commands accept `--refresh`. This probes live status and is slower. Use cached output
   when it is fresh. Refresh when providers changed, or a dispatch fails.

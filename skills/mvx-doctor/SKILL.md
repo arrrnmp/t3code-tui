@@ -5,7 +5,7 @@ description: Diagnose the local Monvex connection with mvx doctor. Use to check 
 
 # Diagnose Monvex with mvx doctor
 
-Use `mvx` for all commands. Do not read T3 credentials. Do not build bearer tokens by hand.
+Use `mvx` for all commands. Do not read provider credentials. Do not build bearer tokens by hand.
 
 Run this first:
 
@@ -16,7 +16,7 @@ mvx --json doctor
 Check `data.ok`. If it is `false`, stop. Do not run a write command.
 
 - `data.checks.t3Server.ok` is `false`: Monvex is not running. Ask the user to start it. Do not write or create anything.
-- `data.checks.t3Cli.ok` is `false`: the CLI's own connection to T3 is broken. Tell the user to reinstall or update `mvx`.
+- A `data.checks.*.ok` of `false` names the provider binary or login that is missing. Tell the user the setup step it reports.
 - `data.checks.git.ok` is `false`: Git is missing. Repo-mode workspace resolution will not work.
 
 ## Capability notes for thread commands

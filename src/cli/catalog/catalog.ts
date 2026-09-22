@@ -31,7 +31,7 @@ export interface ModelSummary {
   name: string;
   isCustom: boolean;
   isDefault: boolean | null;
-  /** Hidden from T3's own model picker by the user's `providerModelPreferences`. Not an entitlement check — a hidden model can still be dispatched. */
+  /** Hidden from the model picker by the user's `providerModelPreferences`. Not an entitlement check — a hidden model can still be dispatched. */
   isHidden: boolean;
   efforts: EffortDescriptor[];
 }
@@ -103,8 +103,8 @@ function asBoolean(value: unknown): boolean | null {
 
 function contractChanged(detail: string, received: unknown): CliError {
   return new CliError(
-    "T3_CONTRACT_CHANGED",
-    `T3 changed a load-bearing response shape (${detail}). Update monvex against the installed T3 version.`,
+    "CATALOG_CONTRACT_CHANGED",
+    `The provider catalog changed a load-bearing response shape (${detail}).`,
     { details: { detail, received: typeof received } },
   );
 }
@@ -170,7 +170,7 @@ function extractUsageWindow(raw: unknown): ProviderUsageWindow | null {
 
 /**
  * `ServerProvider.usageLimits` — the subscription quota windows (Claude's
- * five-hour session, a weekly allowance, and so on) T3 already probes for its
+ * five-hour session, a weekly allowance, and so on) the provider already reports for its
  * own usage panel. Absent entirely for drivers with no notion of usage (API
  * key accounts); `unavailable` marks an account that has the concept but
  * could not be read this time.
@@ -210,7 +210,7 @@ function extractSkill(raw: unknown): SkillSummary | null {
 
 /**
  * `ServerSettings.providerModelPreferences[instanceId].hiddenModels` — the
- * slugs a user hid from T3's own model picker. Absent on servers that
+ * slugs a user hid from the model picker. Absent on servers that
  * predate the setting, or when the instance has no preferences saved yet;
  * both read as "nothing hidden" rather than an error.
  */

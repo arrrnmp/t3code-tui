@@ -1,13 +1,13 @@
 /**
- * Direct-backend envelope stubs. Every CLI command used to report the T3
- * runtime it talked to (`T3Runtime`) and the invocation its bearer came
+ * Direct-backend envelope stubs. Every CLI command used to report the
+ * runtime it talked to (`RuntimeEnvelope`) and the invocation its bearer came
  * from (`auth`). With no server there is no bearer and no origin, but the
  * envelope keys stay so `--json` consumers keep parsing: values say
- * `direct` instead of naming a T3 origin/version.
+ * `direct` instead of naming a remote origin/version.
  */
-import type { T3Runtime } from "../../core/types.js";
+import type { RuntimeEnvelope } from "../../core/types.js";
 
-export function directRuntime(): T3Runtime {
+export function directRuntime(): RuntimeEnvelope {
   return {
     origin: "direct",
     stateDir: null,

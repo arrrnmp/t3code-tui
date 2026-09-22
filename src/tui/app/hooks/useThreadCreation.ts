@@ -2,7 +2,7 @@ import { basename, resolve } from "node:path";
 
 import { buildImageAttachments, extractMentions } from "../../model/attachments.js";
 import { dispatchErrorMessage } from "../../../core/errors.js";
-import type { ModelSelection, RuntimeMode, T3Project, T3Thread } from "../../../core/types.js";
+import type { ModelSelection, RuntimeMode, ProjectEnvelope, ThreadEnvelope } from "../../../core/types.js";
 import type { ImageAttachmentUpload } from "../../model/attachments.js";
 import type { ClientApi } from "../../../server/api.js";
 import type { PickerName } from "../../features/pickers/pickerTypes.js";
@@ -20,9 +20,9 @@ import { threadTitle } from "../utils.js";
 export function useThreadCreation(params: {
   client: ClientApi;
   cwd: string | undefined;
-  selected: T3Thread | null;
+  selected: ThreadEnvelope | null;
   pending: ImageAttachmentUpload[];
-  shellProjects: T3Project[];
+  shellProjects: ProjectEnvelope[];
   creatingProjectId: string | null;
   creatingModelSelection: ModelSelection | null;
   creatingRuntimeMode: RuntimeMode | null;

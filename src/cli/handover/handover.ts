@@ -1,5 +1,5 @@
 /**
- * Handover/thread-create over the own store. Same envelope keys as the T3
+ * Handover/thread-create over the own store. Same envelope keys as the previous
  * era, with two documented replacements:
  * - The server-side `bootstrap.prepareWorktree` round-trip is gone: the
  *   worktree is provisioned locally with git (`mvx/<short>` branch off
@@ -64,7 +64,7 @@ function asEffectiveThreadEnvMode(value: unknown): EffectiveThreadEnvMode | null
 
 async function readProjectFile(workspaceRoot: string): Promise<ProjectFileSettings> {
   try {
-    const raw = JSON.parse(await readFile(path.join(workspaceRoot, "t3.json"), "utf8")) as Record<string, unknown>;
+    const raw = JSON.parse(await readFile(path.join(workspaceRoot, "monvex.json"), "utf8")) as Record<string, unknown>;
     return { defaultThreadEnvMode: asEffectiveThreadEnvMode(raw.defaultThreadEnvMode) };
   } catch {
     return { defaultThreadEnvMode: null };
@@ -146,10 +146,10 @@ export async function createHandoverThread(config: CliConfig, options: ThreadCre
   const workspace = await resolveWorkspace(options.cwd ?? process.cwd(), options.workspaceMode ?? config.workspaceMode);
   const projectFile = await readProjectFile(workspace.workspaceRoot);
 
-  // Env-mode precedence: request → project → t3.json → global config.
+  // Env-mode precedence: request → project → monvex.json → global config.
   // The installation default for new worktrees is to start from origin.
   const requested = options.threadEnvMode;
-  const requestMode = requested !== undefined && requested !== "t3" ? requested : undefined;
+  const requestMode = requested !== undefined && requested !== "auto" ? requested : undefined;
   const policy = options.projectPolicy ?? config.projectPolicy;
   const dryRun = options.dryRun === true;
 
@@ -200,14 +200,14 @@ export async function createHandoverThread(config: CliConfig, options: ThreadCre
     projectCommand = ensured.command;
   }
 
-  const globalDefault: EffectiveThreadEnvMode = config.threadEnvMode === "t3" ? "local" : config.threadEnvMode;
+  const globalDefault: EffectiveThreadEnvMode = config.threadEnvMode === "auto" ? "local" : config.threadEnvMode;
   const projectMode = asEffectiveThreadEnvMode(project.defaultThreadEnvMode);
   const envResolution = requestMode !== undefined
     ? { mode: requestMode, source: "request" as const }
     : projectMode
       ? { mode: projectMode, source: "project" as const }
       : projectFile.defaultThreadEnvMode
-        ? { mode: projectFile.defaultThreadEnvMode, source: "t3.json" as const }
+        ? { mode: projectFile.defaultThreadEnvMode, source: "monvex.json" as const }
         : { mode: globalDefault, source: "global" as const };
   const envMode = envResolution.mode;
   if (envMode === "worktree" && (!workspace.isGitRepository || workspace.branch === null)) {

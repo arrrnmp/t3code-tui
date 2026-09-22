@@ -57,8 +57,8 @@ import type {
   ProjectPolicy,
   RuntimeMode,
   SpeedMode,
-  T3Project,
-  T3Thread,
+  ProjectEnvelope,
+  ThreadEnvelope,
   ThreadEnvMode,
   WorkspaceMode,
 } from "../core/types.js";
@@ -70,14 +70,11 @@ program
   .version("0.1.0")
   .option("--json", "Emit stable JSON envelopes.")
   .option("--config <path>", "Use a specific config file.")
-  .option("--t3-home <path>", "Deprecated no-op (kept for script compatibility).")
-  .option("--origin <url>", "Deprecated no-op (kept for script compatibility).");
+  ;
 
 interface GlobalOptions {
   json?: boolean;
   config?: string;
-  t3Home?: string;
-  origin?: string;
 }
 
 async function commandContext(): Promise<{
@@ -89,8 +86,6 @@ async function commandContext(): Promise<{
   const global = program.opts<GlobalOptions>();
   const loaded = await loadConfig(global.config);
   const config = { ...loaded.config };
-  if (global.t3Home) config.t3Home = path.resolve(expandHome(global.t3Home));
-  if (global.origin) config.origin = new URL(global.origin).origin;
   return { config, configPath: loaded.path, configExists: loaded.exists, json: global.json ?? false };
 }
 
@@ -134,7 +129,7 @@ function addThreadOptions(command: Command): Command {
     .option("--thinking-effort <effort>", "Model-specific reasoning/thinking effort.")
     .addOption(
       new Option("--checkout, --env-mode <mode>", "Use the current checkout or create a new worktree.")
-        .choices(["t3", "local", "current", "worktree"]),
+        .choices(["auto", "local", "current", "worktree"]),
     )
     .addOption(
       new Option("--permission, --runtime-mode <mode>", "Permission/access level.")
@@ -269,7 +264,7 @@ async function resolvePrompt(options: PromptOptions): Promise<string> {
   return await readStdin();
 }
 
-async function confirmSettledThread(thread: T3Thread, project: T3Project | null): Promise<boolean> {
+async function confirmSettledThread(thread: ThreadEnvelope, project: ProjectEnvelope | null): Promise<boolean> {
   if (!input.isTTY || !errorOutput.isTTY) {
     throw new CliError(
       "SETTLED_THREAD_CONFIRMATION_REQUIRED",

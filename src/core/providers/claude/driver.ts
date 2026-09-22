@@ -9,7 +9,7 @@
  * `getSessionMessages` + `forkSession` + resume); compaction is the
  * slash-command `/compact` with `compact_boundary` observed. Auth is
  * inherited from the CLI login — never our own OAuth.
- * See DECOUPLE.md §5.
+ * See ARCHITECTURE.md §5.
  */
 import { randomUUID } from "node:crypto";
 

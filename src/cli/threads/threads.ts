@@ -1,6 +1,6 @@
 /**
  * Threads CLI over the own store. Same envelopes, same guards, same error
- * codes as the T3 era — only the transport changed: ledger reads replace
+ * codes as before — only the transport changed: ledger reads replace
  * snapshot GETs, store ops replace dispatch-then-poll (acceptance is
  * synchronous, so `dispatch` is always null and `verification` is
  * synthesized with `accepted: true`), and provider runs continue in the
@@ -28,7 +28,7 @@ import {
 } from "../../core/threads/threads.js";
 import { delegationForChild } from "../../core/threads/threads.js";
 import { driverForInstance, executeTurn, waitForTurnTerminal, type TurnDriverFactories } from "../../core/threads/execute.js";
-import { toT3Thread } from "../../core/threads/project.js";
+import { toThreadEnvelope } from "../../core/threads/project.js";
 import type {
   CliConfig,
   InteractionMode,
@@ -36,8 +36,8 @@ import type {
   OpenMode,
   RuntimeMode,
   SpeedMode,
-  T3Project,
-  T3Thread,
+  ProjectEnvelope,
+  ThreadEnvelope,
 } from "../../core/types.js";
 import { directAuth, directRuntime } from "../infra/direct.js";
 import { resolveWorkspace } from "../infra/workspace.js";
@@ -64,7 +64,7 @@ export interface ThreadSendOptions {
   wakeSettled?: boolean;
   delivery?: ThreadSendDelivery;
   handoffNote?: string;
-  confirmSettled?: (thread: T3Thread, project: T3Project | null) => Promise<boolean>;
+  confirmSettled?: (thread: ThreadEnvelope, project: ProjectEnvelope | null) => Promise<boolean>;
   drivers?: TurnDriverFactories;
   /** Return at acceptance; otherwise block until the turn settles. */
   noWait?: boolean;
@@ -90,16 +90,16 @@ export interface ThreadListOptions extends WorkspaceOptions {
   status?: ThreadListStatus;
 }
 
-function nonArchivedThread(thread: T3Thread): boolean {
+function nonArchivedThread(thread: ThreadEnvelope): boolean {
   return thread.archivedAt == null && thread.deletedAt == null;
 }
 
-function threadStatus(thread: T3Thread): Exclude<ThreadListStatus, "all"> {
+function threadStatus(thread: ThreadEnvelope): Exclude<ThreadListStatus, "all"> {
   if (thread.settledAt != null) return "settled";
   return isSnoozedThread(thread) ? "snoozed" : "active";
 }
 
-function isSnoozedThread(thread: T3Thread, now = Date.now()): boolean {
+function isSnoozedThread(thread: ThreadEnvelope, now = Date.now()): boolean {
   if (thread.settledAt != null) return false;
   const until = thread.snoozedUntil;
   if (typeof until !== "string" || until.length === 0) return false;
@@ -150,7 +150,7 @@ function normalizeReadView(raw: ThreadReadView | undefined): ThreadReadView {
   return view;
 }
 
-function delegatedStatusOf(thread: T3Thread): DelegatedTaskStatus {
+function delegatedStatusOf(thread: ThreadEnvelope): DelegatedTaskStatus {
   const state = thread.latestTurn?.state;
   if (state === "completed") return "completed";
   if (state === "error") return "failed";
@@ -162,7 +162,7 @@ function delegatedWorkStateOf(status: DelegatedTaskStatus): DelegatedTaskWorkSta
   return status === "running" ? "working" : "result_available";
 }
 
-function threadAssistantSummary(thread: T3Thread): string | null {
+function threadAssistantSummary(thread: ThreadEnvelope): string | null {
   const messages = thread.messages ?? [];
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index]!;
@@ -171,7 +171,7 @@ function threadAssistantSummary(thread: T3Thread): string | null {
   return null;
 }
 
-function isThreadActive(thread: T3Thread): boolean {
+function isThreadActive(thread: ThreadEnvelope): boolean {
   const latestState = thread.latestTurn?.state as string | undefined;
   return (
     thread.session?.status === "starting" ||
@@ -196,7 +196,7 @@ function requireThreadId(value: string): string {
   return threadId;
 }
 
-function threadInspectionView(thread: T3Thread) {
+function threadInspectionView(thread: ThreadEnvelope) {
   const messages = thread.messages ?? [];
   const summary = { ...thread };
   delete summary.messages;
@@ -228,7 +228,7 @@ export interface ThreadReadRequestOptions {
   view?: ThreadReadView;
 }
 
-function threadReadView(thread: T3Thread, options: { lastTurn: boolean; view: ThreadReadView }) {
+function threadReadView(thread: ThreadEnvelope, options: { lastTurn: boolean; view: ThreadReadView }) {
   const { lastTurn, view } = options;
   const summary = { ...thread } as Record<string, unknown>;
   delete summary.messages;
@@ -285,7 +285,7 @@ function threadReadView(thread: T3Thread, options: { lastTurn: boolean; view: Th
   };
 }
 
-function isThreadBusy(thread: T3Thread): boolean {
+function isThreadBusy(thread: ThreadEnvelope): boolean {
   const latestState = thread.latestTurn?.state as string | undefined;
   return (
     thread.session?.status === "starting" ||
@@ -300,19 +300,19 @@ async function openStore(): Promise<ThreadStore> {
   return await openThreadStore(resolveStoreRoot());
 }
 
-async function storedProjects(): Promise<T3Project[]> {
+async function storedProjects(): Promise<ProjectEnvelope[]> {
   return await listStoredProjects(resolveStoreRoot());
 }
 
-function projectOf(projects: T3Project[], projectId: string): T3Project | null {
+function projectOf(projects: ProjectEnvelope[], projectId: string): ProjectEnvelope | null {
   return projects.find((candidate) => candidate.id === projectId) ?? null;
 }
 
 const driverOwner = {};
 
-async function fullThread(store: ThreadStore, threadId: string): Promise<T3Thread> {
+async function fullThread(store: ThreadStore, threadId: string): Promise<ThreadEnvelope> {
   const read = await readStoredThread(store, threadId, { view: "messages" });
-  return toT3Thread(read.thread, read.turns, {
+  return toThreadEnvelope(read.thread, read.turns, {
     messages: read.messages,
     activities: read.activities,
     checkpoints: read.checkpoints,
@@ -337,7 +337,7 @@ export async function listThreads(config: CliConfig, options: ThreadListOptions 
   }
   const store = await openStore();
   const projects = await storedProjects();
-  let project: T3Project | null = null;
+  let project: ProjectEnvelope | null = null;
   let workspace = null;
 
   if (requestedProjectId) {
@@ -363,7 +363,7 @@ export async function listThreads(config: CliConfig, options: ThreadListOptions 
     ...(project ? { projectId: project.id } : {}),
   });
   const threads = await Promise.all(
-    stored.map(async (entry) => toT3Thread(entry, await store.readTurns(entry.id))),
+    stored.map(async (entry) => toThreadEnvelope(entry, await store.readTurns(entry.id))),
   );
   const visible = threads
     .filter(nonArchivedThread)
@@ -410,7 +410,7 @@ export async function readThread(
   const view = normalizeReadView(options.view);
   const store = await openStore();
   const read = await readStoredThread(store, threadId, { view: "messages" });
-  const thread = toT3Thread(read.thread, read.turns, {
+  const thread = toThreadEnvelope(read.thread, read.turns, {
     messages: read.messages,
     activities: read.activities,
     checkpoints: read.checkpoints,
@@ -614,7 +614,7 @@ async function changeThreadSettlement(
   const changed = state === "settled"
     ? await settleStoredThread(store, threadId)
     : await unsettleStoredThread(store, threadId);
-  const after = toT3Thread(changed, await store.readTurns(threadId));
+  const after = toThreadEnvelope(changed, await store.readTurns(threadId));
   return {
     runtime: directRuntime(),
     auth: directAuth(),
@@ -676,7 +676,7 @@ function normalizeDelegateTimeout(raw: number | undefined): number {
   return timeoutMs;
 }
 
-function requireParentModes(thread: T3Thread): { runtimeMode: RuntimeMode; interactionMode: InteractionMode } {
+function requireParentModes(thread: ThreadEnvelope): { runtimeMode: RuntimeMode; interactionMode: InteractionMode } {
   const runtimeMode = thread.runtimeMode;
   const interactionMode = thread.interactionMode;
   if (
@@ -684,7 +684,7 @@ function requireParentModes(thread: T3Thread): { runtimeMode: RuntimeMode; inter
     !["default", "plan"].includes(interactionMode ?? "")
   ) {
     throw new CliError(
-      "T3_INVALID_THREAD",
+      "INVALID_THREAD",
       `Thread ${thread.id} is missing its runtime or interaction mode.`,
       { details: { threadId: thread.id } },
     );
@@ -894,8 +894,8 @@ async function describeDelegatedTask(
   parentThreadId: string,
   rawTaskId: string,
 ): Promise<{
-  parent: T3Thread;
-  child: T3Thread;
+  parent: ThreadEnvelope;
+  child: ThreadEnvelope;
   task: {
     taskId: string;
     childThreadId: string;
@@ -909,7 +909,7 @@ async function describeDelegatedTask(
   const parent = await fullThread(store, parentThreadId);
   const delegation = await delegationForChild(store, parentThreadId, taskId);
   const childId = delegation?.childThreadId ?? taskId;
-  let child: T3Thread | null = null;
+  let child: ThreadEnvelope | null = null;
   try {
     child = await fullThread(store, childId);
   } catch {

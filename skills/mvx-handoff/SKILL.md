@@ -13,7 +13,7 @@ directly: bash (or another POSIX shell) on macOS and Linux, PowerShell on Window
 
 ## Steps
 
-### 1. Check that T3 is reachable
+### 1. Check that the providers are reachable
 
 Do this before anything else.
 
@@ -24,7 +24,7 @@ mvx --json doctor
 The envelope is `{ ok, data: { ok, checks } }`. Check `data.ok` and `data.checks.t3Server.ok`.
 
 - If either is `false`: stop. Tell the user to start Monvex. Write nothing. Create nothing.
-- If `data.checks.t3Cli.ok` is `false`: the installed CLI's own connection to T3 is broken. Tell the
+- If a `data.checks.*.ok` is `false`: that provider's binary or login is missing. Tell the
   user to reinstall or update `mvx`. Do not try to patch it in place.
 
 ### 2. Write the summary to a file
@@ -67,7 +67,7 @@ Reading the output:
 
 - Offer only providers with `enabled: true`. Selecting a disabled provider fails. A disabled
   provider can still list models — do not judge by the model count.
-- Skip models with `isHidden: true` when suggesting choices to the user — they hid it from T3's
+- Skip models with `isHidden: true` when suggesting choices to the user — they hid it from the picker's
   own picker. It still works if the user names it explicitly.
 - Not every effort descriptor is a reasoning effort. Only the descriptor with `id: "effort"` gives
   valid `--thinking-effort` values. A `contextWindow` descriptor has no handover flag. `fastMode`
@@ -109,11 +109,11 @@ mvx --json handover `
 - Always pass `--cwd`, with the same folder you resolved in step 3. Without it, the CLI uses
   `process.cwd()` of wherever it runs, which may not be the project you mean.
 - `--checkout current` uses the existing checkout in place. `--checkout worktree` creates a
-  worktree and runs T3's setup script server-side. Use it only when you want isolation, on a repo
-  with a current branch, and on T3 `>=0.0.28`.
+  worktree and runs the project's setup script. Use it only when you want isolation, on a repo
+  with a current branch.
 - `--permission full-access` is the normal choice. For Claude or Codex, use `--permission auto`.
 - Drop `--thinking-effort` only when the model has no `effort` descriptor.
-- To validate without writing T3 state, add `--open none --dry-run`.
+- To validate without writing any state, add `--open none --dry-run`.
 
 On Windows, use `--prompt-file`. Do not pipe a prompt over `--stdin`. Windows PowerShell 5.1 turns
 every non-ASCII character in a piped prompt into `?`, and fails silently: the call still returns

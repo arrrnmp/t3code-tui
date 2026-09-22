@@ -227,11 +227,7 @@ export function resolveModelsDevUrl(env: NodeJS.ProcessEnv = process.env): strin
 }
 
 export function defaultModelsDevCachePath(): string {
-  const current = path.join(os.homedir(), ".monvex", "cache", "opencode-models.json");
-  if (fs.existsSync(current)) return current;
-  // Reuse a pre-rebrand cache rather than re-downloading 4.7MB on first run.
-  const legacy = path.join(os.homedir(), ".t3code", "cache", "opencode-models.json");
-  return fs.existsSync(legacy) ? legacy : current;
+  return path.join(os.homedir(), ".monvex", "cache", "opencode-models.json");
 }
 
 /**

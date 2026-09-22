@@ -1,10 +1,10 @@
 /**
- * Doctor, repointed at the direct world (DECOUPLE.md §15.5): provider
+ * Doctor, repointed at the direct world (ARCHITECTURE.md §15.5): provider
  * binaries with versions, the thread store, stored subscription auth —
- * no T3 CLI, no T3 home, no server, no protocol handlers.
+ * no external CLI, no shared home, no server, no protocol handlers.
  *
  * Envelope evolution note: the outer `{ok, checks}` wrapper stays, but
- * the T3-specific checks (`t3Cli`, `t3Home`, `t3Server`,
+ * the removed server-specific checks (
  * `desktopProtocol`, `exactThreadProtocol`) are gone — there is nothing
  * left to probe. `providers` reports one row per owned surface and
  * `auth` summarizes the stored OpenCode credentials file.

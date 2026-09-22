@@ -1,5 +1,5 @@
 /**
- * Claude settings + executable/env resolution. Own code shaped by T3's
+ * Claude settings + executable/env resolution. Own code shaped by the upstream reference's
  * `Drivers/ClaudeDriver.ts`, `Drivers/ClaudeExecutable.ts`, and
  * `Drivers/ClaudeHome.ts`.
  *

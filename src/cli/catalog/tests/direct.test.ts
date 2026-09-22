@@ -121,7 +121,7 @@ describe("buildDirectProviders", () => {
     expect(providers.find((entry) => entry.instanceId === "grok")?.models.length).toBe(1);
   });
 
-  it("merges all models.dev providers into one T3-addressed opencode instance", async () => {
+  it("merges all models.dev providers into one addressed opencode instance", async () => {
     const live = await buildDirectProviders({
       env: {
         PATH: binDir(["opencode"]),
@@ -140,7 +140,7 @@ describe("buildDirectProviders", () => {
       "anthropic/claude-opus-4-6",
       "anthropic/plain",
     ]);
-    // … plus the hidden compat shell for T3 addressing.
+    // … plus the hidden compat shell for legacy addressing.
     const compat = live.find((entry) => entry.instanceId === "opencode");
     expect(compat?.enabled).toBe(false);
     expect(compat?.models.map((model) => model.slug)).toEqual([

@@ -5,7 +5,7 @@
  * from result messages is a running total — replaced, never summed.
  * Quota windows: `get_usage` probe → Session (5h) + Weekly (7d) + per-model
  * Weekly rows; live `rate_limit_event`s land on the same ids. Absent
- * windows on a successful probe = API-key account. See DECOUPLE.md §5.
+ * windows on a successful probe = API-key account. See ARCHITECTURE.md §5.
  */
 import type { SDKRateLimitInfo } from "@anthropic-ai/claude-agent-sdk";
 

@@ -1,18 +1,18 @@
 /**
  * Provider SPI — the driver contract for direct provider runtimes.
  *
- * Own code, T3-shaped: mirrors the shape of T3's
+ * Own code, mirroring the shape of the upstream reference's
  * `provider/Services/ProviderAdapter.ts` (capabilities, lifecycle, state,
  * streaming) without lifting its Layers or host services. Imports only our
  * own root types plus `effect` type-level modules, so drivers stay
- * dependency-clean. See DECOUPLE.md §4.
+ * dependency-clean. See ARCHITECTURE.md §4.
  */
 import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
 
 import type { InteractionMode, ModelSelection, RuntimeMode } from "../types.js";
 
-/** Provider surfaces we own. Cursor/Antigravity/T3 drivers are dropped. */
+/** Provider surfaces we own. Cursor and Antigravity are out of scope. */
 export type ProviderDriverKind = "claude" | "codex" | "grok" | "opencode";
 
 export const PROVIDER_DRIVER_KINDS: readonly ProviderDriverKind[] = [

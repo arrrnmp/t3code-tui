@@ -1,6 +1,6 @@
 # monvex
 
-`monvex` drives provider CLIs directly from your terminal: a full interactive TUI for working with threads, plus a scriptable CLI for handovers, thread inspection, messaging, and automation. No T3 Code server — threads, projects, and orchestration live in a local store (`~/.monvex`), and turns run against `claude`, `codex`, `grok`, or `opencode serve` through their own logins.
+`monvex` drives provider CLIs directly from your terminal: a full interactive TUI for working with threads, plus a scriptable CLI for handovers, thread inspection, messaging, and automation. No server — threads, projects, and orchestration live in a local store (`~/.monvex`), and turns run against `claude`, `codex`, `grok`, or `opencode serve` through their own logins.
 
 ## Requirements
 
@@ -96,7 +96,7 @@ printf '%s' "$PROMPT" | mvx handover --stdin
 | `--thinking-effort` | A model-supported value such as `low`, `medium`, `high`, `xhigh` or `max` |
 | `--permission`, `--runtime-mode` | `approval-required`, `auto-accept-edits`, `auto`, `full-access` |
 | `--mode`, `--interaction-mode` | `build`/`default`, `plan` |
-| `--checkout`, `--env-mode` | `current`/`local`, `worktree`, or the resolved default via `t3` |
+| `--checkout`, `--env-mode` | `current`/`local`, `worktree`, or the resolved default via `auto` |
 
 Command flags override the CLI config, which overrides the project's saved model selection. Without either override, the saved selection and its options are passed through unchanged. A newly-created project has no default; the fallback is the explicit installation default (`codex` / `gpt-5.4`).
 
@@ -199,7 +199,7 @@ To run a message on a schedule (for example daily at 05:01), pair it with the OS
 $action = New-ScheduledTaskAction -Execute "bun.exe" `
   -Argument '"C:\absolute\path\to\monvex\src\cli\index.ts" --json threads send --thread <thread-id> --prompt-file "<path-to-prompt.txt>" --open none'
 $trigger = New-ScheduledTaskTrigger -Daily -At 05:01
-Register-ScheduledTask -TaskName "T3 5am thread ping" -Action $action -Trigger $trigger
+Register-ScheduledTask -TaskName "Monvex 5am thread ping" -Action $action -Trigger $trigger
 ```
 
 macOS/Linux equivalent (cron):
@@ -227,7 +227,7 @@ mvx config set thinkingEffort xhigh
 | `projectPolicy` | `create`, `existing` | `create` |
 | `workspaceMode` | `repo`, `folder` | `repo` |
 | `openMode` | `auto`, `desktop`, `browser`, `none` | `auto` |
-| `threadEnvMode` | `t3`, `local`, `worktree` | `t3` |
+| `threadEnvMode` | `auto`, `local`, `worktree` | `auto` |
 | `runtimeMode` | `approval-required`, `auto-accept-edits`, `auto`, `full-access` | `full-access` |
 | `interactionMode` | `default`, `plan` | `default` |
 | `provider` | Provider instance id for model overrides | Unset (inherits thread/project) |
@@ -235,7 +235,7 @@ mvx config set thinkingEffort xhigh
 | `speedMode` | `standard`, `fast` | Unset (inherits thread/project) |
 | `thinkingEffort` | Model-supported effort value | Unset (inherits thread/project) |
 
-`projectPolicy: "existing"` makes a missing project a hard error. `workspaceMode: "folder"` uses the exact current folder instead of walking up to the Git root. `threadEnvMode: "t3"` follows project → `t3.json` → global local/worktree preference. Explicit CLI config values remain overrides.
+`projectPolicy: "existing"` makes a missing project a hard error. `workspaceMode: "folder"` uses the exact current folder instead of walking up to the Git root. `threadEnvMode: "auto"` follows project → `monvex.json` → global local/worktree preference. Explicit CLI config values remain overrides.
 
 `--checkout worktree` provisions a local worktree for the new thread: a `mvx/<id>` branch off the current branch (or its origin — new worktrees always start from origin), placed under the store's `worktrees` directory, with the thread rooted there. A repository without a current branch returns `WORKTREE_REQUIRES_BRANCH` instead of silently falling back to the current checkout.
 
@@ -275,7 +275,7 @@ Every command supports human-readable output. `--json` produces `{ "ok": true, "
 
 `providers list`, `models list`, and `efforts list` probe live sources on every call with no server in the loop: native surfaces (`claudeAgent`, `codex`, `grok`) through ephemeral driver sessions (failures degrade into each entry's `status` instead of failing the listing), and one `opencode` instance carrying the whole models.dev catalog (slugs are `provider/model`, matching migrated threads) plus local API-key presence and stored OAuth state. Use them to pick valid `--provider`, `--model`, and `--thinking-effort` values before a handover instead of guessing — unknown ids fail with `PROVIDER_NOT_FOUND` / `MODEL_NOT_FOUND` and list what exists. Choices marked `*` in human output are the model's defaults.
 
-`models hide` / `models show` curate the pickers: hidden models stay usable when named explicitly and stay visible on threads already running them — they only leave the model picker lists. On first run the hidden set, ordering, and favorites are imported from the T3 desktop's saved preferences when present.
+`models hide` / `models show` curate the pickers: hidden models stay usable when named explicitly and stay visible on threads already running them — they only leave the model picker lists.
 
 `models list` never reports `hidden` on this backend — there is no picker-preference store yet, so everything reads visible.
 
@@ -286,15 +286,6 @@ Every command supports human-readable output. `--json` produces `{ "ok": true, "
 `--open` is accepted everywhere for script compatibility, but there is no desktop app to deep-link into: `opened.kind` is always `none`. The TUI (`mvx tui`) is the interactive interface; use `--open none` for headless runs.
 
 ## Security
-
-### Upgrading from `t3code`
-
-Nothing to run. `monvex` writes to `~/.monvex`, `refs/monvex/checkpoints`
-and `MONVEX_*` environment variables, but falls back to the pre-rebrand
-`~/.t3code`, `refs/t3code/checkpoints`, `t3code-cli` config directory and
-`T3CODE_*` variables wherever they already exist — reading where the data
-is rather than moving it. The `t3code` binary name is kept as an alias of
-`mvx`.
 
 There are no bearer tokens anywhere in this stack: provider CLIs own their own logins (`claude auth login`, `codex login`, `grok login`, `opencode auth login`), and this CLI never reads their secrets — it only observes credential *presence* (env vars, stored-auth file) for status display. Threads live as local JSONL under `~/.monvex` (override with `MONVEX_STORE_ROOT`); `doctor` reports store writability alongside binary and auth status.
 

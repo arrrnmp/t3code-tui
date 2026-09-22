@@ -1,5 +1,5 @@
 /**
- * Codex settings + home/auth resolution. Own code shaped by T3's
+ * Codex settings + home/auth resolution. Own code shaped by the upstream reference's
  * `Layers/codexLaunchArgs.ts`, `Drivers/CodexHomeLayout.ts`, and
  * `Drivers/CodexDriver.ts`.
  *
@@ -78,7 +78,7 @@ export function tokenizeLaunchArgs(raw: string): string[] {
   return args;
 }
 
-const LAUNCH_ARGS_ENV = "T3CODE_CODEX_LAUNCH_ARGS";
+const LAUNCH_ARGS_ENV = "MONVEX_CODEX_LAUNCH_ARGS";
 
 export function codexAppServerArgs(
   launchArgs = "",

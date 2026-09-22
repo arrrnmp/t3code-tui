@@ -77,14 +77,14 @@ import type { ClientApi } from "../../server/api.js";
 export function App({
   client,
   onQuit,
-  t3Home,
+  homeDir,
   cwd,
   launchView,
   setTerminalTitle,
 }: {
   client: ClientApi;
   onQuit: () => void;
-  t3Home?: string;
+  homeDir?: string;
   /** Resolves relative `@path` mentions. Defaults to the launch directory. */
   cwd?: string;
   /**
@@ -1443,7 +1443,7 @@ export function App({
             subtitle={`${session?.status ?? "idle"}`}
             model={model}
             modelColor={modelColor}
-            t3Home={t3Home}
+            homeDir={homeDir}
             expandedTurn={diffPanel.expandedTurn}
             expandedWork={diffPanel.expandedWork}
             onToggleWork={diffPanel.toggleWork}

@@ -45,14 +45,14 @@ import {
   type TurnDriver,
   type TurnDriverFactories,
 } from "../core/threads/execute.js";
-import { toT3Thread } from "../core/threads/project.js";
+import { toThreadEnvelope } from "../core/threads/project.js";
 import { openThreadStore, resolveStoreRoot, type ThreadStore } from "../core/threads/store.js";
 import type { ProviderRuntimeEvent } from "../core/providers/spi.js";
 import type {
   InteractionMode,
   ModelSelection,
   RuntimeMode,
-  T3Thread,
+  ThreadEnvelope,
 } from "../core/types.js";
 import type { ImageAttachmentUpload } from "../tui/model/attachments.js";
 import type { ClientApi } from "./api.js";
@@ -160,7 +160,7 @@ export class DirectConnection implements ClientApi {
           listThreads(store, { status: "all" }),
         ]);
         const rows = await Promise.all(
-          threads.map(async (entry) => toT3Thread(entry, await store.readTurns(entry.id))),
+          threads.map(async (entry) => toThreadEnvelope(entry, await store.readTurns(entry.id))),
         );
         const visible = rows.filter((row) => row.archivedAt == null && row.deletedAt == null);
         const hash = JSON.stringify({ projects, threads: visible });
@@ -278,11 +278,11 @@ export class DirectConnection implements ClientApi {
     };
   }
 
-  private async threadDetail(threadId: string): Promise<T3Thread | null> {
+  private async threadDetail(threadId: string): Promise<ThreadEnvelope | null> {
     const store = await this.store();
     const read = await readThread(store, threadId, { view: "messages" }).catch(() => null);
     if (!read) return null;
-    return toT3Thread(read.thread, read.turns, {
+    return toThreadEnvelope(read.thread, read.turns, {
       messages: read.messages,
       activities: read.activities,
       checkpoints: read.checkpoints,

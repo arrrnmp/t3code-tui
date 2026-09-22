@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import type { T3Thread } from "../../../core/types.js";
+import type { ThreadEnvelope } from "../../../core/types.js";
 import type { ShellState } from "../shell.js";
 import { buildSidebarSections } from "../sidebar.js";
 
 const NOW = Date.parse("2026-09-16T03:30:00.000Z");
 const ago = (ms: number) => new Date(NOW - ms).toISOString();
 
-function thread(id: string, extra: Partial<T3Thread> = {}): T3Thread {
+function thread(id: string, extra: Partial<ThreadEnvelope> = {}): ThreadEnvelope {
   return {
     id,
     projectId: "p1",
@@ -18,7 +18,7 @@ function thread(id: string, extra: Partial<T3Thread> = {}): T3Thread {
   };
 }
 
-function shellWith(threads: T3Thread[]): ShellState {
+function shellWith(threads: ThreadEnvelope[]): ShellState {
   return {
     snapshotSequence: 1,
     projects: [{ id: "p1", title: "demo", workspaceRoot: "/repo", defaultModelSelection: null }],

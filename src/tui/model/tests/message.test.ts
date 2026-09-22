@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import { renderMessage } from "../message.js";
-import type { T3Message } from "../../../core/types.js";
+import type { MessageEnvelope } from "../../../core/types.js";
 
-function message(overrides: Partial<T3Message> & { text: string }): T3Message {
+function message(overrides: Partial<MessageEnvelope> & { text: string }): MessageEnvelope {
   return {
     id: "m1",
     role: "user",
@@ -19,7 +19,7 @@ describe("renderMessage", () => {
   it("renders context image refs", () => {
     const rendered = renderMessage(
       message({
-        text: "see ![image.png](t3-context://v1/image/image_abc) ok",
+        text: "see ![image.png](monvex-context://v1/image/image_abc) ok",
         context: {
           version: 1,
           records: [
@@ -59,7 +59,7 @@ describe("renderMessage", () => {
   it("does not duplicate attachments already covered by refs", () => {
     const rendered = renderMessage(
       message({
-        text: "![image.png](t3-context://v1/image/image_abc)",
+        text: "![image.png](monvex-context://v1/image/image_abc)",
         context: {
           version: 1,
           records: [

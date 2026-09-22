@@ -1,4 +1,4 @@
-import type { T3Message, T3Session, T3Thread, T3ThreadActivity } from "../../core/types.js";
+import type { MessageEnvelope, SessionEnvelope, ThreadEnvelope, ActivityEnvelope } from "../../core/types.js";
 import { describeActivity } from "./activity.js";
 
 export interface TimelineEntry {
@@ -10,12 +10,12 @@ export interface TimelineEntry {
   streaming: boolean;
   tone: string | null;
   activityKind: string | null;
-  message: T3Message | null;
-  activity: T3ThreadActivity | null;
+  message: MessageEnvelope | null;
+  activity: ActivityEnvelope | null;
   checkpoint: TurnCheckpoint | null;
   /** Per-file +A/-D from the turn's checkpoint; the wire strips tool input. */
   editStats: { added: number; removed: number } | null;
-  /** A plan proposed for this turn (plan-mode approval flow) — see `T3ProposedPlan`. */
+  /** A plan proposed for this turn (plan-mode approval flow) — see `ProposedPlanEnvelope`. */
   proposedPlan: TurnProposedPlan | null;
 }
 
@@ -46,7 +46,7 @@ export interface TurnProposedPlan {
 
 /**
  * `ThreadTokenUsageSnapshot` — a driver-reported reading of the provider's
- * own context window, not something T3 computes. Lives on
+ * own context window, not something we compute. Lives on
  * `OrchestrationV2ProviderThread.contextUsage`, pushed live via a
  * `provider-thread.updated` event. Only Claude Code has been confirmed to
  * populate it; other drivers may never send a non-null value, in which case
@@ -68,12 +68,12 @@ export interface ContextResume {
 
 export interface ThreadState {
   snapshotSequence: number;
-  thread: T3Thread | null;
-  messages: T3Message[];
-  activities: T3ThreadActivity[];
+  thread: ThreadEnvelope | null;
+  messages: MessageEnvelope[];
+  activities: ActivityEnvelope[];
   checkpoints: TurnCheckpoint[];
   proposedPlans: TurnProposedPlan[];
-  session: T3Session | null;
+  session: SessionEnvelope | null;
   contextUsage: ContextUsage | null;
   /** `createdAt` of the latest `context-window.updated` activity feeding
       `contextUsage` — the desktop resume-compaction banner keys its 70-minute
@@ -115,7 +115,7 @@ function asArray(value: unknown): Record<string, unknown>[] {
   return Array.isArray(value) ? value.filter((entry): entry is Record<string, unknown> => asRecord(entry) !== null) : [];
 }
 
-function decodeMessage(raw: Record<string, unknown>): T3Message | null {
+function decodeMessage(raw: Record<string, unknown>): MessageEnvelope | null {
   const id = raw.id ?? raw.messageId;
   if (typeof id !== "string" || typeof raw.text !== "string") return null;
   const role = raw.role;
@@ -131,7 +131,7 @@ function decodeMessage(raw: Record<string, unknown>): T3Message | null {
   };
 }
 
-function decodeActivity(raw: Record<string, unknown>): T3ThreadActivity | null {
+function decodeActivity(raw: Record<string, unknown>): ActivityEnvelope | null {
   if (typeof raw.id !== "string" || typeof raw.kind !== "string") return null;
   return {
     ...raw,
@@ -187,7 +187,7 @@ function decodeContextUsage(raw: Record<string, unknown>): ContextUsage | null {
  * ever actually sent. No cache or auto-compact fields exist in this shape,
  * so those stay null rather than guessed.
  */
-function decodeContextWindowActivity(activity: T3ThreadActivity): ContextUsage | null {
+function decodeContextWindowActivity(activity: ActivityEnvelope): ContextUsage | null {
   const payload = asRecord(activity.payload);
   if (payload === null || typeof payload.usedTokens !== "number") return null;
   return {
@@ -200,7 +200,7 @@ function decodeContextWindowActivity(activity: T3ThreadActivity): ContextUsage |
   };
 }
 
-function latestContextWindowUsage(activities: readonly T3ThreadActivity[]): {
+function latestContextWindowUsage(activities: readonly ActivityEnvelope[]): {
   usage: ContextUsage;
   updatedAt: string;
 } | null {
@@ -267,12 +267,12 @@ function applySnapshot(state: ThreadState, snapshot: Record<string, unknown>): T
   return {
     ...state,
     snapshotSequence: typeof snapshot.snapshotSequence === "number" ? snapshot.snapshotSequence : state.snapshotSequence,
-    thread: thread as unknown as T3Thread,
+    thread: thread as unknown as ThreadEnvelope,
     messages: asArray(thread.messages).flatMap((row) => decodeMessage(row) ?? []),
     activities,
     checkpoints: asArray(thread.checkpoints).flatMap((row) => decodeCheckpoint(row) ?? []),
     proposedPlans: asArray(thread.proposedPlans).flatMap((row) => decodeProposedPlan(row) ?? []),
-    session: (asRecord(thread.session) as T3Session | null) ?? null,
+    session: (asRecord(thread.session) as SessionEnvelope | null) ?? null,
     contextUsage: snapshotContextUsage(snapshot, thread) ?? windowUsage?.usage ?? state.contextUsage,
     contextWindowUpdatedAt: windowUsage?.updatedAt ?? state.contextWindowUpdatedAt,
   };
@@ -347,7 +347,7 @@ export function applyThreadFrame(state: ThreadState, frame: unknown): ThreadStat
   }
   if (payload !== null && type === "thread.session-set") {
     const session = asRecord(payload.session);
-    return session === null ? state : { ...state, session: session as unknown as T3Session };
+    return session === null ? state : { ...state, session: session as unknown as SessionEnvelope };
   }
   // `OrchestrationV2ProviderThread` — the payload is the full entity, not a
   // wrapper, so `contextUsage` sits directly on it (`orchestrationV2.ts`'s
@@ -437,9 +437,9 @@ function mergePayloads(older: unknown, newer: unknown): unknown {
  * mostly duplicate headers. Plan checklists re-emit on every step change, so
  * they collapse per turn too.
  */
-function collapseToolActivities(activities: readonly T3ThreadActivity[]): T3ThreadActivity[] {
+function collapseToolActivities(activities: readonly ActivityEnvelope[]): ActivityEnvelope[] {
   const positions = new Map<string, number>();
-  const ordered: T3ThreadActivity[] = [];
+  const ordered: ActivityEnvelope[] = [];
 
   for (const activity of activities) {
     const payload = asRecord(activity.payload);
@@ -485,7 +485,7 @@ function collapseToolActivities(activities: readonly T3ThreadActivity[]): T3Thre
  * and the stripped wire shape, where only `todowrite`/`N todos` titles
  * survive.
  */
-export function isPlanActivity(activity: T3ThreadActivity): boolean {
+export function isPlanActivity(activity: ActivityEnvelope): boolean {
   if (activity.kind === "turn.plan.updated") return true;
   try {
     if (describeActivity(activity).kind === "todos") return true;
@@ -508,7 +508,7 @@ export function isPlanActivity(activity: T3ThreadActivity): boolean {
  * a bare "Context window updated"/"Checkpoint captured" row after nearly
  * every tool call.
  */
-function isBookkeepingActivity(activity: T3ThreadActivity): boolean {
+function isBookkeepingActivity(activity: ActivityEnvelope): boolean {
   return (
     activity.kind === "context-window.updated" ||
     activity.kind === "checkpoint.captured" ||
@@ -547,7 +547,7 @@ const TURN_LIFECYCLE_KINDS: ReadonlySet<string> = new Set([
  * its `user-input.requested` activity (see `describeActivity`), so these
  * tool echoes never reach the transcript.
  */
-export function isQuestionToolActivity(activity: T3ThreadActivity): boolean {
+export function isQuestionToolActivity(activity: ActivityEnvelope): boolean {
   const payload = asRecord(activity.payload);
   if (payload === null) return false;
   const itemType = payload.itemType;
@@ -581,7 +581,7 @@ function sameFile(left: string, right: string): boolean {
  * and deletions instead — match the edited file by path suffix.
  */
 function editStatsFor(
-  activity: T3ThreadActivity,
+  activity: ActivityEnvelope,
   checkpoint: TurnCheckpoint | null,
 ): { added: number; removed: number } | null {
   if (checkpoint === null) return null;
@@ -628,7 +628,7 @@ function asText(value: unknown): string | null {
  * everything needed to answer — snapshots have just pending flags, and the
  * sibling question *tool* activity has options without ids or linkage.
  */
-function decodeUserInputRequest(activity: T3ThreadActivity): PendingUserInputRequest | null {
+function decodeUserInputRequest(activity: ActivityEnvelope): PendingUserInputRequest | null {
   const payload = asRecord(activity.payload);
   if (payload === null) return null;
   const requestId = asText(payload.requestId);
@@ -732,8 +732,8 @@ export function timeline(state: ThreadState): TimelineEntry[] {
   // One row per turn for the turn's *net* diff, which is a different thing
   // from the per-call patches the tool rows now carry themselves: a file
   // edited three times shows three hunks inline and one combined result
-  // here. (Under T3 this row was the only diff available at all — its
-  // ~180 character input preview could not reconstruct a per-call patch.)
+  // here. (Before the tool rows carried their own input, this was the
+  // only diff available at all.)
   for (const checkpoint of state.checkpoints) {
     if (checkpoint.files.length === 0) continue;
     const turnEntries = entries.filter((entry) => entry.turnId === checkpoint.turnId);

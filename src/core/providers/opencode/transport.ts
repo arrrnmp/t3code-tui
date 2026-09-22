@@ -4,7 +4,7 @@
  *
  * The only file in this driver with a runtime SDK import. Everything else
  * depends on the narrow `OpencodeServerConnection` below, so tests inject
- * a fake without binaries or ports. Serve mechanics mirror T3's
+ * a fake without binaries or ports. Serve mechanics follow the upstream reference's
  * `opencodeRuntime.ts`: `serve --hostname=… --port=…`, readiness off the
  * `opencode server listening on <url>` sentinel, `OPENCODE_CONFIG_CONTENT`
  * passthrough (plus our vendored plugins), password via env for spawned

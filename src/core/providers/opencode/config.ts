@@ -4,9 +4,9 @@
  * Auth is the `opencode` CLI's own (`opencode auth login` for OAuth,
  * provider API keys via env) plus our two vendored subscription plugins
  * (`plugins/xai.ts`, `plugins/codex.ts`), which the spawned server loads
- * through `OPENCODE_CONFIG_CONTENT`. Version gating mirrors T3's
+ * through `OPENCODE_CONFIG_CONTENT`. Version gating follows the upstream reference's
  * `MINIMUM_OPENCODE_VERSION` so the SDK surface we call exists.
- * See DECOUPLE.md §8.
+ * See ARCHITECTURE.md §8.
  */
 import { fileURLToPath } from "node:url";
 
@@ -38,7 +38,7 @@ export function normalizeOpencodeSettings(raw: Partial<OpencodeSettings> = {}): 
 /**
  * Password for a *spawned* server: explicit setting wins, else the env
  * convention the server itself honors. External servers never inherit the
- * env password (T3's `resolveOpenCodeServerPassword` rule) — leaking a
+ * env password — leaking a
  * ambient secret to a URL we didn't spawn would be a confused-deputy grant.
  */
 export function resolveSpawnedServerPassword(settings: OpencodeSettings, env: NodeJS.ProcessEnv): string {
@@ -66,7 +66,7 @@ export function resolveVendoredPluginPaths(): string[] {
 
 /**
  * Merge plugin paths into an `OPENCODE_CONFIG_CONTENT` JSON object without
- * clobbering anything the user configured (T3's must-not-clobber rule).
+ * clobbering anything the user configured.
  * Unparseable content is replaced, not merged — a corrupt config would
  * break the server boot either way, and replacing keeps the failure
  * legible at our layer instead of deep in the server.

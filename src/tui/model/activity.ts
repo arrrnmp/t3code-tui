@@ -1,6 +1,6 @@
 import { createPatch } from "diff";
 
-import type { T3ThreadActivity } from "../../core/types.js";
+import type { ActivityEnvelope } from "../../core/types.js";
 import { detectFiletype } from "./patch.js";
 
 export interface CommandView {
@@ -166,7 +166,7 @@ function shortInputPath(input: Record<string, unknown>): string | null {
  * for disk reads (content-cache snapshots, overlay matching). Null when the
  * row names no file at all.
  */
-export function activityFilePath(activity: T3ThreadActivity): string | null {
+export function activityFilePath(activity: ActivityEnvelope): string | null {
   const payload = asRecord(activity.payload) ?? {};
   const data = asRecord(payload.data) ?? {};
   const state = asRecord(data.state) ?? {};
@@ -387,7 +387,7 @@ const FRIENDLY_TOOL_TITLES: Record<string, string> = {
   taskstop: "Stopping task",
 };
 
-/** `mcp__t3-code__preview_snapshot` → `t3-code: preview_snapshot` — the raw
+/** `mcp__linear__create_issue` → `linear: create_issue` — the raw
     double-underscore server/tool encoding reads poorly verbatim. */
 function friendlyToolTitle(name: string): string {
   const known = FRIENDLY_TOOL_TITLES[name.toLowerCase()];
@@ -402,9 +402,9 @@ function isRunning(payload: Record<string, unknown>): boolean {
 }
 
 /**
- * Shapes observed in the live projection database (t3 0.0.40), not the
+ * Shapes observed on the wire, not the
  * idealized contract. Two tool families exist side by side:
- * - T3-managed tools: `data: { tool, state: { status, input, output,
+ * - Harness-managed tools: `data: { tool, state: { status, input, output,
  *   metadata, time } }` plus a top-level `title`. Started rows have an
  *   empty `input`.
  * - Provider-native tools: `data: { toolName, input, result }` with the
@@ -412,7 +412,7 @@ function isRunning(payload: Record<string, unknown>): boolean {
  * - `turn.plan.updated` carries `{ plan: [{ step, status }] }`.
  * - subagent tasks carry `{ taskId, title, taskType, model, status }`.
  */
-export function describeActivity(activity: T3ThreadActivity): ActivityView {
+export function describeActivity(activity: ActivityEnvelope): ActivityView {
   const payload = asRecord(activity.payload) ?? {};
   const data = asRecord(payload.data) ?? {};
   const state = asRecord(data.state) ?? {};
@@ -536,7 +536,7 @@ export function describeActivity(activity: T3ThreadActivity): ActivityView {
       };
     }
     // Provider-native shell calls (`Bash` as a `dynamic_tool_call`, possibly
-    // namespaced like `default.bash`) never pass through the T3-managed
+    // namespaced like `default.bash`) never pass through the harness-managed
     // `command_execution` branch above, so without this they fall into the
     // generic raw tool fallback. Map them to the same `$ bash` command view
     // the timeline already renders.
@@ -632,7 +632,7 @@ export function describeActivity(activity: T3ThreadActivity): ActivityView {
       // routinely contain backslashes (`\bname\b`), slashes (`and/or`),
       // and dots (`foo.ts`) that look path-like but aren't. Verb-titled
       // rows above already claimed their own branches first. A zero-match
-      // dump (`No files found`) carries the pattern the same way. T3
+      // dump (`No files found`) carries the pattern the same way. The server
       // truncates long result lists, so the header may carry a trailing
       // note (`Found 100 matches (more matches available)`).
       {

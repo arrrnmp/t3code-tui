@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import type { T3Thread } from "../../../core/types.js";
+import type { ThreadEnvelope } from "../../../core/types.js";
 import { isSettledThread, threadSortTime, threadStatus } from "../shell.js";
 
-function thread(overrides: Partial<T3Thread> = {}): T3Thread {
+function thread(overrides: Partial<ThreadEnvelope> = {}): ThreadEnvelope {
   return {
     id: "t-1",
     projectId: "p-1",

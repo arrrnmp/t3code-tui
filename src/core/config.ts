@@ -19,7 +19,7 @@ export const DEFAULT_CONFIG: CliConfig = {
   projectPolicy: "create",
   workspaceMode: "repo",
   openMode: "auto",
-  threadEnvMode: "t3",
+  threadEnvMode: "auto",
   runtimeMode: "full-access",
   interactionMode: "default",
   sessionTtl: "2m",
@@ -28,7 +28,7 @@ export const DEFAULT_CONFIG: CliConfig = {
 const projectPolicies = new Set<ProjectPolicy>(["create", "existing"]);
 const workspaceModes = new Set<WorkspaceMode>(["repo", "folder"]);
 const openModes = new Set<OpenMode>(["auto", "desktop", "browser", "none"]);
-const threadEnvModes = new Set<ThreadEnvMode>(["t3", "local", "worktree"]);
+const threadEnvModes = new Set<ThreadEnvMode>(["auto", "local", "worktree"]);
 const runtimeModes = new Set<RuntimeMode>([
   "approval-required",
   "auto-accept-edits",
@@ -50,8 +50,6 @@ export const CONFIG_KEYS = [
   "speedMode",
   "thinkingEffort",
   "sessionTtl",
-  "t3Home",
-  "origin",
 ] as const;
 export type ConfigKey = (typeof CONFIG_KEYS)[number];
 
@@ -64,7 +62,7 @@ export function expandHome(value: string): string {
 }
 
 export function defaultConfigPath(): string {
-  const override = process.env.MONVEX_CONFIG ?? process.env.T3CODE_CLI_CONFIG;
+  const override = process.env.MONVEX_CONFIG;
   if (override) return path.resolve(expandHome(override));
   const dir = (name: string): string => {
     if (process.platform === "win32" && process.env.APPDATA) {
@@ -75,11 +73,7 @@ export function defaultConfigPath(): string {
       : path.join(os.homedir(), ".config");
     return path.join(root, name, "config.json");
   };
-  const current = dir("monvex");
-  if (fs.existsSync(current)) return current;
-  // An existing install keeps its settings without a migration step.
-  const legacy = dir("t3code-cli");
-  return fs.existsSync(legacy) ? legacy : current;
+  return dir("monvex");
 }
 
 function asString(value: unknown, key: string): string {
@@ -137,32 +131,15 @@ export function normalizeConfig(raw: unknown): CliConfig {
     result.thinkingEffort = asString(input.thinkingEffort, "thinkingEffort");
   }
   if (input.sessionTtl !== undefined) result.sessionTtl = asString(input.sessionTtl, "sessionTtl");
-  if (input.t3Home !== undefined) result.t3Home = path.resolve(expandHome(asString(input.t3Home, "t3Home")));
-  if (input.origin !== undefined) result.origin = new URL(asString(input.origin, "origin")).origin;
-  if (input.t3Command !== undefined) {
-    if (!Array.isArray(input.t3Command) || !input.t3Command.every((value) => typeof value === "string" && value.length > 0)) {
-      throw new CliError("INVALID_CONFIG", "t3Command must be an array of command arguments.");
-    }
-    result.t3Command = [...input.t3Command];
-  }
   return applyEnvironmentOverrides(result);
 }
 
-/**
- * `MONVEX_*` wins; the pre-rebrand `T3CODE_*` spelling is still honoured
- * so existing shell profiles and scripts keep working. Reading both is
- * the whole migration - nothing to run, nothing to edit.
- */
 function envOverride(name: string): string | undefined {
-  return process.env[`MONVEX_${name}`] ?? process.env[`T3CODE_CLI_${name}`];
+  return process.env[`MONVEX_${name}`];
 }
 
 function applyEnvironmentOverrides(config: CliConfig): CliConfig {
   const next = { ...config };
-  const home = process.env.MONVEX_HOME ?? process.env.T3CODE_HOME;
-  if (home) next.t3Home = path.resolve(expandHome(home));
-  const origin = envOverride("ORIGIN");
-  if (origin) next.origin = new URL(origin).origin;
   const projectPolicy = envOverride("PROJECT_POLICY");
   if (projectPolicy) next.projectPolicy = projectPolicy as ProjectPolicy;
   const workspaceMode = envOverride("WORKSPACE_MODE");
@@ -183,14 +160,6 @@ function applyEnvironmentOverrides(config: CliConfig): CliConfig {
   if (speedMode) next.speedMode = speedMode as SpeedMode;
   const thinkingEffort = envOverride("THINKING_EFFORT");
   if (thinkingEffort) next.thinkingEffort = thinkingEffort;
-  const command = envOverride("T3_COMMAND");
-  if (command) {
-    const parsed = JSON.parse(command) as unknown;
-    if (!Array.isArray(parsed) || !parsed.every((value) => typeof value === "string")) {
-      throw new CliError("INVALID_CONFIG", "MONVEX_T3_COMMAND must be a JSON string array.");
-    }
-    next.t3Command = parsed;
-  }
   return normalizeConfigValues(next);
 }
 

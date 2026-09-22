@@ -1,11 +1,11 @@
 /**
- * Store-native thread model. This is ours — not the T3 projection shape.
+ * Store-native thread model. This is ours — not the envelope shape.
  *
  * A thread carries its lifecycle flags (settled/snoozed/archived), its
  * model selection, and its environment; turns, messages, activity rows,
  * and checkpoint refs live in per-thread append-only JSONL ledgers.
- * The CLI projection to T3-shaped envelopes happens at cutover, not here.
- * See DECOUPLE.md §9.
+ * The CLI projection to envelope shapes happens at the boundary, not here.
+ * See ARCHITECTURE.md §9.
  */
 import type {
   InteractionMode,

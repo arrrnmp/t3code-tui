@@ -204,10 +204,10 @@ describe("createHandoverThread", () => {
     expect(result.worktree).toMatchObject({ startFromOrigin: true });
   });
 
-  it("prefers a project's checkout setting over t3.json and the global setting", async () => {
+  it("prefers a project's checkout setting over monvex.json and the global setting", async () => {
     const harness = await testHarness();
     await writeFile(
-      path.join(harness.work, "t3.json"),
+      path.join(harness.work, "monvex.json"),
       JSON.stringify({ defaultThreadEnvMode: "worktree" }),
       "utf8",
     );
@@ -218,7 +218,7 @@ describe("createHandoverThread", () => {
       defaultModelSelection: { instanceId: "codex", model: "gpt-5.6-sol" },
       defaultThreadEnvMode: "local",
     });
-    harness.config.threadEnvMode = "t3";
+    harness.config.threadEnvMode = "auto";
 
     const result = await createHandoverThread(harness.config, {
       cwd: harness.work,
@@ -234,14 +234,14 @@ describe("createHandoverThread", () => {
     expect(result.worktree).toBeNull();
   });
 
-  it("prefers t3.json's checkout setting over the global setting", async () => {
+  it("prefers monvex.json's checkout setting over the global setting", async () => {
     const harness = await testHarness();
     await writeFile(
-      path.join(harness.work, "t3.json"),
+      path.join(harness.work, "monvex.json"),
       JSON.stringify({ defaultThreadEnvMode: "local" }),
       "utf8",
     );
-    harness.config.threadEnvMode = "t3";
+    harness.config.threadEnvMode = "auto";
 
     const result = await createHandoverThread(harness.config, {
       cwd: harness.work,
@@ -252,12 +252,12 @@ describe("createHandoverThread", () => {
 
     expect(result.settings).toMatchObject({
       effectiveThreadEnvMode: "local",
-      threadEnvModeSource: "t3.json",
+      threadEnvModeSource: "monvex.json",
     });
     expect(result.worktree).toBeNull();
   });
 
-  it("uses the global checkout setting when the project and t3.json do not set one", async () => {
+  it("uses the global checkout setting when the project and monvex.json do not set one", async () => {
     const harness = await testHarness();
     harness.config.threadEnvMode = "worktree";
 

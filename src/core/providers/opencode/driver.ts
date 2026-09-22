@@ -1,6 +1,6 @@
 /**
  * OpenCode driver: `ProviderAdapter` over `opencode serve` + the generated
- * SDK (serve-first, DECOUPLE.md §8 option (a)).
+ * SDK (serve-first, ARCHITECTURE.md §8 option (a)).
  *
  * One server per working directory (shared across that cwd's threads),
  * one native session per thread, one SSE `event.subscribe` pump per

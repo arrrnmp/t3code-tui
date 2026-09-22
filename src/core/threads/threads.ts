@@ -5,7 +5,7 @@
  * behavior — but execution is ledger-local: no dispatch-then-poll, no
  * snapshot preflights. A per-thread mutex enforces one active turn per
  * session. Provider drivers attach in Stage 2 via `completeTurn` /
- * `failTurn` / `trackRunning`. See DECOUPLE.md §9.
+ * `failTurn` / `trackRunning`. See ARCHITECTURE.md §9.
  */
 import { CliError } from "../errors.js";
 import type {

@@ -36,12 +36,12 @@ Give exactly one of `--prompt`, `--prompt-file`, or `--stdin`. Set thread contro
 `--provider`, `--model`, `--speed`, `--thinking-effort`, `--permission`, `--mode build|plan`, and
 `--checkout current|worktree`, when needed.
 
-By default, the thread inherits the T3 project's full saved model selection, including
-provider-specific options. Flags and CLI config override this. If the project is missing, the CLI
-uses the detected T3 version's default model: `gpt-5.4` on 0.0.28, `gpt-6-astra` on 0.0.29 and
-later. The default permission is full access (`full-access`). Use `--project-policy existing` when
+By default, the thread inherits the project's full saved model selection, including
+provider-specific options. Flags and CLI config override this. If the project has no saved
+selection, the CLI falls back to the provider's own default model. The default permission is
+full access (`full-access`). Use `--project-policy existing` when
 you cannot create a project. Use `--dry-run --open none` to inspect the proposed command without
-changing T3 state.
+changing any state.
 
 ## Discover and read existing threads
 
@@ -89,7 +89,7 @@ mvx --json threads send --thread <thread-id> --prompt-file <path-to-message.txt>
 ```
 
 `--thread` and `--thread-id` are aliases. Give exactly one of `--prompt`, `--prompt-file`, or
-`--stdin`. The send dispatches `thread.turn.start`, and waits until the message appears in T3's
+`--stdin`. The send dispatches `thread.turn.start`, and waits until the message appears in the thread's
 projection before it reports success. A failed send never deletes the thread. `THREAD_NOT_FOUND`
 and `THREAD_ARCHIVED` are explicit errors.
 
@@ -130,7 +130,7 @@ mvx --json threads send --thread <thread-id> --prompt "Restart with logs" --deli
 
 `--handoff-note <text>` records provider-switch context as CLI-side metadata (`data.handoffNote`).
 V1 sends no context-transfer row, so the dispatched turn does not change — confirm the note in the
-JSON result, not in T3.
+JSON result.
 
 Require `data.verification.accepted: true`. Record `data.message.messageId`.
 `THREAD_TURN_NOT_VERIFIED` means the dispatch returned, but verification timed out. Do not retry
@@ -144,14 +144,14 @@ mvx --json threads settle --thread "$TARGET_THREAD_ID"
 mvx --json threads unsettle --thread "$TARGET_THREAD_ID"
 ```
 
-Settle a thread only after you are authorized to change its lifecycle. T3 refuses settlement while
+Settle a thread only after you are authorized to change its lifecycle. Settlement is refused while
 a session is starting or running, or while the thread has a blocking approval or user-input request
 (`THREAD_SETTLE_BLOCKED`). Unsettling marks the thread manually active. It does not send a message
 or start its provider session.
 
 Both commands need the server to advertise the `threadSettlement` capability
 (`THREAD_SETTLEMENT_UNSUPPORTED` otherwise). Both wait for the new lifecycle state to appear in
-T3's projection before they succeed. Require `data.verification.accepted: true`.
+the store before they succeed. Require `data.verification.accepted: true`.
 `THREAD_SETTLEMENT_NOT_VERIFIED` means dispatch returned, but verification timed out — do not
 retry automatically.
 
@@ -162,7 +162,7 @@ mvx --json threads snooze --thread "$TARGET_THREAD_ID" --until 2030-01-01T00:00:
 mvx --json threads unsnooze --thread "$TARGET_THREAD_ID"
 ```
 
-Snooze sits on top of the active lifecycle. The thread stays active in T3's model. It is only
+Snooze sits on top of the active lifecycle. The thread stays active in the lifecycle model. It is only
 hidden from the inbox until `--until` (a valid ISO-8601 datetime) passes. Both commands verify the
 projection before they succeed. Require `data.verification.accepted: true`.
 `THREAD_SNOOZE_NOT_VERIFIED` and `THREAD_UNSNOOZE_NOT_VERIFIED` mean dispatch returned, but the

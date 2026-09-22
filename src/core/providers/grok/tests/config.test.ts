@@ -36,12 +36,9 @@ describe("grok config", () => {
     expect(grokAcpSpawnArgs(undefined)).toEqual(["agent", "stdio"]);
   });
 
-  // The referrer is a value xAI receives, not our branding: it stayed
-  // `t3code` through the rebrand because we do not know whether xAI
-  // allowlists it (DECOUPLE.md S7 keeps it deliberately).
-  it("injects the unchanged t3code referrer and switches auth on the api key", () => {
+  it("injects the monvex referrer and switches auth on the api key", () => {
     const env = makeGrokEnv({ OTHER: "1" });
-    expect(env.GROK_OAUTH2_REFERRER).toBe("t3code");
+    expect(env.GROK_OAUTH2_REFERRER).toBe("monvex");
     expect(env.OTHER).toBe("1");
     expect(resolveGrokAuthMethod({})).toBe("cached_token");
     expect(resolveGrokAuthMethod({ XAI_API_KEY: "sk-x" })).toBe("xai.api_key");

@@ -1,5 +1,5 @@
 /**
- * Grok settings + spawn/auth resolution. Own code shaped by T3's
+ * Grok settings + spawn/auth resolution. Own code shaped by the upstream reference's
  * `acp/GrokAcpSupport.ts` (spawn argv per mode, referrer env, auth switch).
  *
  * Rules we keep: per-mode argv (`approval-required→--permission-mode
@@ -24,7 +24,13 @@ export function normalizeGrokSettings(raw: Partial<GrokSettings> = {}): GrokSett
 }
 
 export const GROK_OAUTH2_REFERRER_ENV = "GROK_OAUTH2_REFERRER";
-export const GROK_REFERRER = "t3code";
+/**
+ * Sent to xAI as `GROK_OAUTH2_REFERRER` on every Grok launch. This is a
+ * value a third party receives, not a label we control: we do not know
+ * whether xAI allowlists referrers, so if Grok auth ever starts failing
+ * where it used to work, this constant is the first thing to suspect.
+ */
+export const GROK_REFERRER = "monvex";
 export const GROK_API_KEY_ENV = "XAI_API_KEY";
 export const GROK_AUTH_METHOD_API_KEY = "xai.api_key";
 export const GROK_AUTH_METHOD_CACHED_TOKEN = "cached_token";

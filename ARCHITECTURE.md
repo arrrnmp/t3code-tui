@@ -1,10 +1,11 @@
-# DECOUPLE.md — Dropping the T3 Code server, owning threads + providers
+# ARCHITECTURE.md — threads and providers
 
-**Status:** planning handoff. **Decision:** remove the T3 Code server from the loop.
-`monvex` keeps its CLI envelopes (`{ ok, data }`) and its TUI, but talks to
-provider runtimes directly and owns threads, projects, and orchestration itself.
+`monvex` owns its threads, projects and orchestration, and talks to provider
+runtimes directly. The CLI keeps stable `{ ok, data }` envelopes; the TUI and
+CLI are clients of one core (see `AGENTS.md` for the tree).
 
-**Scope (locked): 4 provider surfaces.**
+**Scope: 4 provider surfaces.**
+
 
 | # | Surface | Transport | Auth that must work |
 |---|---|---|---|
@@ -13,14 +14,12 @@ provider runtimes directly and owns threads, projects, and orchestration itself.
 | 3 | OpenCode | `opencode serve` + `@opencode-ai/sdk` (or vendored auth + AI SDK) | Everything else "for free": API keys via models.dev catalog, Codex-sub + SuperGrok-sub via vendored OAuth plugins |
 | 4 | Grok | `grok agent stdio` over ACP | Grok login (`cached_token`), `XAI_API_KEY` |
 
-Dropped: Cursor, Antigravity, and any other T3 driver. No T3 server, no T3 WS RPC,
-no orchestration snapshot/dispatch HTTP. Tool-call paths become in-process calls
-instead of dispatch-then-poll-projection.
+Out of scope: Cursor and Antigravity. There is no server and no RPC layer —
+tool-call paths are in-process calls.
 
-Research backing: two depth-1 clones at
-`C:\Users\Usuario\AppData\Local\Temp\opencode\` (`opencode-upstream` @ `ebb7b76`,
-`mvx-upstream`). File refs below are relative to those clones unless prefixed
-with `monvex:`.
+Behaviour is checked against a depth-1 clone of OpenCode
+(`upstream/opencode-upstream` @ `ebb7b76`); file refs below are relative to it
+unless prefixed with `monvex:`.
 
 ---
 
@@ -28,7 +27,6 @@ with `monvex:`.
 
 * `monvex` is **AGPL-3.0-only** (`LICENSE`, 661 lines; `package.json: private: true`
   means "not on npm", not "not AGPL").
-* T3 Code (`mvx-upstream/LICENSE`): **MIT, (c) 2026 T3 Tools Inc.**
 * OpenCode (`opencode-upstream/LICENSE` + `license: MIT` in
   `packages/{opencode,sdk/js,plugin,core}/package.json`): **MIT, (c) 2025 opencode.**
   No NOTICE file, no proprietary headers (only a third-party snippet header in
@@ -38,63 +36,39 @@ with `monvex:`.
   Combined work stays AGPL-3.0-only. Never relicense vendored files; never strip notices.
 * If outside contributors land, use DCO sign-off (inbound = AGPL outbound) so copyright
   stays consolidatable for enforcement/relicensing. Trademark intent on the `mvx`
-  name is the credit-protection layer licenses can't give (see §14).
+  name is the credit-protection layer licenses can't give (see the relevant section).
 
 ---
 
-## 2. What exists today (what we're replacing)
-
-* `monvex/src/cli/infra/api.ts` — `T3Api` (`GET /api/orchestration/snapshot`,
-  `POST /api/orchestration/dispatch`), session mint/revoke via `t3 auth session issue`.
-* `monvex/src/cli/catalog/` — providers/models/efforts via WS `server.getConfig` /
-  `server.refreshProviders` (`t3ws.ts`).
-* `monvex/src/cli/threads/`, `handover/`, `projects/` — thread CRUD, send with
-  `reject/inject/queue/steer/restart` preflights, settle/unsettle/snooze/interrupt,
-  delegate/task-status/task-cancel, workspace→project resolution.
-* `monvex/src/tui/` — sidebar, timeline with per-turn diffs, composer with
-  model/effort pickers, tasks/answer/diff panels; projections in `tui/model/`.
-* Pain this removes: dispatch-then-poll acceptance, snapshot preflights that aren't
-  atomic locks, `THREAD_BUSY`/`THREAD_RESTART_FAILED` races, version-gated capability
-  flags (`threadSettlement`), desktop-reveal vs deep-link opening hacks.
-
-**Constraint: CLI JSON envelopes stay backward compatible** (AGENTS.md workflow).
-`threads list/read/send/settle/…`, `projects …`, `providers/models/efforts list`,
-`handover`, `doctor`, `request get` keep their shapes; only the backend changes.
-
----
-
-## 3. Target architecture
+## 2. Target architecture
 
 ```
 monvex
-├── src/providers/            NEW — provider SPI + 4 drivers (own code, T3-shaped)
-│   ├── spi.ts                ProviderDriver / ProviderAdapterShape (§4)
-│   ├── claude/               Agent SDK spawn, permissions, usage (§5)
-│   ├── codex/                app-server JSON-RPC runtime (§6)
-│   ├── grok/                 ACP stdio runtime (§7)
-│   └── opencode/             serve/SDK client + vendored auth (§8)
-├── src/threads/              NEW — thread store, lifecycle, settle/snooze (§9)
-├── src/projects/             rework — ID registry w/o T3 (§10)
-├── src/permissions/          NEW — rulesets + per-provider mapping (§11)
-├── src/harness/              NEW — tools, MCP, skills, subagents (§12)
-├── src/compaction/           NEW — per-provider compaction + context (§13)
-├── src/checkpoints/          NEW — git snapshots, diffs, rollback (§13)
-├── src/usage/                NEW — tokens/cost/quota windows (§13)
-├── src/events/               NEW — typed event bus replacing T3 pushes (§9)
+├── src/providers/            NEW — provider SPI + 4 drivers
+│   ├── spi.ts                ProviderDriver / ProviderAdapterShape
+│   ├── claude/               Agent SDK spawn, permissions, usage
+│   ├── codex/                app-server JSON-RPC runtime
+│   ├── grok/                 ACP stdio runtime
+│   └── opencode/             serve/SDK client + vendored auth
+├── src/threads/              NEW — thread store, lifecycle, settle/snooze
+├── src/projects/             ID registry
+├── src/permissions/          NEW — rulesets + per-provider mapping
+├── src/harness/              NEW — tools, MCP, skills, subagents
+├── src/compaction/           NEW — per-provider compaction + context
+├── src/checkpoints/          NEW — git snapshots, diffs, rollback
+├── src/usage/                NEW — tokens/cost/quota windows
+├── src/events/               NEW — typed event bus
 └── src/cli/ + src/tui/       retarget onto the above, envelopes unchanged
 ```
 
-Effect is already a dependency (`effect 4.0.0-beta.78`). **Upgrade to
-`effect@4.0.0-rc.115` first** — T3's provider code (the reference implementation)
-pins `rc.115` + `effect/unstable/*` paths; two Effect copies break
-`Context.Service` identity and `Schema` brands. Do this before lifting anything.
+Effect stays pinned at one version across the tree: two copies break
+`Context.Service` identity and `Schema` brands.
 
 ---
 
-## 4. Provider SPI (copy the shape, not the Layers)
+## 3. Provider SPI (copy the shape, not the Layers)
 
-T3's `provider/Services/ProviderAdapter.ts:67-158` is dependency-clean (imports only
-`@t3tools/contracts` + `effect/Stream`). Mirror it:
+The adapter surface every driver implements:
 
 ```ts
 capabilities: { sessionModelSwitch; promptlessTurnContinuation?;
@@ -105,24 +79,14 @@ state: readThread / rollbackThread / uploadFeedback? / compaction?
 streaming: streamEvents: Stream<ProviderRuntimeEvent>
 ```
 
-Lift `mvx-upstream/packages/contracts` schema thinking as-is (sole dep `effect`):
-thread/turn IDs, session inputs, `ProviderRuntimeEvent` union (keep per-backend `raw`
-source tags — `providerRuntime.ts:23-33` pattern), model catalogs, settings schemas.
-Do **not** lift `Layers/*Adapter.ts` (16k lines) directly — they drag 15–30k lines of
-runtime (`CodexSessionRuntime` 2.5k, ACP stack, `opencodeRuntime` 1k) plus 8 bespoke
-host services (`ServerConfig`, `ServerSettingsService`, `BackgroundPolicy`,
-`ProviderEventLoggers`, `ModelManifest`, `OpenCodeRuntime`, `AntigravityInstallation`,
-`CodexResetCreditCoordinator`; union at `builtInDrivers.ts:36-42`). Reimplement thin
-drivers against the CLIs; §5–8 give the per-provider spec.
+Schema shape (sole dep `effect`): thread/turn IDs, session inputs, the
+`ProviderRuntimeEvent` union (each event keeps a per-backend `raw` tag), model
+catalogs and settings schemas. Drivers stay thin against the provider CLIs;
+the per-provider sections below give the spec for each.
 
 ---
 
-## 5. Claude Code driver
-
-Reference: `mvx-upstream/apps/server/src/provider/{Drivers/ClaudeDriver.ts,
-Layers/ClaudeAdapter.ts (5,218 lines), Layers/ClaudeProvider.ts,
-Layers/claudeUsageLimits.ts, Drivers/ClaudeHome.ts}`,
-SDK `@anthropic-ai/claude-agent-sdk ^0.3.276`.
+## 4. Claude Code driver
 
 * **Transport:** spawn official `claude` via `pathToClaudeCodeExecutable`
   (`ClaudeAdapter.ts:4916`); text-gen side-channel `claude -p --output-format json`
@@ -135,7 +99,7 @@ SDK `@anthropic-ai/claude-agent-sdk ^0.3.276`.
   Subscription identity is read-only from SDK init
   (`ClaudeProvider.ts:375-390`: `init.account.{subscriptionType,tokenSource,apiProvider}`
   → Max/Max5x/Max20x/Pro/Team/Enterprise/Free/apiKey/bedrock, `:70-164`). Bedrock via
-  external AWS creds (25s probe timeout); no Vertex support in T3 — match that.
+  external AWS creds (25s probe timeout); no Vertex support — match that.
 * **Permissions:** map modes → SDK `permissionMode`
   (`ClaudeAdapter.ts:4879-4891`: `auto-accept-edits→acceptEdits`, `auto→auto`,
   `full-access→bypassPermissions` + `allowDangerouslySkipPermissions`). Enforce via
@@ -159,12 +123,7 @@ SDK `@anthropic-ai/claude-agent-sdk ^0.3.276`.
 
 ---
 
-## 6. Codex driver
-
-Reference: `mvx-upstream/apps/server/src/provider/{Drivers/CodexDriver.ts,
-Layers/CodexAdapter.ts (2,594), Layers/CodexSessionRuntime.ts (2,534),
-Layers/CodexProvider.ts, Layers/codexUsageLimits.ts, Layers/codexLaunchArgs.ts,
-Drivers/CodexHomeLayout.ts}`.
+## 5. Codex driver
 
 * **Transport:** spawn `codex app-server` per session, stdio JSON-RPC
   (`codexLaunchArgs.ts:12-15`; `CodexSessionRuntime.ts:1322-1354`, `forceKillAfter 2s`).
@@ -197,11 +156,7 @@ Drivers/CodexHomeLayout.ts}`.
 
 ---
 
-## 7. Grok driver
-
-Reference: `mvx-upstream/apps/server/src/provider/{acp/GrokAcpSupport.ts,
-Layers/GrokAdapter.ts (2,107), Layers/GrokProvider.ts, Layers/grokUsageLimits.ts,
-Drivers/GrokDriver.ts}`, `textGeneration/GrokTextGeneration.ts`.
+## 6. Grok driver
 
 * **Transport:** spawn `grok agent stdio` over ACP (`GrokAcpSupport.ts:33-63`),
   per-mode argv (`approval-required→--permission-mode default`,
@@ -225,11 +180,11 @@ Drivers/GrokDriver.ts}`, `textGeneration/GrokTextGeneration.ts`.
 * **Usage:** billing probe `GET cli-chat-proxy.grok.com/v1/billing?format=credits`
   with the `auth.json` key for `b1a00492-…` → single `subscription` window
   (weekly/monthly/other); `unavailable` for API-key/custom deployments; 10s timeout.
-  No 429 handling in T3 — add generic retry/backoff ourselves.
+  Add generic retry/backoff ourselves.
 
 ---
 
-## 8. OpenCode surface (the long tail, "for free")
+## 7. OpenCode surface (the long tail, "for free")
 
 Reference: `opencode-upstream/packages/opencode/src/{plugin/openai/codex.ts (575),
 plugin/xai.ts, provider/{auth.ts,provider.ts,transform.ts}, session/,
@@ -261,20 +216,20 @@ permission/index.ts}`, `packages/core/src/{models-dev.ts,plugin/models-dev.ts}`,
   (`session/llm.ts`, `message-v2.ts`, `processor.ts` — Effect+drizzle+OTEL),
   Auth/Provider Effect stores (take only the `Info` schema + dummy key), SSE/server/TUI.
 * **Serving choice (open):** (a) spawn `opencode serve` per working dir + generated SDK
-  (proven: T3's `OpenCodeDriver` does exactly this, `MINIMUM_OPENCODE_VERSION 1.14.19`,
+  (proven in the reference implementation, `MINIMUM_OPENCODE_VERSION 1.14.19`,
   one server per thread for chat, shared helper for catalog/text-gen); or (b) embed via
   SDK + own loop with vendored auth. (a) first — it preserves `abort/fork/share/todo/
   diff`, `promptAsync`, SSE events with zero porting.
 
 ---
 
-## 9. Threads (we own — the core build)
+## 8. Threads (we own — the core build)
 
 * **Store:** thread = id, projectId, title, modelSelection `{instanceId, model, options}`,
   runtimeMode, interactionMode, env (local/worktree path+branch), lifecycle
   (active/settled/snoozedUntil/archived), turn ledger, message ledger with `turnId`,
   checkpoints refs, activity rows. SQLite (drizzle, mirroring OpenCode session tables)
-  or JSONL tree files (Pi-style) — decide in implementation; either beats T3's
+  or JSONL tree files (Pi-style) — decide in implementation; either beats an
   event-sourced engine for our scale.
 * **Lifecycle ops:** create, `list --status active|settled|snoozed|all` (snoozed =
   unsettled + `snoozedUntil` future — keep current semantics), inspect/read
@@ -286,7 +241,7 @@ permission/index.ts}`, `packages/core/src/{models-dev.ts,plugin/models-dev.ts}`,
 * **Busy semantics (keep CLI-stable):** `reject` default snapshot preflight,
   `inject/queue/steer/restart` policies — but now enforceable with a real per-session
   mutex instead of a racy preflight. One active turn per session everywhere.
-* **Events:** own typed bus replacing T3 pushes + OpenCode SSE:
+* **Events:** own typed bus over OpenCode SSE and driver events:
   `message.part.updated`, `tool.execute.*`, `turn.plan.updated`, permission/question
   request/resolved, `token-usage.updated`, `rate-limits.updated`, `thread.state.changed`.
   Needs replay/sync so TUI + CLI + scheduled senders see the same truth.
@@ -295,10 +250,10 @@ permission/index.ts}`, `packages/core/src/{models-dev.ts,plugin/models-dev.ts}`,
 
 ---
 
-## 10. Projects (we own)
+## 9. Projects (we own)
 
-T3's `list/resolve/ensure` + `workspaceRoot` mapping + per-project
-`defaultModelSelection` + `local/worktree` modes, minus T3. OpenCode's project API
+`list/resolve/ensure` + `workspaceRoot` mapping + per-project
+`defaultModelSelection` + `local/worktree` modes. OpenCode's project API
 (`GET /project`, name/icon/commands only, no create/delete/ordering) is insufficient —
 keep our own ID registry: resolve cwd→(repo root|folder per `workspaceMode`),
 policy `create|existing`, worktree provisioning from current branch + setup script,
@@ -308,26 +263,26 @@ passthrough — replace with explicit default).
 
 ---
 
-## 11. Permissions (we own, 4 providers)
+## 10. Permissions (we own, 4 providers)
 
 One `allow/ask/deny` ruleset per tool+pattern (vendor OpenCode `evaluate` + wildcard),
-one mapping per provider (§5–7 + OpenCode generic ruleset + `workflow_tool_approval`
+one mapping per provider (the per-provider sections + OpenCode generic ruleset + `workflow_tool_approval`
 bridge). Always set explicit session rulesets; serialize prompts (concurrent-modals
 freeze, `sst#3944`); no `*`-allow inheritance into subagents (`#12566` hang class);
 `deny` must stop the turn (over/under-constrain bugs `#26700/#30527/#30610`); `bash`
 and subagent-echo bypasses (`#4642`) are test cases, not surprises. Plan mode:
 Claude live `setPermissionMode`, Codex per-turn sandbox, Grok argv, OpenCode agent
-selector. Snapshot rule: no shared-server grant widening (T3's auto-`once` rationale).
+selector. Snapshot rule: no shared-server grant widening (auto-`once`).
 
 ---
 
-## 12. Tool harness (biggest build item, now bounded)
+## 11. Tool harness (biggest build item, now bounded)
 
-One MCP-injection path (per-turn env, the hotspot in every T3 adapter:
+One MCP-injection path (per-turn env, the hotspot in every adapter:
 `CodexAdapter.ts:2274`, `ClaudeAdapter.ts:4904-4950`), one attachment resolver
 (images ≤ provider caps: OpenCode native is `png/jpeg/gif/webp` + `text/*` + `pdf≤20MB`,
 else path-in-prompt; Codex `localImage` by path; Grok base64 ACP blocks), one
-runtime-instructions builder (lift T3's `RuntimeInstructions` logic), skills +
+runtime-instructions builder, skills +
 slash-commands (OpenCode inventory via SDK `app.skills`/`command.list` — never
 `opencode debug skill`, 64KB pipe truncation per `OpenCodeDriver.ts:171-178`),
 subagent/task tool with worktree isolation + `acceptForSession` scoping,
@@ -336,7 +291,7 @@ candidate upgrade for edit reliability — evaluated, not committed.
 
 ---
 
-## 13. Compaction / context / checkpoints / usage (per-provider table is the spec)
+## 12. Compaction / context / checkpoints / usage (per-provider table is the spec)
 
 | Area | Claude | Codex | Grok | OpenCode-generic |
 |---|---|---|---|---|
@@ -345,13 +300,13 @@ candidate upgrade for edit reliability — evaluated, not committed.
 | Checkpoints | SDK fork-based rollback (no Git path) | Native rollback/revert + our Git store | No provider rollback (Git store only) | `diff/revert/unrevert` + VCS endpoints, busy-rejects, snapshot GC |
 | Usage windows | Session/Weekly + model rows; over-limit park + "paused until" | Session/weekly/monthly + **reset-credit consume** + rewrite | Single `subscription` billing window; unavailable on API-key | None — scrape errors/headers/DB or accept gap |
 
-TUI needs: per-turn diffs (from §13 stores), token/cost footer (context usage card
+TUI needs: per-turn diffs (from the relevant section stores), token/cost footer (context usage card
 already exists: `tui/ui/contextusagecard.tsx`), usage panel (degraded gracefully per
 provider — `PROVIDER_NOT_FOUND`/`MODEL_NOT_FOUND`-style errors keep listing what exists).
 
 ---
 
-## 14. Credit, trademark, and contribution posture
+## 13. Credit, trademark, and contribution posture
 
 * Notices: `THIRD_PARTY_NOTICES` (new) records every vendored file + MIT text.
 * Trademark intent on the `mvx` name (names can't be forked even when code can).
@@ -365,34 +320,15 @@ provider — `PROVIDER_NOT_FOUND`/`MODEL_NOT_FOUND`-style errors keep listing wh
 
 ---
 
-## 15. Migration phases (T3-server stays up until cutover)
-
-1. **Foundations:** Effect `rc.115` upgrade; `src/providers/spi.ts` + `src/events/`
-   bus + `src/threads/` store with T3 still behind a `T3Backend implements Backend`
-   facade. CLI envelopes untouched. (`bun run check` green throughout.)
-2. **Provider 1 (Codex):** app-server runtime + shadow-home auth + approvals +
-   native compaction/rollback + usage windows. Handover/send on Codex direct;
-   T3 remains for the rest.
-3. **Providers 2–3 (Claude, Grok):** Agent-SDK + ACP runtimes per §5/§7.
-   Claude-sub is the acceptance test (Pro/Max login inherited, quota windows live).
-4. **OpenCode surface:** serve/SDK client + vendored Codex/xAI plugins + pinned
-   models.dev snapshot. Retires `catalog/t3ws.ts`.
-5. **Cutover:** projects registry + settle/snooze + checkpoints + usage panels on own
-   stores; `doctor` repointed (binaries, auth, versions); T3 codepaths deleted;
-  `request get` escape hatch repointed or removed (envelope stays, path space changes —
-   document it).
-6. **Hardening:** permission fuzz tests (bypass classes), multi-client stress,
-   snapshot GC, Windows/musl natives, scheduled-send docs updated (bun path stays).
-
-## 16. Testing contract (AGENTS.md)
+## 14. Testing contract (AGENTS.md)
 
 * `bun run check` (typecheck + vitest) before claiming any phase done.
 * TUI behavior changes extend `tui/render-check.tsx` scenarios + `tui/model/*.test.ts`
   (sidebar/model-picker/threads suites already exist — add decoupling suites per phase).
-* New fixtures in `tui/render-check/fixtures.ts` for direct-backend threads (no T3
+* New fixtures in `tui/render-check/fixtures.ts` for direct-backend threads (no legacy
   projection shapes); keep JSON envelopes asserted in `cli/*/tests/`.
 
-## 17. Open risks
+## 15. Open risks
 
 * OAuth drift (Codex/xAI flows move yearly; Claude inherits CLI changes) — pin versions,
   keep API-key fallback green.

@@ -1,8 +1,8 @@
 export type ProjectPolicy = "create" | "existing";
 export type WorkspaceMode = "repo" | "folder";
 export type OpenMode = "auto" | "desktop" | "browser" | "none";
-export type ThreadEnvMode = "t3" | "local" | "worktree";
-export type EffectiveThreadEnvMode = Exclude<ThreadEnvMode, "t3">;
+export type ThreadEnvMode = "auto" | "local" | "worktree";
+export type EffectiveThreadEnvMode = Exclude<ThreadEnvMode, "auto">;
 export type RuntimeMode = "approval-required" | "auto" | "auto-accept-edits" | "full-access";
 export type InteractionMode = "default" | "plan";
 export type SpeedMode = "standard" | "fast";
@@ -19,9 +19,6 @@ export interface CliConfig {
   model?: string;
   speedMode?: SpeedMode;
   thinkingEffort?: string;
-  t3Home?: string;
-  origin?: string;
-  t3Command?: string[];
 }
 
 export interface RuntimeState {
@@ -33,7 +30,7 @@ export interface RuntimeState {
   startedAt: string;
 }
 
-export interface T3Runtime {
+export interface RuntimeEnvelope {
   origin: string;
   stateDir: string | null;
   runtimeStatePath: string | null;
@@ -57,7 +54,7 @@ export interface ProviderOptionSelection {
   value: string | boolean;
 }
 
-export interface T3Project {
+export interface ProjectEnvelope {
   id: string;
   title: string;
   workspaceRoot: string;
@@ -67,7 +64,7 @@ export interface T3Project {
   [key: string]: unknown;
 }
 
-export interface T3ThreadActivity {
+export interface ActivityEnvelope {
   id: string;
   tone: string;
   kind: string;
@@ -77,19 +74,19 @@ export interface T3ThreadActivity {
   [key: string]: unknown;
 }
 
-export interface T3CheckpointSummary {
+export interface CheckpointEnvelope {
   turnId: string;
   status: string;
   [key: string]: unknown;
 }
 
-export interface T3ProposedPlan {
+export interface ProposedPlanEnvelope {
   id: string;
   turnId: string | null;
   [key: string]: unknown;
 }
 
-export interface T3Thread {
+export interface ThreadEnvelope {
   id: string;
   projectId: string;
   title: string;
@@ -98,8 +95,8 @@ export interface T3Thread {
   interactionMode?: InteractionMode;
   branch?: string | null;
   worktreePath?: string | null;
-  latestTurn?: T3LatestTurn | null;
-  session?: T3Session | null;
+  latestTurn?: LatestTurnEnvelope | null;
+  session?: SessionEnvelope | null;
   createdAt?: string;
   updatedAt?: string;
   archivedAt: string | null;
@@ -111,15 +108,15 @@ export interface T3Thread {
   latestUserMessageAt?: string | null;
   hasPendingApprovals?: boolean;
   hasPendingUserInput?: boolean;
-  messages?: T3Message[];
-  activities?: T3ThreadActivity[];
-  checkpoints?: T3CheckpointSummary[];
-  proposedPlans?: T3ProposedPlan[];
+  messages?: MessageEnvelope[];
+  activities?: ActivityEnvelope[];
+  checkpoints?: CheckpointEnvelope[];
+  proposedPlans?: ProposedPlanEnvelope[];
   deletedAt?: string | null;
   [key: string]: unknown;
 }
 
-export interface T3LatestTurn {
+export interface LatestTurnEnvelope {
   turnId: string;
   state: "running" | "interrupted" | "completed" | "error";
   requestedAt: string;
@@ -129,7 +126,7 @@ export interface T3LatestTurn {
   [key: string]: unknown;
 }
 
-export interface T3Session {
+export interface SessionEnvelope {
   threadId: string;
   status: "idle" | "starting" | "running" | "ready" | "interrupted" | "stopped" | "error";
   providerName: string | null;
@@ -141,7 +138,7 @@ export interface T3Session {
   [key: string]: unknown;
 }
 
-export interface T3Message {
+export interface MessageEnvelope {
   id: string;
   role: "user" | "assistant" | "system";
   text: string;
@@ -156,14 +153,14 @@ export interface T3Message {
 
 export interface OrchestrationSnapshot {
   snapshotSequence: number;
-  projects: T3Project[];
-  threads: T3Thread[];
+  projects: ProjectEnvelope[];
+  threads: ThreadEnvelope[];
   updatedAt: string;
 }
 
 export interface ThreadDetailSnapshot {
   snapshotSequence: number;
-  thread: T3Thread;
+  thread: ThreadEnvelope;
   page?: {
     beforeCursor: string | null;
     hasMore: boolean;

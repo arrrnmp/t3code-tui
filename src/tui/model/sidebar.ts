@@ -1,8 +1,8 @@
-import type { T3Project, T3Thread } from "../../core/types.js";
+import type { ProjectEnvelope, ThreadEnvelope } from "../../core/types.js";
 import { threadSortTime, threadStatus, type ShellState, type ThreadStatus } from "./shell.js";
 
 export interface SidebarThread {
-  thread: T3Thread;
+  thread: ThreadEnvelope;
   projectTitle: string;
   badge: string;
   badgeColor: string;
@@ -45,7 +45,7 @@ export type SidebarMode = "flat" | "grouped" | "project";
 const BADGE_COLORS = ["#c35457", "#4e7ccb", "#955fcb", "#32a07f", "#c78e32", "#c1568e", "#359f97"];
 
 /**
- * T3 renders a two-character project chip and every project here has a null
+ * A two-character project chip is rendered and every project here has a null
  * `projectIcon`, so the chip is derived: leading character plus the first digit
  * when the name carries one, else the trailing character.
  */
@@ -76,7 +76,7 @@ export function relativeAge(value: string | undefined, now: number): string {
   return `${Math.round(hours / 24)}d`;
 }
 
-function threadTime(thread: T3Thread): number {
+function threadTime(thread: ThreadEnvelope): number {
   const candidates = [thread.updatedAt, thread.latestUserMessageAt, thread.createdAt];
   let latest = 0;
   for (const candidate of candidates) {
@@ -87,7 +87,7 @@ function threadTime(thread: T3Thread): number {
   return latest;
 }
 
-function toSidebarThread(thread: T3Thread, projects: Map<string, T3Project>, now: number): SidebarThread {
+function toSidebarThread(thread: ThreadEnvelope, projects: Map<string, ProjectEnvelope>, now: number): SidebarThread {
   const project = projects.get(thread.projectId);
   const projectTitle = project?.title ?? "unknown project";
   const branch = typeof thread.branch === "string" && thread.branch.length > 0 ? thread.branch : null;
@@ -111,7 +111,7 @@ function toSidebarThread(thread: T3Thread, projects: Map<string, T3Project>, now
  * streamed message would otherwise reset the clock to zero and the card
  * could never show how long the turn has been running.
  */
-function displayTimestamp(thread: T3Thread, status: ThreadStatus): string | undefined {
+function displayTimestamp(thread: ThreadEnvelope, status: ThreadStatus): string | undefined {
   if (status === "running") {
     const turn = thread.latestTurn;
     const anchor = turn?.startedAt ?? turn?.requestedAt;
@@ -138,7 +138,7 @@ export interface SidebarOptions {
  * Newest user turn (or finished turn) first — never `updatedAt`, so running
  * threads hold their slots instead of leapfrogging on every tool call.
  */
-function byRecency(left: T3Thread, right: T3Thread): number {
+function byRecency(left: ThreadEnvelope, right: ThreadEnvelope): number {
   return threadSortTime(right) - threadSortTime(left);
 }
 
@@ -166,8 +166,8 @@ export function buildSidebarSections(state: ShellState, options: SidebarOptions)
   const projects = new Map(state.projects.map((project) => [project.id, project]));
   const live = state.threads.filter((thread) => thread.archivedAt === null && thread.deletedAt == null);
 
-  const active: T3Thread[] = [];
-  const settled: T3Thread[] = [];
+  const active: ThreadEnvelope[] = [];
+  const settled: ThreadEnvelope[] = [];
   for (const thread of live) {
     (threadStatus(thread, options.now) === "settled" ? settled : active).push(thread);
   }
@@ -183,7 +183,7 @@ export function buildSidebarSections(state: ShellState, options: SidebarOptions)
 
   let groups: SidebarGroup[] = [];
   if (mode === "grouped") {
-    const perProject = new Map<string, T3Thread[]>();
+    const perProject = new Map<string, ThreadEnvelope[]>();
     for (const thread of visible) {
       const rows = perProject.get(thread.projectId) ?? [];
       rows.push(thread);

@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import { describeActivity, fileRowCounts, formatMs, readRangeLabel } from "../activity.js";
-import type { T3ThreadActivity } from "../../../core/types.js";
+import type { ActivityEnvelope } from "../../../core/types.js";
 
-function activity(kind: string, payload: Record<string, unknown>): T3ThreadActivity {
+function activity(kind: string, payload: Record<string, unknown>): ActivityEnvelope {
   return {
     id: "a1",
     tone: "tool",
@@ -12,7 +12,7 @@ function activity(kind: string, payload: Record<string, unknown>): T3ThreadActiv
     turnId: "turn-1",
     createdAt: "2026-09-15T00:28:00.000Z",
     payload,
-  } as unknown as T3ThreadActivity;
+  } as unknown as ActivityEnvelope;
 }
 
 describe("describeActivity", () => {
@@ -470,7 +470,7 @@ describe("describeActivity", () => {
     expect(view).toMatchObject({ kind: "grep", pattern: "activity.test.ts", scope: null });
   });
 
-  it("tolerates T3's truncation note on the match header", () => {
+  it("tolerates a truncation note on the match header", () => {
     const view = describeActivity(
       activity("tool.completed", {
         itemType: "dynamic_tool_call",
@@ -622,11 +622,11 @@ describe("describeActivity", () => {
         toolCallId: "toolu_mcp1",
         status: "completed",
         title: "Tool call",
-        detail: "mcp__t3-code__preview_snapshot: {}",
-        data: { toolName: "mcp__t3-code__preview_snapshot", input: {} },
+        detail: "mcp__linear__create_issue: {}",
+        data: { toolName: "mcp__linear__create_issue", input: {} },
       }),
     );
-    expect(mcpCall).toMatchObject({ kind: "tool", tool: "t3-code: preview_snapshot" });
+    expect(mcpCall).toMatchObject({ kind: "tool", tool: "linear: create_issue" });
   });
 
   it("renders user-input.requested as the friendly question row", () => {

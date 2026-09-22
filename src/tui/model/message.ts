@@ -1,7 +1,7 @@
 import os from "node:os";
 import path from "node:path";
 
-import type { T3Message } from "../../core/types.js";
+import type { MessageEnvelope } from "../../core/types.js";
 
 export interface ImageReference {
   contextId: string;
@@ -16,7 +16,7 @@ export interface RenderedMessage {
   images: ImageReference[];
 }
 
-const IMAGE_REFERENCE = /!?\[([^\]]*)\]\(t3-context:\/\/v1\/image\/([^)]+)\)/g;
+const IMAGE_REFERENCE = /!?\[([^\]]*)\]\(monvex-context:\/\/v1\/image\/([^)]+)\)/g;
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -24,8 +24,8 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-function attachmentsDir(t3Home?: string): string {
-  return path.join(t3Home ?? path.join(os.homedir(), ".t3"), "userdata", "attachments");
+function attachmentsDir(homeDir?: string): string {
+  return path.join(homeDir ?? path.join(os.homedir(), ".monvex"), "attachments");
 }
 
 function extensionFor(mimeType: unknown): string {
@@ -44,16 +44,16 @@ function asBytes(value: unknown): number | null {
 }
 
 /**
- * Messages reference attachments as `![label](t3-context://v1/image/<contextId>)`
+ * Messages reference attachments as `![label](monvex-context://v1/image/<contextId>)`
  * and carry a `context.records` table mapping that id to an attachment id; the
- * bytes then live under the T3 home as `<attachmentId><ext>`.
+ * bytes then live under the store home as `<attachmentId><ext>`.
  *
  * Inline uploads over `thread.turn.start` persist attachments without context
  * records, so anything in `message.attachments` not already covered by a ref
  * renders as an image row too — otherwise TUI-sent images are invisible in
  * the transcript even though the agent received them.
  */
-export function renderMessage(message: T3Message, t3Home?: string): RenderedMessage {
+export function renderMessage(message: MessageEnvelope, homeDir?: string): RenderedMessage {
   const records = asRecord(message.context)?.records;
   const table = new Map<string, Record<string, unknown>>();
   if (Array.isArray(records)) {
@@ -79,7 +79,7 @@ export function renderMessage(message: T3Message, t3Home?: string): RenderedMess
       filePath:
         attachmentId === null
           ? null
-          : path.join(attachmentsDir(t3Home), `${attachmentId}${extensionFor(record?.mimeType)}`),
+          : path.join(attachmentsDir(homeDir), `${attachmentId}${extensionFor(record?.mimeType)}`),
     });
     return "";
   });
@@ -100,7 +100,7 @@ export function renderMessage(message: T3Message, t3Home?: string): RenderedMess
         filePath:
           attachmentId === null
             ? null
-            : path.join(attachmentsDir(t3Home), `${attachmentId}${extensionFor(attachment.mimeType)}`),
+            : path.join(attachmentsDir(homeDir), `${attachmentId}${extensionFor(attachment.mimeType)}`),
       });
     }
   }

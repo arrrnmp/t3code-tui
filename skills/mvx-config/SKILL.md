@@ -25,19 +25,19 @@ mvx config set thinkingEffort xhigh
 | `projectPolicy` | `create`, `existing` | `create` |
 | `workspaceMode` | `repo`, `folder` | `repo` |
 | `openMode` | `auto`, `desktop`, `browser`, `none` | `auto` |
-| `threadEnvMode` | `t3`, `local`, `worktree` | `t3` |
+| `threadEnvMode` | `auto`, `local`, `worktree` | `auto` |
 | `runtimeMode` | `approval-required`, `auto-accept-edits`, `auto`, `full-access` | `full-access` |
 | `interactionMode` | `default`, `plan` | `default` |
-| `provider` | Configured T3 provider instance id | T3 project selection |
-| `model` | Provider model slug | T3 project selection |
-| `speedMode` | `standard`, `fast` | T3 project selection |
-| `thinkingEffort` | Model-supported effort value | T3 project selection |
+| `provider` | Configured provider instance id | project selection |
+| `model` | Provider model slug | project selection |
+| `speedMode` | `standard`, `fast` | project selection |
+| `thinkingEffort` | Model-supported effort value | project selection |
 
 Order of precedence for a new thread:
 
 1. Command flags.
 2. CLI config (this file's settings).
-3. The T3 project's saved model selection.
+3. The project's saved model selection.
 
 `projectPolicy: "existing"` turns a missing project into an error.
 

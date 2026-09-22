@@ -34,7 +34,7 @@ export function versionAtLeast(version: string, minimum: string): boolean {
 }
 
 /**
- * Explicit installation default (DECOUPLE.md §10): the native Codex
+ * Explicit installation default (ARCHITECTURE.md §10): the native Codex
  * driver with a long-lived model slug, verified against live `model/list`.
  * Anything more specific wins — flags, config, project default, thread
  * model — this is only the last resort so a bare `send` has an address.
@@ -115,7 +115,7 @@ export function resolveModelSelection(
     setProviderOption(selections, "fastMode", speedMode === "fast");
   }
   if (thinkingEffort !== undefined) {
-    // T3 provider drivers use different descriptor ids for the same user-facing control.
+    // Provider drivers use different descriptor ids for the same user-facing control.
     setProviderOption(selections, "reasoningEffort", thinkingEffort);
     setProviderOption(selections, "effort", thinkingEffort);
     setProviderOption(selections, "reasoning", thinkingEffort);

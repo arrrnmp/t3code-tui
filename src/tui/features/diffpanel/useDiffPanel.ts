@@ -15,7 +15,7 @@ import { markModalDismissed } from "../../model/modalDismiss.js";
 import { findPatchFile, splitPatchByFile, type PatchFile } from "../../model/patch.js";
 import { proportionalTarget, type TurnGroup } from "../../model/turns.js";
 import { type ThreadState } from "../../model/thread.js";
-import type { T3Project, T3Thread } from "../../../core/types.js";
+import type { ProjectEnvelope, ThreadEnvelope } from "../../../core/types.js";
 
 /**
  * Owns the diff panel: which turn is expanded, its patch, the checkpoint /
@@ -26,8 +26,8 @@ export function useDiffPanel(params: {
   client: ClientApi;
   width: number;
   openThreadId: string | null;
-  selected: T3Thread | null;
-  shellProjects: T3Project[];
+  selected: ThreadEnvelope | null;
+  shellProjects: ProjectEnvelope[];
   threadState: ThreadState;
   threadStateRef: MutableRefObject<ThreadState>;
   groups: TurnGroup[];

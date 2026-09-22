@@ -41,7 +41,7 @@ export const PICK_BG = "#df9f5f";
 export const PICK_FG = "#221503";
 
 /**
- * Centered modal picker in the style of T3's own Select-model menu: title
+ * Centered modal picker: title
  * with esc on the right, an inline filter row, sections of rows with a
  * right-aligned meta column, and a highlighted current row. It owns its keys
  * (type to filter, arrows to move, enter to pick, escape to close); the app

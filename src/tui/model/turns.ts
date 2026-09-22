@@ -35,7 +35,7 @@ function elapsed(entries: readonly TimelineEntry[]): { durationMs: number; start
 }
 
 /**
- * T3's own transcript keeps a turn's prompt and closing reply visible and folds
+ * The transcript keeps a turn's prompt and closing reply visible and folds
  * everything between them into one "worked for" row; this groups the flat
  * timeline the same way so a long turn does not bury the answer.
  */

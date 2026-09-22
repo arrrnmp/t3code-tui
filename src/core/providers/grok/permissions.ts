@@ -1,6 +1,6 @@
 /**
  * Grok permission option selection. The agent offers per-tool options with
- * `allow_once`/`allow_always`/`reject_*` kinds; T3 accepts for the session
+ * `allow_once`/`allow_always`/`reject_*` kinds; we accept for the session
  * via `allow_always` with an `allow_once` fallback (Grok 4.6 omits
  * `allow_always`), accepts once via `allow_once`, and declines via the
  * reject option (else the ACP `cancelled` outcome).
