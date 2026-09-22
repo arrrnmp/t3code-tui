@@ -95,6 +95,12 @@ export interface StoredActivity {
   readonly turnId: string | null;
   readonly kind: string;
   readonly summary: string;
+  /**
+   * Structured detail for rows that have any — tool calls carry the
+   * renderer's payload shape (`itemType`, `data.tool`, `data.state.input`,
+   * …; see `toolactivity.ts`). Lifecycle rows carry none.
+   */
+  readonly payload?: Record<string, unknown> | undefined;
   readonly createdAt: string;
 }
 

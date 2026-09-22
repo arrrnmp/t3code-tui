@@ -35,6 +35,7 @@ import {
 } from "../checkpoints/git.js";
 import { completeTurn, failTurn, interruptTurn } from "./threads.js";
 import { ThreadStore } from "./store.js";
+import { toolActivityRow, type ToolRuntimeEvent } from "./toolactivity.js";
 import type { TurnUsage } from "./types.js";
 
 /** Structural driver surface the runner needs. All four drivers satisfy it. */
@@ -254,10 +255,72 @@ export function executeTurn(args: ExecuteTurnArgs): Promise<void> {
   return trackRun(runExecuteTurn(args));
 }
 
+/**
+ * Persist the turn's tool calls as activity rows while it runs.
+ *
+ * Without this the ledger records only lifecycle bookkeeping and the
+ * transcript has nothing to show for a turn's work (DECOUPLE.md §9). Rows
+ * are append-only — the TUI collapses started/completed onto one card by
+ * `toolCallId` — but a provider that streams output deltas would append
+ * hundreds per call, so a row is written only when its signature changes.
+ *
+ * Every failure here is swallowed: a transcript row must never rewrite a
+ * turn's outcome, and a payload shape we cannot read is a missing card,
+ * not a failed run.
+ */
+function recordToolActivity(
+  store: ThreadStore,
+  threadId: string,
+  storeTurnId: string,
+): { onEvent: (event: ProviderRuntimeEvent) => void; flush: () => Promise<void> } {
+  const written = new Map<string, string>();
+  // Appends are chained rather than fired in parallel: the ledger is an
+  // append-only file and the rows must land in the order they happened.
+  // The runner awaits this chain before returning, so a one-shot CLI
+  // cannot exit between a tool completing and its row being written.
+  let chain: Promise<void> = Promise.resolve();
+  const onEvent = (event: ProviderRuntimeEvent): void => {
+    if (
+      event.type !== "tool.execute.started" &&
+      event.type !== "tool.execute.updated" &&
+      event.type !== "tool.execute.completed"
+    ) {
+      return;
+    }
+    let row: ReturnType<typeof toolActivityRow>;
+    try {
+      row = toolActivityRow(event as ToolRuntimeEvent);
+    } catch {
+      return;
+    }
+    if (row === null) return;
+    if (written.get(row.callId) === row.signature) return;
+    written.set(row.callId, row.signature);
+    const written_row = {
+      id: store.newId(),
+      threadId,
+      turnId: storeTurnId,
+      kind: row.kind,
+      summary: row.summary,
+      payload: row.payload,
+      createdAt: store.nowIso(),
+    };
+    chain = chain.then(() =>
+      store.appendLedger(threadId, "activity", written_row).catch(() => undefined),
+    );
+  };
+  return { onEvent, flush: () => chain };
+}
+
 async function runExecuteTurn(args: ExecuteTurnArgs): Promise<void> {
   const { store, driver, threadId, storeTurnId } = args;
   const cwd = args.workingDirectory?.trim() ? args.workingDirectory.trim() : null;
-  const unsubscribe = args.onEvent ? subscribeDriverThread(driver, threadId, args.onEvent) : undefined;
+  const recordTools = recordToolActivity(store, threadId, storeTurnId);
+  const onEvent = args.onEvent;
+  const unsubscribe = subscribeDriverThread(driver, threadId, (event) => {
+    recordTools.onEvent(event);
+    onEvent?.(event);
+  });
   // Pre-turn capture first: the diff base must predate any provider write.
   const pre = cwd ? await captureWorktree(cwd, `t3code ${threadId}/${storeTurnId} pre`) : null;
   const controller = new AbortController();
@@ -292,7 +355,9 @@ async function runExecuteTurn(args: ExecuteTurnArgs): Promise<void> {
   } finally {
     controller.signal.removeEventListener("abort", onAbort);
     store.untrackRunning(storeTurnId);
-    unsubscribe?.();
+    unsubscribe();
+    // Drain queued tool rows before the run is considered over.
+    await recordTools.flush();
   }
 }
 

@@ -55,7 +55,7 @@ export async function runActivityRows(setup: TestRendererSetup): Promise<void> {
   readRowFrame = setup.captureCharFrame();
   console.log(readRowFrame);
   if (!readRowFrame.includes("Read(src/tui/theme.ts)")) fail("turn-2 Read row does not render Read(path)");
-  if (!readRowFrame.includes("Read(src/tui/sidebar.ts)")) fail("wire-shape Read row does not resolve the detail echo");
+  if (!readRowFrame.includes("Read(src/tui/sidebar.ts)")) fail("section-read row does not resolve its path from input");
   if (readRowFrame.includes("read ×") || readRowFrame.includes("Update ×")) fail("tool calls still stack per tool");
   // The List row sits below the reads — one more nudge to bring it into view.
   for (let wheel = 0; wheel < 4; wheel += 1) {

@@ -377,10 +377,65 @@ export function applyThreadFrame(state: ThreadState, frame: unknown): ThreadStat
 }
 
 /**
+ * The universal fallback name every driver reaches for when a payload
+ * names no tool (`asString(...) ?? "tool"`). It identifies nothing, so it
+ * must never win over a row that did name the call.
+ */
+const PLACEHOLDER_TOOL_NAME = "tool";
+
+/** Does this value say anything, or is it a hole the merge should skip? */
+function isInformative(value: unknown): boolean {
+  if (value === undefined || value === null) return false;
+  if (typeof value === "string") return value.length > 0;
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === "object") return Object.keys(value as object).length > 0;
+  return true;
+}
+
+/**
+ * Later payloads win per key — but only where they actually say something.
+ *
+ * A call's rows are written by different provider events and are not
+ * uniformly rich: the row that reports a result often knows only the
+ * result. Claude's `tool_result` block carries no tool name and no input;
+ * ACP `tool_call_update` sends changed fields only. Replacing wholesale
+ * therefore let the *poorest* row win, turning a finished
+ * `Read(note.txt)` into a nameless `tool` card with the file dumped into
+ * it. Merging keeps what any row knew, so the card only ever gains
+ * detail as the call progresses.
+ */
+function mergePayloads(older: unknown, newer: unknown): unknown {
+  const base = asRecord(older);
+  const next = asRecord(newer);
+  if (base === null || next === null) return isInformative(newer) ? newer : older;
+  const merged: Record<string, unknown> = { ...base };
+  for (const [key, value] of Object.entries(next)) {
+    const current = merged[key];
+    if (asRecord(value) !== null && asRecord(current) !== null) {
+      merged[key] = mergePayloads(current, value);
+      continue;
+    }
+    if (!isInformative(value)) continue;
+    // A placeholder name is not an update, it is the absence of one.
+    if (
+      (key === "tool" || key === "title") &&
+      value === PLACEHOLDER_TOOL_NAME &&
+      isInformative(current) &&
+      current !== PLACEHOLDER_TOOL_NAME
+    ) {
+      continue;
+    }
+    merged[key] = value;
+  }
+  return merged;
+}
+
+/**
  * A tool call emits started/updated/completed rows that all describe the same
- * work, so they collapse onto the first row's position carrying the newest
- * payload — otherwise the transcript is mostly duplicate headers. Plan
- * checklists re-emit on every step change, so they collapse per turn too.
+ * work, so they collapse onto the first row's position, merging each new
+ * payload into what earlier rows already knew — otherwise the transcript is
+ * mostly duplicate headers. Plan checklists re-emit on every step change, so
+ * they collapse per turn too.
  */
 function collapseToolActivities(activities: readonly T3ThreadActivity[]): T3ThreadActivity[] {
   const positions = new Map<string, number>();
@@ -411,7 +466,12 @@ function collapseToolActivities(activities: readonly T3ThreadActivity[]): T3Thre
     }
     const first = ordered[index];
     if (first !== undefined) {
-      ordered[index] = { ...activity, id: first.id, createdAt: first.createdAt };
+      ordered[index] = {
+        ...activity,
+        id: first.id,
+        createdAt: first.createdAt,
+        payload: mergePayloads(first.payload, activity.payload),
+      };
     }
   }
   return ordered;
@@ -454,9 +514,31 @@ function isBookkeepingActivity(activity: T3ThreadActivity): boolean {
     activity.kind === "checkpoint.captured" ||
     // The answer itself is visible (answer panel + the user's next message);
     // a bare "User input submitted" row adds nothing.
-    activity.kind === "user-input.resolved"
+    activity.kind === "user-input.resolved" ||
+    // Our own ledger's turn bookkeeping. These rows exist so `threads read`
+    // can reconstruct a turn's lifecycle; none of them carries anything the
+    // transcript doesn't already show. Left in, a plain two-message chat
+    // read as "Worked for 4s · 2 steps" over a `turn.started` echo of the
+    // prompt and a `turn.completed` row whose summary is a raw turn id.
+    // `turn.failed` is deliberately absent: its summary is the real error.
+    TURN_LIFECYCLE_KINDS.has(activity.kind)
   );
 }
+
+/**
+ * Ledger rows whose summary is either a raw id or an echo of a message
+ * rendered elsewhere (see `isBookkeepingActivity`). `handoff-note` is not
+ * one of these — it is content a human wrote for the next reader.
+ */
+const TURN_LIFECYCLE_KINDS: ReadonlySet<string> = new Set([
+  "turn.started",
+  "turn.queued",
+  "turn.promoted",
+  "turn.completed",
+  "turn.interrupted",
+  "turn.steered",
+  "message.injected",
+]);
 
 /**
  * An `AskUserQuestion`/`question` *tool* row — started/updated/completed
@@ -647,9 +729,11 @@ export function timeline(state: ThreadState): TimelineEntry[] {
       })),
   ];
 
-  // A turn's real diff lives on its checkpoint, not on the tool rows: T3 only
-  // ships a ~180 character preview of tool input, so per-call patches cannot be
-  // reconstructed from the transcript.
+  // One row per turn for the turn's *net* diff, which is a different thing
+  // from the per-call patches the tool rows now carry themselves: a file
+  // edited three times shows three hunks inline and one combined result
+  // here. (Under T3 this row was the only diff available at all — its
+  // ~180 character input preview could not reconstruct a per-call patch.)
   for (const checkpoint of state.checkpoints) {
     if (checkpoint.files.length === 0) continue;
     const turnEntries = entries.filter((entry) => entry.turnId === checkpoint.turnId);

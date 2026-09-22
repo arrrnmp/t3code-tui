@@ -759,10 +759,15 @@ export class CodexDriver implements ProviderAdapter<CliError> {
       case CODEX_METHODS.itemStarted:
       case CODEX_METHODS.itemCompleted: {
         const record = asRecord(params);
+        // The item is nested: `{ item: { id, type, tool?, … } }`. Reading
+        // the notification's own top level found none of these keys, so
+        // every Codex tool event published the bare name "tool" and the
+        // transcript could not tell a shell call from a file edit.
+        const item = asRecord(record?.["item"]) ?? record;
         const tool =
-          asString(record?.["tool"]) ??
-          asString(record?.["kind"]) ??
-          asString(record?.["type"]) ??
+          asString(item?.["tool"]) ??
+          asString(item?.["kind"]) ??
+          asString(item?.["type"]) ??
           "tool";
         const open = session.transcript.find((candidate) => candidate.status === "running");
         if (open && method === CODEX_METHODS.itemCompleted) {

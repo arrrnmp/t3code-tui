@@ -13,6 +13,7 @@ import { runTimelineAndAnswers } from "./render-check/scenarios/timelineAndAnswe
 import { runWorkFoldGuards } from "./render-check/scenarios/workFoldGuards.js";
 import { runSkillsAndContext } from "./render-check/scenarios/skillsAndContext.js";
 import { runActivityRows } from "./render-check/scenarios/activityRows.js";
+import { runLifecycleRows } from "./render-check/scenarios/lifecycleRows.js";
 
 /**
  * Snapshot harness: drives the app with a mock client, scripts input,
@@ -46,6 +47,7 @@ await runTimelineAndAnswers(setup);
 await runWorkFoldGuards(setup);
 await runSkillsAndContext(setup);
 await runActivityRows(setup);
+await runLifecycleRows(setup);
 // Independent render with its own deferred client (not part of the shared
 // walkthrough above): runs last so its extra renderer cannot perturb the
 // timing-sensitive assertions of the shared scenarios.

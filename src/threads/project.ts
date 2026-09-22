@@ -93,6 +93,9 @@ export function toT3Activity(activity: StoredActivity): T3ThreadActivity {
     summary: activity.summary,
     turnId: activity.turnId,
     createdAt: activity.createdAt,
+    // Tool rows only render as rich cards when their payload survives the
+    // projection; without it every one degrades to a bare summary note.
+    ...(activity.payload === undefined ? {} : { payload: activity.payload }),
   };
 }
 

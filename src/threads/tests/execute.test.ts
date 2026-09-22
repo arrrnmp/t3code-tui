@@ -93,6 +93,72 @@ describe("executeTurn", () => {
     expect(seen.map((event) => event.type)).toContain("message.part.updated");
   });
 
+  it("records the turn's tool calls as replayable activity rows", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "t3code-execute-"));
+    cleanup.push(() => rm(root, { recursive: true, force: true }));
+    const store = await openThreadStore(root);
+    const thread = await createThread(store, {
+      projectId: "project-1",
+      title: "Tools",
+      modelSelection: { instanceId: "opencode/anthropic", model: "claude-opus-4-6" },
+      env: { mode: "local", path: root, branch: null },
+    });
+    const { turn } = await (await import("../threads.js")).sendTurn(store, thread.id, { prompt: "run it" });
+
+    const transport = new FakeOpencodeTransport();
+    const driver = new OpenCodeDriver({ transport, env: { ANTHROPIC_API_KEY: "test-key" } });
+    await Effect.runPromise(driver.startSession({ threadId: thread.id, workingDirectory: root }));
+    const running = executeTurn({
+      store,
+      driver,
+      threadId: thread.id,
+      storeTurnId: turn.id,
+      prompt: "run it",
+      modelSelection: thread.modelSelection,
+    });
+    const deadline = Date.now() + 3000;
+    for (;;) {
+      if ((transport.servers[0]?.callsTo("session.promptAsync").length ?? 0) > 0) break;
+      if (Date.now() > deadline) throw new Error("promptAsync was never called");
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    const toolPart = (status: string, output?: string) => ({
+      type: "message.part.updated" as const,
+      properties: {
+        sessionID: "opencode-session-1",
+        part: {
+          id: "prt-1",
+          callID: "call-1",
+          type: "tool",
+          tool: "bash",
+          state: {
+            status,
+            input: { command: "git status" },
+            ...(output === undefined ? {} : { output }),
+            time: { start: 1000, ...(status === "completed" ? { end: 2000 } : {}) },
+          },
+        },
+      },
+    });
+    await transport.servers[0]?.push(toolPart("running"));
+    // A repeat of the same state must not add a row.
+    await transport.servers[0]?.push(toolPart("running"));
+    await transport.servers[0]?.push(toolPart("completed", "on branch main"));
+    await transport.servers[0]?.push({ type: "session.idle", properties: { sessionID: "opencode-session-1" } });
+    await running;
+
+    const read = await readThread(store, thread.id);
+    const tools = read.activities.filter((activity) => activity.kind.startsWith("tool-call."));
+    expect(tools.map((activity) => activity.kind)).toEqual(["tool-call.started", "tool-call.completed"]);
+    expect(tools[0]?.summary).toBe("$ git status");
+    // Both rows share the call id, so the transcript folds them into one card.
+    expect(tools.map((activity) => (activity.payload as { toolCallId: string }).toolCallId)).toEqual([
+      "call-1",
+      "call-1",
+    ]);
+    expect((tools[1]?.payload as { status: string }).status).toBe("completed");
+  });
+
   it("records failures without losing the prompt", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "t3code-execute-"));
     cleanup.push(() => rm(root, { recursive: true, force: true }));

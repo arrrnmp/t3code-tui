@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 
+import { describeActivity } from "../activity.js";
+
 import { applyThreadFrame, emptyThreadState, isQuestionToolActivity, latestPlan, pendingUserInputRequests, resumeCompactionKey, shouldOfferResumeCompaction, timeline } from "../thread.js";
 
 function messageSent(messageId: string, text: string, streaming: boolean) {
@@ -287,6 +289,184 @@ function planActivity(id: string, kind: string, extra: Record<string, unknown>) 
     payload: extra,
   };
 }
+
+describe("timeline tool-call collapsing", () => {
+  it("keeps what the started row knew when the result row names nothing", () => {
+    // Verbatim ledger rows from a real Claude turn: the `tool_use` row
+    // names the call and its input, the `tool_result` row carries only the
+    // output. Replacing wholesale rendered a nameless "tool" card with the
+    // file contents dumped into it instead of Read(note.txt).
+    let state = emptyThreadState();
+    state = applyThreadFrame(
+      state,
+      snapshotWith({
+        thread: {
+          id: "t1",
+          activities: [
+            {
+              id: "a1",
+              tone: "info",
+              kind: "tool-call.started",
+              summary: "Read /repo/note.txt",
+              turnId: "turn-1",
+              createdAt: "2026-09-22T07:34:01.000Z",
+              payload: {
+                itemType: "dynamic_tool_call",
+                status: "inProgress",
+                toolCallId: "toolu_1",
+                title: "Read",
+                data: { tool: "Read", state: { status: "inProgress", input: { file_path: "/repo/note.txt" } } },
+              },
+            },
+            {
+              id: "a2",
+              tone: "info",
+              kind: "tool-call.completed",
+              summary: "tool",
+              turnId: "turn-1",
+              createdAt: "2026-09-22T07:34:03.000Z",
+              payload: {
+                itemType: "dynamic_tool_call",
+                status: "completed",
+                toolCallId: "toolu_1",
+                title: "tool",
+                detail: "1\thello from the tool test\n",
+                data: { tool: "tool", state: { status: "completed", input: {}, output: "1\thello\n" } },
+              },
+            },
+          ],
+        },
+      }),
+    );
+    const entries = timeline(state);
+    expect(entries).toHaveLength(1);
+    const view = describeActivity(entries[0]!.activity!);
+    // Named and pathed from the first row, settled by the second.
+    expect(view).toMatchObject({ kind: "read", path: "repo/note.txt", running: false });
+    // The newest row still wins where it actually says something.
+    expect(entries[0]!.activityKind).toBe("tool-call.completed");
+  });
+
+  it("lets a later row overwrite a value it genuinely updates", () => {
+    let state = emptyThreadState();
+    state = applyThreadFrame(
+      state,
+      snapshotWith({
+        thread: {
+          id: "t1",
+          activities: [
+            {
+              id: "a1",
+              tone: "info",
+              kind: "tool-call.started",
+              summary: "$ ls",
+              turnId: "turn-1",
+              createdAt: "2026-09-22T07:34:01.000Z",
+              payload: {
+                itemType: "command_execution",
+                status: "inProgress",
+                toolCallId: "call-1",
+                title: "bash",
+                data: { tool: "bash", state: { status: "inProgress", input: { command: "ls" } } },
+              },
+            },
+            {
+              id: "a2",
+              tone: "info",
+              kind: "tool-call.completed",
+              summary: "$ ls -la",
+              turnId: "turn-1",
+              createdAt: "2026-09-22T07:34:03.000Z",
+              payload: {
+                itemType: "command_execution",
+                status: "completed",
+                toolCallId: "call-1",
+                title: "bash",
+                data: {
+                  tool: "bash",
+                  state: { status: "completed", input: { command: "ls -la" }, metadata: { exit: 2 } },
+                },
+              },
+            },
+          ],
+        },
+      }),
+    );
+    const view = describeActivity(timeline(state)[0]!.activity!);
+    expect(view).toMatchObject({ kind: "command", command: "ls -la", exit: 2, failed: true, running: false });
+  });
+});
+
+describe("timeline lifecycle filtering", () => {
+  it("keeps our own turn bookkeeping out of the transcript", () => {
+    // These rows exist for `threads read`; their summaries are a prompt
+    // already rendered as a user message and a raw turn id. Rendered, they
+    // turned a two-message chat into "Worked for 4s - 2 steps".
+    let state = emptyThreadState();
+    state = applyThreadFrame(
+      state,
+      snapshotWith({
+        thread: {
+          id: "t1",
+          activities: [
+            { id: "a1", tone: "info", kind: "turn.started", summary: "Hey Claude!", turnId: "turn-1", createdAt: "2026-09-22T07:27:00.000Z" },
+            { id: "a2", tone: "info", kind: "turn.completed", summary: "6e209178-793b-495f-b7a5-59ac362e00c6", turnId: "turn-1", createdAt: "2026-09-22T07:27:04.000Z" },
+          ],
+        },
+      }),
+    );
+    expect(timeline(state)).toHaveLength(0);
+  });
+
+  it("keeps rows that carry real content", () => {
+    let state = emptyThreadState();
+    state = applyThreadFrame(
+      state,
+      snapshotWith({
+        thread: {
+          id: "t1",
+          activities: [
+            { id: "a1", tone: "info", kind: "handoff-note", summary: "Picked up from the CLI", turnId: "turn-1", createdAt: "2026-09-22T07:27:00.000Z" },
+            { id: "a2", tone: "warn", kind: "turn.failed", summary: "Model not found: opencode/nope.", turnId: "turn-1", createdAt: "2026-09-22T07:27:04.000Z" },
+          ],
+        },
+      }),
+    );
+    expect(timeline(state).map((entry) => entry.activityKind)).toEqual(["handoff-note", "turn.failed"]);
+  });
+
+  it("renders a recorded tool call as its own card", () => {
+    let state = emptyThreadState();
+    state = applyThreadFrame(
+      state,
+      snapshotWith({
+        thread: {
+          id: "t1",
+          activities: [
+            {
+              id: "a1",
+              tone: "info",
+              kind: "tool-call.completed",
+              summary: "$ git status",
+              turnId: "turn-1",
+              createdAt: "2026-09-22T07:27:01.000Z",
+              payload: {
+                itemType: "command_execution",
+                status: "completed",
+                toolCallId: "call-1",
+                title: "bash",
+                data: { tool: "bash", state: { status: "completed", input: { command: "git status" } } },
+              },
+            },
+          ],
+        },
+      }),
+    );
+    const entries = timeline(state);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.activityKind).toBe("tool-call.completed");
+  });
+});
 
 describe("timeline plan filtering", () => {
   it("hides plan cards from the transcript but keeps the tasks panel fed", () => {

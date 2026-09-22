@@ -709,13 +709,17 @@ export class GrokDriver implements ProviderAdapter<CliError> {
       case "tool_call_update": {
         const status = update["status"];
         session.lastToolAt = Date.now();
-        if (status === "completed" || status === "failed") session.toolInFlight = false;
+        const settled = status === "completed" || status === "failed";
+        if (settled) session.toolInFlight = false;
         this.publish({
-          type: status === "failed" ? "tool.execute.completed" : "tool.execute.updated",
+          // A *successful* call is just as finished as a failed one;
+          // reporting only failures as completed left every successful
+          // tool row stuck `inProgress` in the transcript.
+          type: settled ? "tool.execute.completed" : "tool.execute.updated",
           provider: "grok",
           threadId: session.threadId,
           turnId: open?.id ?? null,
-          tool: "tool",
+          tool: (typeof update["kind"] === "string" && (update["kind"] as string)) || "tool",
           raw: update,
         });
         return;

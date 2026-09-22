@@ -122,6 +122,13 @@ interface ClaudeSession {
   runtimeMode: RuntimeMode;
   interactionMode: InteractionMode;
   toolUseThreads: Map<string, ThreadId>;
+  /**
+   * Name and input per in-flight `tool_use` id. The matching `tool_result`
+   * carries neither, and the transcript folds a call's rows onto the
+   * *newest* payload — so without replaying them here a finished Read
+   * collapses from "Read note.txt" to a nameless "Tool call".
+   */
+  toolUseCalls: Map<string, { name: string; input: Record<string, unknown> }>;
   lastActiveThreadId: ThreadId | null;
   parkedPermissions: Map<string, ParkedRequest>;
   parkedInputs: Map<string, ParkedRequest & { input: Record<string, unknown> }>;
@@ -199,6 +206,21 @@ function contentBlocks(message: unknown): Array<Record<string, unknown>> {
     return content.filter((block): block is Record<string, unknown> => block !== null && typeof block === "object");
   }
   return [];
+}
+
+/**
+ * A `tool_result` block's content is either a plain string or the same
+ * content-block array shape as everywhere else; keep only its text.
+ */
+function toolResultText(content: unknown): string | null {
+  if (typeof content === "string") return content.length > 0 ? content : null;
+  if (!Array.isArray(content)) return null;
+  const text = content
+    .filter((block): block is Record<string, unknown> => block !== null && typeof block === "object")
+    .map((block) => (typeof block["text"] === "string" ? (block["text"] as string) : ""))
+    .filter((part) => part.length > 0)
+    .join("\n");
+  return text.length > 0 ? text : null;
 }
 
 function isPromptSessionMessage(message: SessionMessage): boolean {
@@ -284,6 +306,7 @@ export class ClaudeDriver implements ProviderAdapter<CliError> {
         runtimeMode: input.runtimeMode ?? "full-access",
         interactionMode: input.interactionMode ?? "default",
         toolUseThreads: new Map(),
+        toolUseCalls: new Map(),
         lastActiveThreadId: null,
         parkedPermissions: new Map(),
         parkedInputs: new Map(),
@@ -713,6 +736,9 @@ export class ClaudeDriver implements ProviderAdapter<CliError> {
       case "assistant":
         this.handleAssistant(session, message);
         return;
+      case "user":
+        this.handleToolResults(session, message);
+        return;
       case "result":
         this.handleResult(session, message);
         return;
@@ -758,6 +784,39 @@ export class ClaudeDriver implements ProviderAdapter<CliError> {
     }
   }
 
+  /**
+   * The SDK reports a tool's *result* as a `user` message carrying
+   * `tool_result` blocks — the only signal a call finished. Without it
+   * every tool row stayed `inProgress` forever in the transcript, since
+   * `tool_use` above is the only other tool event Claude produces.
+   * Prompt-shaped `user` messages (plain text) are not results and pass
+   * through untouched.
+   */
+  private handleToolResults(session: ClaudeSession, message: Extract<SDKMessage, { type: "user" }>): void {
+    const open = session.transcript.find((turn) => turn.status === "running") ?? null;
+    for (const block of contentBlocks(message.message as unknown)) {
+      if (block["type"] !== "tool_result") continue;
+      const toolUseId = block["tool_use_id"];
+      if (typeof toolUseId !== "string") continue;
+      // Replay the call's own name and input: the result block has neither.
+      const call = session.toolUseCalls.get(toolUseId);
+      session.toolUseCalls.delete(toolUseId);
+      this.publish({
+        type: "tool.execute.completed",
+        provider: "claude",
+        threadId: session.threadId,
+        turnId: open?.id ?? null,
+        tool: call?.name ?? "tool",
+        raw: {
+          toolUseId,
+          input: call?.input ?? {},
+          output: toolResultText(block["content"]),
+          isError: block["is_error"] === true,
+        },
+      });
+    }
+  }
+
   private handleAssistant(session: ClaudeSession, message: Extract<SDKMessage, { type: "assistant" }>): void {
     const open = session.transcript.find((turn) => turn.status === "running") ?? null;
     const blocks = contentBlocks(message.message as unknown);
@@ -781,6 +840,10 @@ export class ClaudeDriver implements ProviderAdapter<CliError> {
         session.toolUseThreads.set(block["id"] as string, session.threadId);
         session.lastActiveThreadId = session.threadId;
         const name = typeof block["name"] === "string" ? (block["name"] as string) : "unknown";
+        const input = block["input"] !== null && typeof block["input"] === "object" && !Array.isArray(block["input"])
+          ? (block["input"] as Record<string, unknown>)
+          : {};
+        session.toolUseCalls.set(block["id"] as string, { name, input });
         if (open) open.items.push({ kind: "tool", tool: name, text: summarizeToolInput(block["input"]) });
         this.publish({
           type: "tool.execute.started",
@@ -788,7 +851,7 @@ export class ClaudeDriver implements ProviderAdapter<CliError> {
           threadId: session.threadId,
           turnId: open?.id ?? null,
           tool: name,
-          raw: { toolUseId: block["id"], input: block["input"] },
+          raw: { toolUseId: block["id"], input },
         });
       }
     }

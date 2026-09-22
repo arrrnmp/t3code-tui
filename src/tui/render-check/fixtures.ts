@@ -167,6 +167,27 @@ const threadFrames = [
           },
         ],
         activities: [
+          // Our own ledger's turn bookkeeping. These must never reach the
+          // transcript: their summaries are a prompt already rendered as a
+          // user message and a raw turn id. Distinctive markers so
+          // `lifecycleRows` can prove absence (and so any regression breaks
+          // the row math of every scenario below, loudly).
+          {
+            id: "lc0",
+            tone: "info",
+            kind: "turn.started",
+            summary: "LIFECYCLE-PROMPT-ECHO",
+            turnId: "turn-1",
+            createdAt: ago(9 * 60_000),
+          },
+          {
+            id: "lc1",
+            tone: "info",
+            kind: "turn.completed",
+            summary: "LIFECYCLE-TURN-ID",
+            turnId: "turn-1",
+            createdAt: ago(4 * 60_000),
+          },
           {
             id: "a0",
             tone: "tool",
@@ -368,24 +389,31 @@ const threadFrames = [
               data: { toolName: "Read", input: { file_path: "C:/repo/src/tui/theme.ts" } },
             },
           },
-          // Wire shape (what the TUI actually receives): the subscription
-          // strips every `input`, leaving only `data.toolName` plus the
-          // `Read: {json}` echo in `detail`. Must still resolve `Read(path)`,
-          // never `Read(Tool call)`.
+          // A section read: the range comes from the call's own input, and
+          // `detail` carries the tool's *output*, never an echo of the call.
+          // (Under T3 this row arrived with `input` stripped and the call
+          // echoed as `Read: {json}` in `detail`; we own the payload now, so
+          // the row states what it did instead of being reverse-engineered.)
           {
             id: "a-read-wire",
             tone: "tool",
-            kind: "tool.completed",
-            summary: "Tool call",
+            kind: "tool-call.completed",
+            summary: "Read C:/repo/src/tui/sidebar.ts",
             turnId: "turn-2",
             createdAt: ago(45_000),
             payload: {
               itemType: "dynamic_tool_call",
               toolCallId: "toolu_readwire",
               status: "completed",
-              title: "Tool call",
-              detail: 'Read: {"file_path":"C:/repo/src/tui/sidebar.ts","offset":1,"limit":5}',
-              data: { toolName: "Read" },
+              title: "Read",
+              detail: "     1	import { COLOR } from './theme.js';",
+              data: {
+                tool: "Read",
+                state: {
+                  status: "completed",
+                  input: { file_path: "C:/repo/src/tui/sidebar.ts", offset: 1, limit: 5 },
+                },
+              },
             },
           },
           // OpenCode's nameless directory listing: empty `data`, XML result
