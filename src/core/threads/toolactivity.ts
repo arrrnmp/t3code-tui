@@ -317,11 +317,15 @@ function fromOpencode(event: ToolRuntimeEvent, raw: Record<string, unknown>): Na
   };
 }
 
+/** Shell tools, by the verb their (possibly namespaced) name ends in —
+    Claude's `PowerShell` included, which otherwise fell to a generic card. */
+const SHELL_TOOLS: ReadonlySet<string> = new Set(["bash", "shell", "exec", "powershell", "pwsh"]);
+
 /** Tool-name → renderer item type, for providers that don't name it. */
 function itemTypeForTool(tool: string): string {
   // Namespaced harness tools (`default.bash`) carry the verb last.
   const short = tool.toLowerCase().split(/[^a-z]+/).filter((part) => part.length > 0).pop() ?? "";
-  if (short === "bash" || short === "shell" || short === "exec" || short === "execute") return "command_execution";
+  if (SHELL_TOOLS.has(short) || short === "execute") return "command_execution";
   if (short === "edit" || short === "write" || short === "multiedit" || short === "patch") return "file_change";
   if (short === "websearch" || short === "webfetch" || short === "fetch") return "web_search";
   return "dynamic_tool_call";

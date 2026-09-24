@@ -1,0 +1,58 @@
+{
+  "ok": true,
+  "data": {
+    "runtime": {
+      "origin": "direct",
+      "stateDir": null,
+      "runtimeStatePath": null,
+      "settingsPath": null,
+      "environmentId": "direct",
+      "serverVersion": "direct",
+      "capabilities": {
+        "threadSettlement": true
+      }
+    },
+    "auth": {
+      "source": "direct",
+      "version": null
+    },
+    "project": {
+      "id": "project-existing",
+      "title": "Existing project",
+      "workspaceRoot": "<root>",
+      "defaultModelSelection": {
+        "instanceId": "codex",
+        "model": "gpt-5.6-sol"
+      },
+      "createdAt": "<time>",
+      "updatedAt": "<time>",
+      "deletedAt": null
+    },
+    "parent": {
+      "id": "thread-existing",
+      "projectId": "project-existing",
+      "title": "Existing thread"
+    },
+    "task": {
+      "taskId": "<id-1>",
+      "childThreadId": "<id-1>",
+      "childRunId": "<id-2>",
+      "status": "interrupted",
+      "workState": "working",
+      "summary": null
+    },
+    "command": {
+      "type": "thread.turn.interrupt",
+      "commandId": "<id-3>",
+      "threadId": "<id-1>",
+      "createdAt": "<time>"
+    },
+    "dispatch": null,
+    "verification": {
+      "accepted": true,
+      "method": "interrupt",
+      "snapshotSequence": 0,
+      "state": "interrupted"
+    }
+  }
+}

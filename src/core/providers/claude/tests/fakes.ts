@@ -23,6 +23,21 @@ export class FakeQuery implements ClaudeQuery {
   readonly permissionModes: PermissionMode[] = [];
   readonly models: Array<string | undefined> = [];
   usageProbeResponse: unknown = null;
+  /** What `supportedCommands` answers. */
+  supportedCommandsResponse: Array<{ name: string; description: string; argumentHint: string; builtin?: boolean }> = [];
+  closed = false;
+
+  async supportedCommands(): Promise<Array<{ name: string; description: string; argumentHint: string; builtin?: boolean }>> {
+    return this.supportedCommandsResponse;
+  }
+
+  close(): void {
+    this.closed = true;
+  }
+
+  /** What `getContextUsage` answers; the details asked for are recorded. */
+  contextUsageResponse: unknown = null;
+  readonly contextUsageRequests: Array<{ detail?: string } | undefined> = [];
   private readonly backlog: SDKMessage[];
   private readonly takers: Array<(result: IteratorResult<SDKMessage>) => void> = [];
   private notifyPrompt: () => void = () => undefined;
@@ -42,8 +57,19 @@ export class FakeQuery implements ClaudeQuery {
     else void this.drainPrompt(prompt);
   }
 
+  /** Text of every user message the driver streamed in, in order. */
+  readonly prompts: string[] = [];
+  /** The messages themselves, content blocks and all. */
+  readonly messages: SDKUserMessage[] = [];
+
   private async drainPrompt(prompt: AsyncIterable<SDKUserMessage>): Promise<void> {
-    for await (const _message of prompt) {
+    for await (const message of prompt) {
+      this.messages.push(message);
+      const content = (message.message as { content?: unknown }).content;
+      const text = Array.isArray(content)
+        ? content.map((block) => (block as { text?: string }).text ?? "").join("")
+        : String(content ?? "");
+      this.prompts.push(text);
       this.notifyPrompt();
     }
   }
@@ -73,8 +99,23 @@ export class FakeQuery implements ClaudeQuery {
     }
   }
 
+  /** End the stream, the way a spent CLI query does. */
+  end(): void {
+    this.ended = true;
+    const taker = this.takers.shift();
+    if (taker) taker({ value: undefined, done: true });
+  }
+
+  ended = false;
+
+  /**
+   * The live `interrupt()` ends the query for good — the iterator finishes
+   * and no later prompt is ever read. The fake used to keep yielding, which
+   * is why a session left dead by an interrupt looked healthy in tests.
+   */
   async interrupt(): Promise<undefined> {
     this.interrupted += 1;
+    this.end();
     return undefined;
   }
 
@@ -86,6 +127,11 @@ export class FakeQuery implements ClaudeQuery {
     this.models.push(model);
   }
 
+  async getContextUsage(options?: { detail?: "summary" | "full" }): Promise<unknown> {
+    this.contextUsageRequests.push(options);
+    return this.contextUsageResponse;
+  }
+
   async usageExperimental(): Promise<unknown> {
     return this.usageProbeResponse;
   }
@@ -93,6 +139,8 @@ export class FakeQuery implements ClaudeQuery {
 
 export class FakeTransport implements ClaudeTransport {
   readonly created: FakeQuery[] = [];
+  /** Handed to every query's `supportedCommands`. */
+  commands: Array<{ name: string; description: string; argumentHint: string; builtin?: boolean }> = [];
 
   constructor(
     private scripts: SDKMessage[][],
@@ -109,6 +157,7 @@ export class FakeTransport implements ClaudeTransport {
       typeof prompt === "string" ? undefined : prompt,
     );
     fake.usageProbeResponse = this.probeResponses.shift() ?? null;
+    fake.supportedCommandsResponse = this.commands;
     this.created.push(fake);
     return fake;
   }
@@ -117,10 +166,17 @@ export class FakeTransport implements ClaudeTransport {
 export class FakeSessionApi implements ClaudeSessionApi {
   readonly forks: Array<{ sessionId: string; upToMessageId: string }> = [];
 
+  /** Session ids `sessionExists` reports; everything else reads as gone. */
+  readonly existing = new Set<string>();
+
   constructor(
     private history: SessionMessage[] = [],
     private forkResult: string = "forked-session",
   ) {}
+
+  async sessionExists(sessionId: string): Promise<boolean> {
+    return this.existing.has(sessionId);
+  }
 
   async getSessionMessages(_sessionId: string): Promise<SessionMessage[]> {
     return this.history;

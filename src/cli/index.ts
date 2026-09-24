@@ -14,7 +14,10 @@ import {
   setConfigValue,
   type ConfigKey,
 } from "../core/config.js";
+import { redactMcpServers } from "../core/mcp.js";
 import { doctor } from "./doctor.js";
+import { preferDirectClient } from "./infra/client.js";
+import { serverStart, serverStatus, serverStop } from "./server.js";
 import { CliError } from "../core/errors.js";
 import { writeError, writeSuccess } from "./output.js";
 import {
@@ -30,16 +33,24 @@ import {
   listEfforts,
   listModels,
   listProviders,
+  listSkills,
   setModelHidden,
 } from "./catalog/providers.js";
-import type { ProviderUsageLimits } from "./catalog/catalog.js";
+import type { ProviderUsageLimits } from "../core/catalog/summary.js";
 import {
+  answerQuestion,
+  archiveThread,
   cancelTask,
   delegateTask,
+  deleteThread,
+  dismissQuestion,
   inspectThread,
   interruptThread,
+  listQuestions,
   listThreads,
   readThread,
+  renameThread,
+  revertConversation,
   sendThreadMessage,
   settleThread,
   snoozeThread,
@@ -65,7 +76,7 @@ import type {
 
 const program = new Command();
 program
-  .name("mvx")
+  .name("moxen")
   .description("Create projects and handover threads from the current folder.")
   .version("0.1.0")
   .option("--json", "Emit stable JSON envelopes.")
@@ -86,6 +97,7 @@ async function commandContext(): Promise<{
   const global = program.opts<GlobalOptions>();
   const loaded = await loadConfig(global.config);
   const config = { ...loaded.config };
+  preferDirectClient(global.config !== undefined);
   return { config, configPath: loaded.path, configExists: loaded.exists, json: global.json ?? false };
 }
 
@@ -162,7 +174,8 @@ interface ThreadSendCommandOptions extends PromptOptions {
   delivery?: ThreadSendDelivery;
   handoffNote?: string;
   dryRun?: boolean;
-  noWait?: boolean;
+  /** Commander stores `--no-wait` as `wait: false` — there is no `noWait` key. */
+  wait?: boolean;
 }
 
 interface ThreadListCommandOptions extends WorkspaceCommandOptions {
@@ -187,6 +200,7 @@ interface ThreadDelegateCommandOptions extends PromptOptions {
   wait?: boolean;
   timeoutMs?: string;
   dryRun?: boolean;
+  isolation?: "shared" | "worktree";
 }
 
 interface ThreadTaskCommandOptions {
@@ -233,7 +247,8 @@ interface WorkspaceCommandOptions {
 }
 
 interface ThreadCommandOptions extends WorkspaceCommandOptions {
-  noWait?: boolean;
+  /** Commander stores `--no-wait` as `wait: false` — there is no `noWait` key. */
+  wait?: boolean;
   prompt?: string;
   promptFile?: string;
   stdin?: boolean;
@@ -301,7 +316,7 @@ function threadCreateOptions(options: ThreadCommandOptions, prompt: string): Thr
     ...(options.speedMode ? { speedMode: options.speedMode } : {}),
     ...(options.thinkingEffort ? { thinkingEffort: options.thinkingEffort } : {}),
     ...(options.dryRun ? { dryRun: true } : {}),
-    ...(options.noWait ? { noWait: true } : {}),
+    ...(options.wait === false ? { noWait: true } : {}),
   };
 }
 
@@ -316,16 +331,61 @@ program
     }),
   );
 
+const server = program
+  .command("server")
+  .description("Run the moxen server: one process owning every provider session, shared by all clients.");
+
+server
+  .command("start")
+  .description("Run the server in the foreground until Ctrl-C or `moxen server stop`.")
+  .action(() =>
+    action(async () => {
+      const context = await commandContext();
+      await serverStart(context, (result) => writeSuccess(result, context, `moxen server listening at ${result.endpoint} (pid ${result.pid}).`));
+    }),
+  );
+
+server
+  .command("status")
+  .description("Report whether a server is running, and which protocol it speaks.")
+  .action(() =>
+    action(async () => {
+      const context = await commandContext();
+      const result = await serverStatus();
+      writeSuccess(
+        result,
+        context,
+        result.running ? `moxen server running at ${result.endpoint} (pid ${result.pid}).` : `No moxen server at ${result.endpoint}.`,
+      );
+    }),
+  );
+
+server
+  .command("stop")
+  .description("Stop the running server; its provider sessions end with it.")
+  .action(() =>
+    action(async () => {
+      const context = await commandContext();
+      const result = await serverStop();
+      writeSuccess(result, context, result.stopped ? `Stopped the moxen server at ${result.endpoint}.` : `No moxen server at ${result.endpoint}.`);
+    }),
+  );
+
 program.command("doctor").description("Check provider binaries, auth, store, and config.").action(() =>
   action(async () => {
     const context = await commandContext();
     const result = await doctor(context.config, context.configPath, context.configExists);
-    writeSuccess(result, context, result.ok ? "mvx CLI is ready." : "mvx CLI has failing checks.");
+    writeSuccess(result, context, result.ok ? "moxen CLI is ready." : "moxen CLI has failing checks.");
     if (!result.ok) process.exitCode = 1;
   }),
 );
 
-const configCommand = program.command("config").description("Inspect or update monvex settings.");
+/** Config as shown: MCP `env`/`headers` values may be secrets. */
+function displayConfig(config: CliConfig): CliConfig {
+  return config.mcpServers ? { ...config, mcpServers: redactMcpServers(config.mcpServers) } : config;
+}
+
+const configCommand = program.command("config").description("Inspect or update moxen settings.");
 configCommand.command("path").action(() =>
   action(async () => {
     const context = await commandContext();
@@ -335,7 +395,7 @@ configCommand.command("path").action(() =>
 configCommand.command("show").action(() =>
   action(async () => {
     const context = await commandContext();
-    writeSuccess({ path: context.configPath, exists: context.configExists, config: context.config }, context);
+    writeSuccess({ path: context.configPath, exists: context.configExists, config: displayConfig(context.config) }, context);
   }),
 );
 configCommand
@@ -350,7 +410,7 @@ configCommand
       const context = await commandContext();
       const next = setConfigValue(context.config, key as ConfigKey, value);
       await saveConfig(context.configPath, next);
-      writeSuccess({ path: context.configPath, config: next }, context, `Saved ${key}=${value}.`);
+      writeSuccess({ path: context.configPath, config: displayConfig(next) }, context, `Saved ${key}=${value}.`);
     }),
   );
 
@@ -593,7 +653,7 @@ addSendOptions(threads.command("send"))
         ...(options.handoffNote ? { handoffNote: options.handoffNote } : {}),
         ...(!context.json && !options.stdin ? { confirmSettled: confirmSettledThread } : {}),
         ...(options.dryRun ? { dryRun: true } : {}),
-        ...(options.noWait ? { noWait: true } : {}),
+        ...(options.wait === false ? { noWait: true } : {}),
       });
       const projectLabel = result.project ? ` in ${result.project.title}` : "";
       writeSuccess(
@@ -633,6 +693,117 @@ threads
         context,
         `Marked thread ${result.thread.id} active.`,
       );
+    }),
+  );
+
+threads
+  .command("questions")
+  .description("List the questions a running turn is waiting on.")
+  .requiredOption("--thread <thread-id>", "Exact thread id.")
+  .action((options: { thread: string }) =>
+    action(async () => {
+      const context = await commandContext();
+      const result = await listQuestions(context.config, options.thread);
+      const lines = result.requests.flatMap((request) => [
+        `Request ${request.requestId}:`,
+        ...request.questions.map(
+          (question, index) =>
+            `  ${index + 1}. ${question.question}${question.options.length > 0 ? ` [${question.options.map((option) => option.label).join(" | ")}]` : ""}`,
+        ),
+      ]);
+      writeSuccess(result, context, lines.length > 0 ? lines.join("\n") : `Thread ${result.thread.id} is not waiting on a question.`);
+    }),
+  );
+
+threads
+  .command("answer")
+  .description("Answer the question a running turn is waiting on (one --answer per question, in order).")
+  .requiredOption("--thread <thread-id>", "Exact thread id.")
+  .option("--request <request-id>", "Which open question, when there is more than one.")
+  .requiredOption(
+    "--answer <text>",
+    "An answer; repeat for each question. Comma-separate a multi-select.",
+    (value: string, previous: string[] = []) => [...previous, value],
+  )
+  .action((options: { thread: string; request?: string; answer: string[] }) =>
+    action(async () => {
+      const context = await commandContext();
+      const result = await answerQuestion(context.config, options.thread, {
+        ...(options.request !== undefined ? { requestId: options.request } : {}),
+        answers: options.answer,
+      });
+      writeSuccess(result, context, `Answered ${result.request.requestId} on thread ${result.thread.id}.`);
+    }),
+  );
+
+threads
+  .command("dismiss")
+  .description("Decline the question a running turn is waiting on; the agent carries on without an answer.")
+  .requiredOption("--thread <thread-id>", "Exact thread id.")
+  .option("--request <request-id>", "Which open question, when there is more than one.")
+  .action((options: { thread: string; request?: string }) =>
+    action(async () => {
+      const context = await commandContext();
+      const result = await dismissQuestion(context.config, options.thread, {
+        ...(options.request !== undefined ? { requestId: options.request } : {}),
+      });
+      writeSuccess(result, context, `Dismissed ${result.request.requestId} on thread ${result.thread.id}.`);
+    }),
+  );
+
+threads
+  .command("revert")
+  .description("Revert the conversation to its first N turns. Files are left as they are.")
+  .requiredOption("--thread <thread-id>", "Exact thread id.")
+  .requiredOption("--keep <turns>", "How many turns to keep (0 clears the conversation).")
+  .action((options: { thread: string; keep: string }) =>
+    action(async () => {
+      const context = await commandContext();
+      const result = await revertConversation(context.config, options.thread, options.keep);
+      writeSuccess(
+        result,
+        context,
+        result.removedTurns === 0
+          ? `Thread ${result.thread.id} already has ${result.keptTurns} turn(s); nothing to revert.`
+          : `Reverted thread ${result.thread.id} to ${result.keptTurns} turn(s), dropping ${result.removedTurns}.`,
+      );
+    }),
+  );
+
+threads
+  .command("archive")
+  .description("Archive a thread: it leaves the lists and refuses new turns.")
+  .requiredOption("--thread <thread-id>", "Exact thread id.")
+  .action((options: { thread: string }) =>
+    action(async () => {
+      const context = await commandContext();
+      const result = await archiveThread(context.config, options.thread);
+      writeSuccess(result, context, `Archived thread ${result.thread.id}.`);
+    }),
+  );
+
+threads
+  .command("delete")
+  .description("Delete a thread. Its ledger stays on disk, marked deleted.")
+  .requiredOption("--thread <thread-id>", "Exact thread id.")
+  .action((options: { thread: string }) =>
+    action(async () => {
+      const context = await commandContext();
+      const result = await deleteThread(context.config, options.thread);
+      writeSuccess(result, context, `Deleted thread ${result.thread.id}.`);
+    }),
+  );
+
+threads
+  .command("rename")
+  .description("Change a thread's title.")
+  .requiredOption("--thread <thread-id>", "Exact thread id.")
+  .requiredOption("--title <title>", "New title.")
+  .action((options: { thread: string; title: string }) =>
+    action(async () => {
+      const context = await commandContext();
+      const result = await renameThread(context.config, options.thread, options.title);
+      writeSuccess(result, context, `Renamed thread ${result.thread.id} to "${result.thread.title}".`);
     }),
   );
 
@@ -709,6 +880,10 @@ threads
   .option("--no-wait", "Return after dispatching without waiting for the child's terminal turn.")
   .option("--timeout-ms <ms>", "Wait budget in milliseconds (default 600000). Expiring it ends the wait without cancelling the child.")
   .option("--dry-run", "Build the child thread commands without dispatching them.")
+  .addOption(
+    new Option("--isolation <mode>", "shared: the parent's checkout (default). worktree: the child's own git worktree, on a branch cut from the parent's.")
+      .choices(["shared", "worktree"]),
+  )
   .action((options: ThreadDelegateCommandOptions) =>
     action(async () => {
       const context = await commandContext();
@@ -730,6 +905,7 @@ threads
         ...(rawTimeout !== undefined && rawTimeout.length > 0 ? { timeoutMs: Number(rawTimeout) } : {}),
         ...(options.open ? { openMode: options.open } : {}),
         ...(options.dryRun ? { dryRun: true } : {}),
+        ...(options.isolation ? { isolation: options.isolation } : {}),
       });
       const task = result.task as { status: string; waitTimedOut: boolean };
       writeSuccess(
@@ -816,6 +992,23 @@ providers
           `${provider.instanceId}\t${provider.driver}\t${provider.displayName ?? "-"}\t${provider.enabled ? "enabled" : "disabled"}\t${provider.status ?? "-"}\t${provider.authStatus ?? "-"}\t${provider.models.length} models\t${formatUsageSummary(provider.usageLimits)}`,
       );
       writeSuccess(result, context, lines.length > 0 ? lines.join("\n") : "No provider instances.");
+    }),
+  );
+
+providers
+  .command("skills")
+  .description("List the skills and slash commands a provider resolves for a directory.")
+  .requiredOption("--provider <instance-id>", "Provider instance id (claudeAgent, codex, grok, opencode, …).")
+  .option("--cwd <path>", "Directory to resolve for (defaults to the current working directory).")
+  .action((options: { provider: string; cwd?: string }) =>
+    action(async () => {
+      const context = await commandContext();
+      const result = await listSkills(context.config, options);
+      const lines = [
+        ...result.skills.map((skill) => `skill\t${result.trigger}${skill.name}\t${skill.shortDescription ?? skill.description ?? ""}`),
+        ...result.commands.map((command) => `command\t/${command.name}\t${command.description ?? ""}`),
+      ];
+      writeSuccess(result, context, lines.length > 0 ? lines.join("\n") : "No skills or commands.");
     }),
   );
 

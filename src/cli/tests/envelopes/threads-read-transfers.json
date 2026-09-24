@@ -1,0 +1,86 @@
+{
+  "ok": true,
+  "data": {
+    "runtime": {
+      "origin": "direct",
+      "stateDir": null,
+      "runtimeStatePath": null,
+      "settingsPath": null,
+      "environmentId": "direct",
+      "serverVersion": "direct",
+      "capabilities": {
+        "threadSettlement": true
+      }
+    },
+    "auth": {
+      "source": "direct",
+      "version": null
+    },
+    "snapshotSequence": 0,
+    "project": {
+      "id": "project-existing",
+      "title": "Existing project",
+      "workspaceRoot": "<root>",
+      "defaultModelSelection": {
+        "instanceId": "codex",
+        "model": "gpt-5.6-sol"
+      },
+      "createdAt": "<time>",
+      "updatedAt": "<time>",
+      "deletedAt": null
+    },
+    "thread": {
+      "id": "thread-existing",
+      "projectId": "project-existing",
+      "title": "Existing thread",
+      "modelSelection": {
+        "instanceId": "codex",
+        "model": "gpt-5.6-sol"
+      },
+      "runtimeMode": "full-access",
+      "interactionMode": "default",
+      "branch": "main",
+      "worktreePath": null,
+      "latestTurn": {
+        "turnId": "<id-1>",
+        "state": "completed",
+        "requestedAt": "<time>",
+        "startedAt": "<time>",
+        "completedAt": "<time>",
+        "assistantMessageId": null
+      },
+      "session": {
+        "threadId": "thread-existing",
+        "status": "idle",
+        "providerName": "codex",
+        "runtimeMode": "full-access",
+        "activeTurnId": null,
+        "lastError": null,
+        "updatedAt": "<time>"
+      },
+      "createdAt": "<time>",
+      "updatedAt": "<time>",
+      "archivedAt": null,
+      "deletedAt": null,
+      "settledOverride": null,
+      "settledAt": null,
+      "unsettledAt": null,
+      "snoozedUntil": null,
+      "snoozedAt": null,
+      "latestUserMessageAt": "<time>",
+      "hasPendingApprovals": false,
+      "hasPendingUserInput": false,
+      "turnModelSelections": {
+        "<id-1>": {
+          "instanceId": "codex",
+          "model": "gpt-5.6-sol"
+        }
+      },
+      "status": "active",
+      "view": "transfers",
+      "transferCount": 0,
+      "transfers": [],
+      "note": "V1 threads carry no context transfers."
+    }
+  }
+}

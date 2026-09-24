@@ -1,10 +1,11 @@
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Stream from "effect/Stream";
 import { describe, expect, it } from "vitest";
 
 import { CliError } from "../../../errors.js";
 import type { ProviderRuntimeEvent } from "../../spi.js";
-import { CodexDriver } from "../driver.js";
+import { CodexDriver, codexContextUsageOf } from "../driver.js";
 import { FakeCodexTransport } from "./fakes.js";
 
 function sleep(milliseconds: number): Promise<void> {
@@ -33,6 +34,30 @@ async function codeOf(run: () => Promise<unknown>): Promise<string> {
 }
 
 const START = { threadId: "thread-1", workingDirectory: "/repo" };
+
+describe("codex session resume", () => {
+  it("reattaches to the thread a previous process started, without replaying turns", async () => {
+    const transport = new FakeCodexTransport();
+    const driver = new CodexDriver({ transport });
+    await Effect.runPromise(driver.startSession({ ...START, resumeCursor: "codex-thread-old" }));
+    const server = transport.sessions[0]!.server;
+    expect(server.requestsTo("thread/resume")[0]!.params).toMatchObject({
+      threadId: "codex-thread-old",
+      excludeTurns: true,
+      cwd: "/repo",
+    });
+    expect(server.requestsTo("thread/start")).toEqual([]);
+    expect(driver.resumeCursor("thread-1")).toBe("codex-thread-old");
+  });
+
+  it("starts a new thread when the app-server lost the old one", async () => {
+    const transport = new FakeCodexTransport({ lostThreads: ["codex-thread-old"] });
+    const driver = new CodexDriver({ transport });
+    await Effect.runPromise(driver.startSession({ ...START, resumeCursor: "codex-thread-old" }));
+    expect(transport.sessions[0]!.server.requestsTo("thread/start")).toHaveLength(1);
+    expect(driver.resumeCursor("thread-1")).toBe("codex-thread-1");
+  });
+});
 
 describe("codex driver turns", () => {
   it("starts a session with the static policy and runs a turn", async () => {
@@ -73,12 +98,104 @@ describe("codex driver turns", () => {
     expect(outcome.status).toBe("completed");
     expect(outcome.text).toBe("hello");
     expect(outcome.usage).toMatchObject({ input: 10, cacheRead: 2, output: 5, thinking: 1 });
+    // No `modelContextWindow` or `totalTokens` in this notification: the
+    // window stays unknown and used falls back to input + output.
+    expect(await driver.contextUsage("thread-1")).toEqual({
+      usedTokens: 15,
+      maxTokens: null,
+      cachedInputTokens: 2,
+      autoCompactThreshold: null,
+      compactsAutomatically: null,
+    });
 
     const snapshot = await Effect.runPromise(driver.readThread("thread-1"));
     expect(snapshot.turns[0]!.items.map((item) => (item as { kind: string }).kind)).toEqual([
       "user",
       "assistant",
     ]);
+  });
+
+  it("lists skills for a directory with skills/list, on a session it then closes", async () => {
+    const transport = new FakeCodexTransport({
+      skills: [
+        {
+          cwd: "/repo",
+          errors: [],
+          skills: [
+            { name: "deploy", description: "Ship it", interface: { displayName: "Deploy", shortDescription: "Ship" }, enabled: true },
+            { name: "old", description: "Retired", enabled: false },
+          ],
+        },
+      ],
+    });
+    const driver = new CodexDriver({ transport });
+    const inventory = await driver.skillInventory("/repo");
+    const server = transport.sessions[0]!.server;
+    expect(server.requestsTo("skills/list")[0]!.params).toEqual({ cwds: ["/repo"] });
+    expect(inventory.trigger).toBe("$");
+    expect(inventory.skills).toMatchObject([
+      { name: "deploy", displayName: "Deploy", shortDescription: "Ship", enabled: true },
+      { name: "old", enabled: false },
+    ]);
+    // Only the per-call catalog session was started, and it is gone again.
+    expect(await Effect.runPromise(driver.hasSession("thread-1"))).toBe(false);
+  });
+
+  it("passes runtime instructions as developerInstructions", async () => {
+    const transport = new FakeCodexTransport();
+    const driver = new CodexDriver({ transport });
+    await Effect.runPromise(driver.startSession({ ...START, instructions: "Report back." }));
+    expect(transport.sessions[0]!.server.requestsTo("thread/start")[0]!.params).toMatchObject({
+      developerInstructions: "Report back.",
+    });
+  });
+
+  it("sends no model for codex-default, so the app-server's own default applies", async () => {
+    const transport = new FakeCodexTransport();
+    const driver = new CodexDriver({ transport });
+    await Effect.runPromise(
+      driver.startSession({ ...START, modelSelection: { instanceId: "codex", model: "codex-default" } }),
+    );
+    await Effect.runPromise(
+      driver.sendTurn({ threadId: "thread-1", prompt: "hi", modelSelection: { instanceId: "codex", model: "codex-default" } }),
+    );
+    const server = transport.sessions[0]!.server;
+    expect(server.requestsTo("thread/start")[0]!.params).not.toHaveProperty("model");
+    expect(server.requestsTo("turn/start")[0]!.params).not.toHaveProperty("model");
+  });
+
+  it("keeps commentary messages out of the turn's answer", async () => {
+    const transport = new FakeCodexTransport();
+    const driver = new CodexDriver({ transport });
+    await Effect.runPromise(driver.startSession(START));
+    const events: ProviderRuntimeEvent[] = [];
+    const fiber = Effect.runFork(
+      Stream.runForEach(driver.streamEvents, (event) => Effect.sync(() => void events.push(event))),
+    );
+    const sent = await Effect.runPromise(driver.sendTurn({ threadId: "thread-1", prompt: "hi" }));
+    const server = transport.sessions[0]!.server;
+    const outcomePromise = driver.awaitTurn("thread-1", sent.turnId);
+    server.notify("turn/started", { threadId: "codex-thread-1", turn: { id: "srv-1" } });
+    const agentMessage = (id: string, phase: string, text = "") => ({
+      threadId: "codex-thread-1",
+      turnId: "srv-1",
+      item: { type: "agentMessage", id, text, phase },
+    });
+    server.notify("item/started", agentMessage("m-1", "commentary"));
+    server.notify("item/agentMessage/delta", { itemId: "m-1", delta: "Checking the repo first." });
+    server.notify("item/completed", agentMessage("m-1", "commentary", "Checking the repo first."));
+    server.notify("item/started", agentMessage("m-2", "final_answer"));
+    server.notify("item/agentMessage/delta", { itemId: "m-2", delta: "All " });
+    server.notify("item/agentMessage/delta", { itemId: "m-2", delta: "done." });
+    server.notify("turn/completed", {
+      threadId: "codex-thread-1",
+      turn: { id: "srv-1", status: "completed" },
+    });
+    const outcome = await outcomePromise;
+    await Effect.runPromise(Fiber.interrupt(fiber));
+    expect(outcome.text).toBe("All done.");
+    const streamed = events.flatMap((event) => (event.type === "message.part.updated" ? [event.text] : []));
+    expect(streamed.join("")).toBe("All done.");
   });
 
   it("requires auth and rejects concurrent turns", async () => {
@@ -211,6 +328,30 @@ describe("codex driver approvals", () => {
     await expect(inputAsked).resolves.toEqual({ answers: { color: { answers: ["blue"] } } });
   });
 
+  it("releases a parked question when it is dismissed", async () => {
+    // Dismissal used to throw REQUEST_MISMATCH, so closing the panel left
+    // the server call blocked until the next interrupt. A declined question
+    // answers nothing rather than refusing a permission: `{ decision }` is
+    // not a shape `requestUserInput` understands.
+    const { driver, server } = await approvalSession();
+    // Two opens plus the earlier rate-limits probe event.
+    const eventsPromise = collectEvents(driver, 3);
+    const asked = server.ask("item/tool/requestUserInput", {
+      threadId: "codex-thread-1",
+      questions: [],
+    });
+    const elicited = server.ask("mcpServer/elicitation/request", { threadId: "codex-thread-1" });
+    const events = await eventsPromise;
+    const ids = events
+      .filter((event) => event.type === "user-input.request.opened")
+      .map((event) => (event as { requestId: string }).requestId);
+    expect(ids).toHaveLength(2);
+    await Effect.runPromise(driver.respondToRequest("thread-1", ids[0]!, { kind: "decline" }));
+    await Effect.runPromise(driver.respondToRequest("thread-1", ids[1]!, { kind: "decline" }));
+    await expect(asked).resolves.toEqual({ answers: {} });
+    await expect(elicited).resolves.toEqual({ action: "decline" });
+  });
+
   it("answers elicitation and executes dynamic calls on accept", async () => {
     const { driver, server } = await approvalSession();
     const eventsPromise = collectEvents(driver, 3);
@@ -274,9 +415,21 @@ describe("codex driver compaction, rollback, models", () => {
     expect(await codeOf(() => Effect.runPromise(driver.rollbackThread("thread-1", 0)))).toBe(
       "INVALID_ROLLBACK",
     );
-    expect(await codeOf(() => Effect.runPromise(driver.rollbackThread("thread-1", 5)))).toBe(
-      "ROLLBACK_UNAVAILABLE",
-    );
+    // More than this process has seen: the app-server holds the history,
+    // so the count goes to it to honour or refuse.
+    await Effect.runPromise(driver.rollbackThread("thread-1", 5));
+    expect(server.requestsTo("thread/rollback").at(-1)!.params).toEqual({ threadId: "codex-thread-1", numTurns: 5 });
+  });
+
+  it("rolls back a resumed thread whose earlier turns ran in another process", async () => {
+    const transport = new FakeCodexTransport();
+    const driver = new CodexDriver({ transport });
+    await Effect.runPromise(driver.startSession({ ...START, resumeCursor: "codex-thread-old" }));
+    await Effect.runPromise(driver.rollbackThread("thread-1", 2));
+    expect(transport.sessions[0]!.server.requestsTo("thread/rollback")[0]!.params).toEqual({
+      threadId: "codex-thread-old",
+      numTurns: 2,
+    });
   });
 
   it("lists models without an allowlist", async () => {
@@ -329,5 +482,87 @@ describe("codex driver compaction, rollback, models", () => {
     await Effect.runPromise(driver.stopSession("thread-1"));
     expect(await Effect.runPromise(driver.hasSession("thread-1"))).toBe(false);
     await sleep(10);
+  });
+});
+
+describe("codex context usage", () => {
+  it("reads the last request against the model's window", () => {
+    expect(
+      codexContextUsageOf({
+        total: { inputTokens: 900_000, cachedInputTokens: 800_000, outputTokens: 20_000, totalTokens: 920_000 },
+        last: { inputTokens: 61_000, cachedInputTokens: 58_000, outputTokens: 1_200, totalTokens: 62_200 },
+        modelContextWindow: 272_000,
+      }),
+    ).toEqual({
+      usedTokens: 62_200,
+      maxTokens: 272_000,
+      cachedInputTokens: 58_000,
+      autoCompactThreshold: null,
+      compactsAutomatically: null,
+    });
+    expect(codexContextUsageOf({ total: { totalTokens: 5 } })).toBeNull();
+  });
+});
+
+describe("codex steering", () => {
+  it("sends turn/steer pinned to the running server turn", async () => {
+    const transport = new FakeCodexTransport();
+    const driver = new CodexDriver({ transport });
+    await Effect.runPromise(driver.startSession(START));
+    await Effect.runPromise(driver.sendTurn({ threadId: "thread-1", prompt: "hi" }));
+    const server = transport.sessions[0]!.server;
+    // Before the app-server names the turn there is nothing to pin to.
+    expect(await codeOf(() => Effect.runPromise(driver.steerTurn("thread-1", "too soon")))).toBe("TURN_NOT_RUNNING");
+
+    server.notify("turn/started", { threadId: "codex-thread-1", turn: { id: "srv-1" } });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await Effect.runPromise(driver.steerTurn("thread-1", "also add tests"));
+    expect(server.requestsTo("turn/steer")[0]!.params).toEqual({
+      threadId: "codex-thread-1",
+      expectedTurnId: "srv-1",
+      input: [{ type: "text", text: "also add tests" }],
+    });
+  });
+});
+
+describe("codex images", () => {
+  it("sends images as image inputs carrying a data URL", async () => {
+    const transport = new FakeCodexTransport();
+    const driver = new CodexDriver({ transport });
+    await Effect.runPromise(driver.startSession(START));
+    await Effect.runPromise(
+      driver.sendTurn({ threadId: "thread-1", prompt: "look", images: [{ name: "a.png", mimeType: "image/png", data: "iVBORw0KGgo=" }] }),
+    );
+    expect(transport.sessions[0]!.server.requestsTo("turn/start")[0]!.params).toMatchObject({
+      input: [{ type: "text", text: "look" }, { type: "image", url: "data:image/png;base64,iVBORw0KGgo=" }],
+    });
+  });
+});
+const MCP = [
+  { name: "docs", type: "http" as const, url: "https://docs.example/mcp", headers: { Authorization: "Bearer t" } },
+  { name: "fs", type: "stdio" as const, command: "npx", args: ["-y", "fs-mcp"], env: { ROOT: "/" } },
+];
+
+describe("codex MCP injection", () => {
+  it("adds each server as its own mcp_servers.<name> override, on start and on resume", async () => {
+    const expected = {
+      "mcp_servers.docs": { url: "https://docs.example/mcp", http_headers: { Authorization: "Bearer t" } },
+      "mcp_servers.fs": { command: "npx", args: ["-y", "fs-mcp"], env: { ROOT: "/" } },
+    };
+    const fresh = new FakeCodexTransport();
+    await Effect.runPromise(new CodexDriver({ transport: fresh }).startSession({ ...START, mcpServers: MCP }));
+    expect(fresh.sessions[0]!.server.requestsTo("thread/start")[0]!.params).toMatchObject({ config: expected });
+
+    const resumed = new FakeCodexTransport();
+    await Effect.runPromise(
+      new CodexDriver({ transport: resumed }).startSession({ ...START, resumeCursor: "codex-thread-old", mcpServers: MCP }),
+    );
+    expect(resumed.sessions[0]!.server.requestsTo("thread/resume")[0]!.params).toMatchObject({ config: expected });
+  });
+
+  it("sends no config override when there are none", async () => {
+    const transport = new FakeCodexTransport();
+    await Effect.runPromise(new CodexDriver({ transport }).startSession(START));
+    expect(transport.sessions[0]!.server.requestsTo("thread/start")[0]!.params).not.toHaveProperty("config");
   });
 });

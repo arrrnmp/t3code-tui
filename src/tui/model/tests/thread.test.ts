@@ -158,6 +158,33 @@ describe("applyThreadFrame contextUsage", () => {
     });
   });
 
+  it("keeps the cache and auto-compact fields the turn runner records", () => {
+    let state = emptyThreadState();
+    state = applyThreadFrame(state, {
+      kind: "snapshot",
+      snapshot: {
+        snapshotSequence: 1,
+        thread: {
+          id: "t1",
+          activities: [
+            contextWindowActivity({
+              usedTokens: 431_553,
+              maxTokens: 1_000_000,
+              cachedInputTokens: 430_344,
+              autoCompactThreshold: 920_000,
+              compactsAutomatically: true,
+            }),
+          ],
+        },
+      },
+    });
+    expect(state.contextUsage).toMatchObject({
+      cachedInputTokens: 430_344,
+      autoCompactThreshold: 920_000,
+      compactsAutomatically: true,
+    });
+  });
+
   it("decodes contextUsage off a context-window.updated activity on resnapshot", () => {
     let state = emptyThreadState();
     state = applyThreadFrame(state, {

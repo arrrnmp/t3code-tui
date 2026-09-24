@@ -43,7 +43,7 @@ describe("codex config", () => {
       "--sandbox",
       "read-only",
     ]);
-    expect(codexAppServerArgs("", { MONVEX_CODEX_LAUNCH_ARGS: "--config x=1" })).toEqual([
+    expect(codexAppServerArgs("", { MOXEN_CODEX_LAUNCH_ARGS: "--config x=1" })).toEqual([
       "app-server",
       "--config",
       "x=1",

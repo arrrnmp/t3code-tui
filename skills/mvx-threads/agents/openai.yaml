@@ -1,4 +1,0 @@
-interface:
-  display_name: "Monvex threads"
-  short_description: "Create, read, message, snooze, interrupt, and delegate Monvex threads"
-  default_prompt: "Use $mvx-threads to work with Monvex threads."

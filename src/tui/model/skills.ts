@@ -1,4 +1,4 @@
-import type { SkillSummary } from "../../cli/catalog/catalog.js";
+import type { SkillSummary } from "../../core/catalog/summary.js";
 
 export interface SkillTrigger {
   /** Offset of the leading `$` in the full draft text. */
@@ -50,15 +50,20 @@ export function marqueeWindow(text: string, width: number, tick: number): string
   return doubled.slice(offset, offset + width);
 }
 
-/** Replaces the `$query` token with `$skill-name ` and reports where the cursor lands after it. */
+/**
+ * Replaces the `$query` token with the skill as the provider invokes it —
+ * `$skill-name ` for Codex, `/skill-name ` for the rest — and reports where
+ * the cursor lands after it.
+ */
 export function insertSkillMention(
   text: string,
   trigger: SkillTrigger,
   skillName: string,
+  prefix: "$" | "/" = "$",
 ): { text: string; cursorOffset: number } {
   const tokenEnd = trigger.start + 1 + trigger.query.length;
   const before = text.slice(0, trigger.start);
   const after = text.slice(tokenEnd);
-  const inserted = `$${skillName} `;
+  const inserted = `${prefix}${skillName} `;
   return { text: `${before}${inserted}${after}`, cursorOffset: before.length + inserted.length };
 }

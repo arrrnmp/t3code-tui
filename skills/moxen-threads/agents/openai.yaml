@@ -1,0 +1,4 @@
+interface:
+  display_name: "Moxen threads"
+  short_description: "Create, read, message, snooze, interrupt, and delegate Moxen threads"
+  default_prompt: "Use $moxen-threads to work with Moxen threads."

@@ -5,9 +5,11 @@
  */
 import type {
   EnsureOpencodeServerInput,
+  OpencodeContextSettings,
+  OpencodeModelLimit,
   OpencodeServerConnection,
   OpencodeSubscribedEvent,
-  OpencodeTextPart,
+  OpencodePromptPart,
   OpencodeTransport,
 } from "../transport.js";
 
@@ -16,6 +18,12 @@ export interface FakeOpencodeScript {
   readonly sessionID?: string;
   readonly messages?: ReadonlyArray<{ info: Record<string, unknown>; parts: ReadonlyArray<Record<string, unknown>> }>;
   readonly failMethods?: Record<string, string>;
+  /** Session ids `getSession` reports as gone (pruned, another machine). */
+  readonly lostSessions?: readonly string[];
+  readonly commands?: ReadonlyArray<{ name: string; description: string | null; source: string | null; hints: readonly string[] }>;
+  /** `config.providers` model limits, keyed `provider/model`. */
+  readonly limits?: Record<string, OpencodeModelLimit>;
+  readonly autoCompact?: boolean;
 }
 
 export class FakeOpencodeServerConnection implements OpencodeServerConnection {
@@ -26,6 +34,8 @@ export class FakeOpencodeServerConnection implements OpencodeServerConnection {
   readonly subscribers: Array<(event: OpencodeSubscribedEvent) => void> = [];
   readonly aborted: string[] = [];
   disposed = false;
+  /** Replaces the scripted `session.messages` answer mid-test. */
+  messages: FakeOpencodeScript["messages"] | null = null;
 
   constructor(private readonly script: FakeOpencodeScript = {}) {
     this.version = script.version ?? "1.18.30";
@@ -50,19 +60,42 @@ export class FakeOpencodeServerConnection implements OpencodeServerConnection {
 
   async getSession(sessionID: string): Promise<{ id: string } | null> {
     this.calls.push({ method: "session.get", args: { sessionID } });
-    return { id: sessionID };
+    return this.script.lostSessions?.includes(sessionID) ? null : { id: sessionID };
+  }
+
+  async addMcpServer(name: string, config: unknown): Promise<void> {
+    // Recorded before failing, so a test can count retries.
+    this.calls.push({ method: "mcp.add", args: { name, config } });
+    this.failChecked("mcp.add");
   }
 
   async sessionMessages(sessionID: string): Promise<ReadonlyArray<{ info: Record<string, unknown>; parts: ReadonlyArray<Record<string, unknown>> }>> {
     this.calls.push({ method: "session.messages", args: { sessionID } });
-    return this.script.messages ?? [];
+    return this.messages ?? this.script.messages ?? [];
+  }
+
+  async listCommands(): Promise<ReadonlyArray<{ name: string; description: string | null; source: string | null; hints: readonly string[] }>> {
+    this.calls.push({ method: "command.list", args: {} });
+    return this.script.commands ?? [];
+  }
+
+  async contextSettings(): Promise<OpencodeContextSettings> {
+    this.calls.push({ method: "config.providers", args: {} });
+    this.failChecked("config.providers");
+    return {
+      limits: new Map(Object.entries(this.script.limits ?? {})),
+      autoCompact: this.script.autoCompact ?? true,
+      reserved: null,
+    };
   }
 
   async promptAsync(input: {
     sessionID: string;
     model?: { providerID: string; modelID: string };
     messageID?: string;
-    parts: ReadonlyArray<OpencodeTextPart>;
+    system?: string;
+    agent?: string;
+    parts: ReadonlyArray<OpencodePromptPart>;
   }): Promise<{ messageID: string }> {
     this.failChecked("session.promptAsync");
     this.calls.push({ method: "session.promptAsync", args: input });

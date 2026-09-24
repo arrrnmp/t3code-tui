@@ -3,7 +3,7 @@
  * `acp/GrokAcpSupport.ts` (spawn argv per mode, referrer env, auth switch).
  *
  * Rules we keep: per-mode argv (`approval-required→--permission-mode
- * default`, `full-access→--always-approve`), `GROK_OAUTH2_REFERRER=mvx`
+ * default`, `full-access→--always-approve`), `GROK_OAUTH2_REFERRER=moxen`
  * injected, auth switch (`XAI_API_KEY` set → `xai.api_key`, else the CLI's
  * `cached_token`) — never our own OAuth. Unauthenticated → `grok login`.
  * The `grok-build` slug means "the CLI's current model" and is never sent
@@ -30,7 +30,7 @@ export const GROK_OAUTH2_REFERRER_ENV = "GROK_OAUTH2_REFERRER";
  * whether xAI allowlists referrers, so if Grok auth ever starts failing
  * where it used to work, this constant is the first thing to suspect.
  */
-export const GROK_REFERRER = "monvex";
+export const GROK_REFERRER = "moxen";
 export const GROK_API_KEY_ENV = "XAI_API_KEY";
 export const GROK_AUTH_METHOD_API_KEY = "xai.api_key";
 export const GROK_AUTH_METHOD_CACHED_TOKEN = "cached_token";

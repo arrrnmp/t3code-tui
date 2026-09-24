@@ -4,7 +4,7 @@ import { createClipboard, createHostClipboard, createRendererClipboardAdapter } 
 const SSH_ENV_VARS = ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "MOSH_CONNECTION"] as const;
 
 /**
- * True when `mvx tui` itself runs inside an SSH/Mosh session (remote box,
+ * True when `moxen tui` itself runs inside an SSH/Mosh session (remote box,
  * local eyes). The host OS clipboard then belongs to the *remote* machine,
  * so copies must travel back over the wire as OSC 52 instead.
  */
@@ -25,7 +25,7 @@ interface RendererOsc52 {
 /**
  * One write path for both the host OS clipboard and OSC 52 (the SSH-safe
  * escape-sequence clipboard, so a copy still lands on the user's machine when
- * `mvx tui` runs on a remote box over SSH).
+ * `moxen tui` runs on a remote box over SSH).
  *
  * Routing: over SSH (`isSshSession()` or the renderer's own `remote` flag)
  * the host backend is skipped — writing to it would target the remote box —

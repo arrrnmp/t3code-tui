@@ -1,6 +1,6 @@
-# monvex
+# moxen
 
-`monvex` drives provider CLIs directly from your terminal: a full interactive TUI for working with threads, plus a scriptable CLI for handovers, thread inspection, messaging, and automation. No server — threads, projects, and orchestration live in a local store (`~/.monvex`), and turns run against `claude`, `codex`, `grok`, or `opencode serve` through their own logins.
+`moxen` drives provider CLIs directly from your terminal: a full interactive TUI for working with threads, plus a scriptable CLI for handovers, thread inspection, messaging, and automation. No server — threads, projects, and orchestration live in a local store (`~/.moxen`), and turns run against `claude`, `codex`, `grok`, or `opencode serve` through their own logins.
 
 ## Requirements
 
@@ -9,47 +9,47 @@ Bun (it manages packages and runs everything) and at least one provider CLI: `cl
 ## Install
 
 ```bash
-git clone https://github.com/arrrnmp/monvex.git
-cd monvex
+git clone https://github.com/arrrnmp/moxen.git
+cd moxen
 bun install
 ```
 
 There is no build step for daily use — Bun runs the TypeScript source directly, from any working
-directory, with nothing to put on PATH. Point a `mvx` command at that instead of building a
+directory, with nothing to put on PATH. Point a `moxen` command at that instead of building a
 `dist/` artifact and shimming it in.
 
 macOS/Linux (bash/zsh) — add to your shell profile (`~/.bashrc`, `~/.zshrc`, ...):
 
 ```bash
-mvx() { bun "/absolute/path/to/monvex/src/cli/index.ts" "$@"; }
+moxen() { bun "/absolute/path/to/moxen/src/cli/index.ts" "$@"; }
 ```
 
 Windows (PowerShell) — add to your `$PROFILE`:
 
 ```powershell
-function mvx { bun "C:\absolute\path\to\monvex\src\cli\index.ts" @args }
+function moxen { bun "C:\absolute\path\to\moxen\src\cli\index.ts" @args }
 ```
 
 Reload the shell, then verify:
 
 ```bash
-mvx --json doctor
+moxen --json doctor
 ```
 
-Every example below assumes `mvx` resolves that way. This package is not published
+Every example below assumes `moxen` resolves that way. This package is not published
 (`private: true`), so install it by cloning; `bun run check` (typecheck and tests) is optional
 and only relevant if you're changing the code itself.
 
 ## Terminal UI
 
 ```bash
-mvx tui
+moxen tui
 ```
 
 Opens the interactive client: sidebar with your threads, the live transcript with per-turn diffs,
 and a composer with model/effort pickers, image attachments, and an external-editor shortcut.
-Image attachments are validated client-side and reach the provider as file-name mentions until
-per-driver image plumbing lands. Clicking a user prompt opens message actions (copy, revert); clicking a diff-turn header jumps
+Image attachments reach every provider as native image input (Grok falls back to naming them
+when its agent does not advertise image prompts). Clicking a user prompt opens message actions (copy, revert); clicking a diff-turn header jumps
 the transcript to that turn; the command palette covers copy/thread/jump actions.
 
 | Keys | Action |
@@ -81,9 +81,9 @@ The same binary scripts everything the TUI does, with stable `--json` envelopes
 Hands the current folder or Git repository to a new thread. It resolves the workspace against the local project registry, optionally creates the missing project, creates a fresh thread, and starts its first prompt against the selected provider driver:
 
 ```bash
-mvx handover --prompt "Continue the implementation from this handover."
-mvx handover --prompt-file handover.txt --open none
-printf '%s' "$PROMPT" | mvx handover --stdin
+moxen handover --prompt "Continue the implementation from this handover."
+moxen handover --prompt-file handover.txt --open none
+printf '%s' "$PROMPT" | moxen handover --stdin
 ```
 
 | Flag | Values |
@@ -107,27 +107,27 @@ Speed and thinking effort are stored as model options. The provider driver appli
 List threads across projects, or restrict discovery by project id or workspace:
 
 ```bash
-mvx threads list
-mvx threads list --status active --cwd .
-mvx threads list --status settled --project <project-id>
+moxen threads list
+moxen threads list --status active --cwd .
+moxen threads list --status settled --project <project-id>
 ```
 
 `--status` accepts `active`, `settled`, `snoozed`, or `all` (the default). A thread reads as `snoozed` while it is unsettled and its `snoozedUntil` lies in the future. Results include the exact thread id, project, title, model, and update time. Inspect the exact target before sending:
 
 ```bash
-mvx threads inspect --thread <thread-id>
+moxen threads inspect --thread <thread-id>
 ```
 
 `inspect` returns a bounded preview in JSON: the 6 most recent messages, with message text limited to 2,000 characters, plus `snoozedUntil` when the thread is snoozed. Read a thread projection without truncation:
 
 ```bash
-mvx threads read --thread <thread-id>
-mvx --json threads read --thread <thread-id>
-mvx --json threads read --thread <thread-id> --last-turn
-mvx --json threads read --thread <thread-id> --view turn-items
-mvx --json threads read --thread <thread-id> --view plans
-mvx --json threads read --thread <thread-id> --view checkpoints
-mvx --json threads read --thread <thread-id> --view transfers
+moxen threads read --thread <thread-id>
+moxen --json threads read --thread <thread-id>
+moxen --json threads read --thread <thread-id> --last-turn
+moxen --json threads read --thread <thread-id> --view turn-items
+moxen --json threads read --thread <thread-id> --view plans
+moxen --json threads read --thread <thread-id> --view checkpoints
+moxen --json threads read --thread <thread-id> --view transfers
 ```
 
 `--view` defaults to `messages`: the JSON result stores the transcript in `data.thread.messages`. Messages remain in chronological order and retain their `turnId`. `--last-turn` keeps only messages assigned to `data.thread.latestTurn.turnId`. Neither mode truncates message text. The other views expose the thread's activity ledger (`turn-items`), proposed plans (`plans`, currently always empty — no plan capture is wired yet), and checkpoint summaries (`checkpoints`, backed by git worktree snapshots around each turn); `transfers` is always empty because no transport exposes context-transfer rows.
@@ -137,9 +137,9 @@ mvx --json threads read --thread <thread-id> --view transfers
 Send to an existing thread instead of starting a new one. Use the **thread ID** from a previous command's JSON `data.thread.id`. `--thread` and `--thread-id` are aliases:
 
 ```bash
-mvx threads send --thread <thread-id> --prompt "Run the morning check."
-mvx threads send --thread-id <thread-id> --stdin --open none < follow-up.txt
-mvx threads send --thread-id <thread-id> --prompt-file follow-up.txt --dry-run
+moxen threads send --thread <thread-id> --prompt "Run the morning check."
+moxen threads send --thread-id <thread-id> --stdin --open none < follow-up.txt
+moxen threads send --thread-id <thread-id> --prompt-file follow-up.txt --dry-run
 ```
 
 Exactly one of `--prompt`, `--prompt-file`, or `--stdin` is required. The message is recorded as a turn on that thread and the provider run continues in the background; success reports acceptance, not agent completion. A failed send never deletes the thread. Archived threads are rejected (there is no unarchive path).
@@ -147,7 +147,7 @@ Exactly one of `--prompt`, `--prompt-file`, or `--stdin` is required. The messag
 Choose how to handle active work (default `reject`):
 
 ```bash
-mvx threads send --thread-id <thread-id> --if-busy inject \
+moxen threads send --thread-id <thread-id> --if-busy inject \
   --prompt "Additional context for the work in progress…" --open none
 ```
 
@@ -160,7 +160,7 @@ Sending to a settled thread requires confirmation. Non-interactive and JSON call
 
 ```bash
 printf '%s' "New findings that require more work..." \
-  | mvx --json threads send --thread <thread-id> --stdin --wake-settled
+  | moxen --json threads send --thread <thread-id> --stdin --wake-settled
 ```
 
 The turn keeps the thread's model, permission, and mode unless overridden. `--provider`, `--model`, `--speed`, and `--thinking-effort` override the model for that turn only (global `provider`/`model` config is ignored so a stale default cannot flip a scheduled thread's model). There is no `--permission`/`--mode` flag: change the thread's modes in the TUI permission picker, since scheduled runs inherit them.
@@ -172,8 +172,8 @@ Use `--prompt-file` (or `--stdin`) for skill invocations and longer prompts, `--
 Manage settlement explicitly without starting a new turn:
 
 ```bash
-mvx threads settle --thread <thread-id>
-mvx threads unsettle --thread <thread-id>
+moxen threads settle --thread <thread-id>
+moxen threads unsettle --thread <thread-id>
 ```
 
 `settle` refuses a thread with a running session or a pending approval or user-input request. `unsettle` marks the thread manually active but does not send a message or start its provider session. Both apply synchronously to the ledger.
@@ -181,45 +181,45 @@ mvx threads unsettle --thread <thread-id>
 Snooze an active thread until an ISO-8601 datetime, interrupt an active turn, or delegate a sub-agent task to a child thread in the same project:
 
 ```bash
-mvx threads snooze --thread <thread-id> --until 2030-01-01T00:00:00.000Z
-mvx threads unsnooze --thread <thread-id>
-mvx threads interrupt --thread <thread-id> [--run <turn-id>]
-mvx threads delegate --thread <parent-id> --prompt "Self-contained task" --open none
-mvx threads task-status --thread <parent-id> --task <child-thread-id>
-mvx threads task-cancel --thread <parent-id> --task <child-thread-id>
+moxen threads snooze --thread <thread-id> --until 2030-01-01T00:00:00.000Z
+moxen threads unsnooze --thread <thread-id>
+moxen threads interrupt --thread <thread-id> [--run <turn-id>]
+moxen threads delegate --thread <parent-id> --prompt "Self-contained task" --open none
+moxen threads task-status --thread <parent-id> --task <child-thread-id>
+moxen threads task-cancel --thread <parent-id> --task <child-thread-id>
 ```
 
 `delegate` sends only the task prompt as the child's first turn and waits for its latest turn to reach `completed`, `interrupted`, or `error` (default budget 600000ms via `--timeout-ms`; `--no-wait` returns after acceptance). A wait timeout exits 0 with `data.task.waitTimedOut: true` and never cancels the child — re-poll with `task-status`. `task-cancel` interrupts the live provider run through the store and marks the turn interrupted.
 
 Thread targeting uses exit code `3` for a missing target and `4` for a lifecycle/confirmation refusal.
 
-To run a message on a schedule (for example daily at 05:01), pair it with the OS scheduler. The provider CLIs must be installed and authenticated, and the machine awake. The scheduler doesn't load your shell profile, so point it at `bun` and the script path directly rather than at the `mvx` function/alias. PowerShell example:
+To run a message on a schedule (for example daily at 05:01), pair it with the OS scheduler. The provider CLIs must be installed and authenticated, and the machine awake. The scheduler doesn't load your shell profile, so point it at `bun` and the script path directly rather than at the `moxen` function/alias. PowerShell example:
 
 ```powershell
 $action = New-ScheduledTaskAction -Execute "bun.exe" `
-  -Argument '"C:\absolute\path\to\monvex\src\cli\index.ts" --json threads send --thread <thread-id> --prompt-file "<path-to-prompt.txt>" --open none'
+  -Argument '"C:\absolute\path\to\moxen\src\cli\index.ts" --json threads send --thread <thread-id> --prompt-file "<path-to-prompt.txt>" --open none'
 $trigger = New-ScheduledTaskTrigger -Daily -At 05:01
-Register-ScheduledTask -TaskName "Monvex 5am thread ping" -Action $action -Trigger $trigger
+Register-ScheduledTask -TaskName "Moxen 5am thread ping" -Action $action -Trigger $trigger
 ```
 
 macOS/Linux equivalent (cron):
 
 ```bash
-1 5 * * * bun /absolute/path/to/monvex/src/cli/index.ts --json threads send --thread <thread-id> --prompt-file "<path-to-prompt.txt>" --open none
+1 5 * * * bun /absolute/path/to/moxen/src/cli/index.ts --json threads send --thread <thread-id> --prompt-file "<path-to-prompt.txt>" --open none
 ```
 
 ## Settings
 
 ```bash
-mvx config show
-mvx config set projectPolicy existing
-mvx config set workspaceMode folder
-mvx config set openMode browser
-mvx config set threadEnvMode local
-mvx config set provider codex
-mvx config set model gpt-5.4
-mvx config set speedMode fast
-mvx config set thinkingEffort xhigh
+moxen config show
+moxen config set projectPolicy existing
+moxen config set workspaceMode folder
+moxen config set openMode browser
+moxen config set threadEnvMode local
+moxen config set provider codex
+moxen config set model gpt-5.4
+moxen config set speedMode fast
+moxen config set thinkingEffort xhigh
 ```
 
 | Setting | Values | Default |
@@ -235,38 +235,59 @@ mvx config set thinkingEffort xhigh
 | `speedMode` | `standard`, `fast` | Unset (inherits thread/project) |
 | `thinkingEffort` | Model-supported effort value | Unset (inherits thread/project) |
 
-`projectPolicy: "existing"` makes a missing project a hard error. `workspaceMode: "folder"` uses the exact current folder instead of walking up to the Git root. `threadEnvMode: "auto"` follows project → `monvex.json` → global local/worktree preference. Explicit CLI config values remain overrides.
+`projectPolicy: "existing"` makes a missing project a hard error. `workspaceMode: "folder"` uses the exact current folder instead of walking up to the Git root. `threadEnvMode: "auto"` follows project → `moxen.json` → global local/worktree preference. Explicit CLI config values remain overrides.
 
-`--checkout worktree` provisions a local worktree for the new thread: a `mvx/<id>` branch off the current branch (or its origin — new worktrees always start from origin), placed under the store's `worktrees` directory, with the thread rooted there. A repository without a current branch returns `WORKTREE_REQUIRES_BRANCH` instead of silently falling back to the current checkout.
+`--checkout worktree` provisions a local worktree for the new thread: a `moxen/<id>` branch off the current branch (or its origin — new worktrees always start from origin), placed under the store's `worktrees` directory, with the thread rooted there. A repository without a current branch returns `WORKTREE_REQUIRES_BRANCH` instead of silently falling back to the current checkout.
+
+### MCP servers
+
+MCP servers declared under `mcpServers` are added to every provider session, alongside whatever
+the provider's own config already loads. The shape is the one `.mcp.json` uses; edit the config
+file directly (`moxen config path`):
+
+```json
+{
+  "mcpServers": {
+    "fs": { "command": "npx", "args": ["-y", "some-mcp"], "env": { "ROOT": "/work" } },
+    "docs": { "type": "http", "url": "https://docs.example/mcp", "headers": { "Authorization": "Bearer …" } }
+  }
+}
+```
+
+A project's `moxen.json` can declare `mcpServers` too: an entry replaces the global one of the
+same name, and `null` removes it for that project. Servers are read when a session starts, so an
+edit applies to the next session. Names may use letters, digits, `-` and `_`. Grok gets `http`
+servers only when its agent advertises HTTP MCP support. `config show` redacts `env` and `headers`
+values.
 
 ## Commands
 
 ```text
-mvx tui
-mvx --json doctor
-mvx config path|show|set
-mvx projects list
-mvx projects resolve --cwd .
-mvx projects ensure --cwd . --project-policy create
-mvx providers list
-mvx models list --provider claudeAgent
-mvx models hide --provider opencode --model opencode/muse-spark-1.3-contributor-free
-mvx models show --provider opencode --model opencode/muse-spark-1.3-contributor-free
-mvx efforts list --provider claudeAgent --model claude-sonnet-5
-mvx threads create --stdin
-mvx threads list --status active --cwd .
-mvx threads inspect --thread <thread-id>
-mvx threads read --thread <thread-id>
-mvx threads send --thread <thread-id> --stdin
-mvx threads settle --thread <thread-id>
-mvx threads unsettle --thread <thread-id>
-mvx threads snooze --thread <thread-id> --until <ISO-datetime>
-mvx threads unsnooze --thread <thread-id>
-mvx threads interrupt --thread <thread-id>
-mvx threads delegate --thread <parent-id> --stdin
-mvx threads task-status --thread <parent-id> --task <child-thread-id>
-mvx threads task-cancel --thread <parent-id> --task <child-thread-id>
-mvx handover --stdin
+moxen tui
+moxen --json doctor
+moxen config path|show|set
+moxen projects list
+moxen projects resolve --cwd .
+moxen projects ensure --cwd . --project-policy create
+moxen providers list
+moxen models list --provider claudeAgent
+moxen models hide --provider opencode --model opencode/muse-spark-1.3-contributor-free
+moxen models show --provider opencode --model opencode/muse-spark-1.3-contributor-free
+moxen efforts list --provider claudeAgent --model claude-sonnet-5
+moxen threads create --stdin
+moxen threads list --status active --cwd .
+moxen threads inspect --thread <thread-id>
+moxen threads read --thread <thread-id>
+moxen threads send --thread <thread-id> --stdin
+moxen threads settle --thread <thread-id>
+moxen threads unsettle --thread <thread-id>
+moxen threads snooze --thread <thread-id> --until <ISO-datetime>
+moxen threads unsnooze --thread <thread-id>
+moxen threads interrupt --thread <thread-id>
+moxen threads delegate --thread <parent-id> --stdin
+moxen threads task-status --thread <parent-id> --task <child-thread-id>
+moxen threads task-cancel --thread <parent-id> --task <child-thread-id>
+moxen handover --stdin
 ```
 
 Every command supports human-readable output. `--json` produces `{ "ok": true, "data": ... }` on success and a stable error envelope on failure.
@@ -283,11 +304,11 @@ Every command supports human-readable output. `--json` produces `{ "ok": true, "
 
 ## Opening threads
 
-`--open` is accepted everywhere for script compatibility, but there is no desktop app to deep-link into: `opened.kind` is always `none`. The TUI (`mvx tui`) is the interactive interface; use `--open none` for headless runs.
+`--open` is accepted everywhere for script compatibility, but there is no desktop app to deep-link into: `opened.kind` is always `none`. The TUI (`moxen tui`) is the interactive interface; use `--open none` for headless runs.
 
 ## Security
 
-There are no bearer tokens anywhere in this stack: provider CLIs own their own logins (`claude auth login`, `codex login`, `grok login`, `opencode auth login`), and this CLI never reads their secrets — it only observes credential *presence* (env vars, stored-auth file) for status display. Threads live as local JSONL under `~/.monvex` (override with `MONVEX_STORE_ROOT`); `doctor` reports store writability alongside binary and auth status.
+There are no bearer tokens anywhere in this stack: provider CLIs own their own logins (`claude auth login`, `codex login`, `grok login`, `opencode auth login`), and this CLI never reads their secrets — it only observes credential *presence* (env vars, stored-auth file) for status display. Threads live as local JSONL under `~/.moxen` (override with `MOXEN_STORE_ROOT`); `doctor` reports store writability alongside binary and auth status.
 
 ## License
 

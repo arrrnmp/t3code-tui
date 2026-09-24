@@ -6,11 +6,11 @@ import { describe, expect, it } from "vitest";
 import { CliError } from "../../../core/errors.js";
 import { ensureStoredProject, listStoredProjects } from "../../../core/projects/projects.js";
 import { readThread } from "../../../core/threads/threads.js";
-import { testHarness } from "../../testing/harness.js";
+import { testHarness } from "../../../core/testing/harness.js";
 import { createHandoverThread } from "../handover.js";
 
 function storeRoot(): string {
-  return process.env.MONVEX_STORE_ROOT!;
+  return process.env.MOXEN_STORE_ROOT!;
 }
 
 describe("createHandoverThread", () => {
@@ -179,7 +179,7 @@ describe("createHandoverThread", () => {
       baseBranch: "main",
       startFromOrigin: true,
     });
-    expect(result.worktree?.branch?.startsWith("mvx/")).toBe(true);
+    expect(result.worktree?.branch?.startsWith("moxen/")).toBe(true);
     expect(result.thread.createCommand.worktreePath).toBe(result.worktree?.path);
     const stored = await readThread(harness.store, result.thread.id);
     expect(stored.thread.env.mode).toBe("worktree");
@@ -204,10 +204,10 @@ describe("createHandoverThread", () => {
     expect(result.worktree).toMatchObject({ startFromOrigin: true });
   });
 
-  it("prefers a project's checkout setting over monvex.json and the global setting", async () => {
+  it("prefers a project's checkout setting over moxen.json and the global setting", async () => {
     const harness = await testHarness();
     await writeFile(
-      path.join(harness.work, "monvex.json"),
+      path.join(harness.work, "moxen.json"),
       JSON.stringify({ defaultThreadEnvMode: "worktree" }),
       "utf8",
     );
@@ -234,10 +234,10 @@ describe("createHandoverThread", () => {
     expect(result.worktree).toBeNull();
   });
 
-  it("prefers monvex.json's checkout setting over the global setting", async () => {
+  it("prefers moxen.json's checkout setting over the global setting", async () => {
     const harness = await testHarness();
     await writeFile(
-      path.join(harness.work, "monvex.json"),
+      path.join(harness.work, "moxen.json"),
       JSON.stringify({ defaultThreadEnvMode: "local" }),
       "utf8",
     );
@@ -252,12 +252,12 @@ describe("createHandoverThread", () => {
 
     expect(result.settings).toMatchObject({
       effectiveThreadEnvMode: "local",
-      threadEnvModeSource: "monvex.json",
+      threadEnvModeSource: "moxen.json",
     });
     expect(result.worktree).toBeNull();
   });
 
-  it("uses the global checkout setting when the project and monvex.json do not set one", async () => {
+  it("uses the global checkout setting when the project and moxen.json do not set one", async () => {
     const harness = await testHarness();
     harness.config.threadEnvMode = "worktree";
 

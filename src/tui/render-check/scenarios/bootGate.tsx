@@ -2,7 +2,7 @@ import { act } from "react";
 import { testRender } from "@opentui/react/test-utils";
 
 import { App } from "../../app/app.js";
-import type { ClientApi } from "../../../server/api.js";
+import type { ClientApi, ShellFrame, ThreadFrame } from "../../../server/api.js";
 import { client } from "../fixtures.js";
 import { fail } from "../helpers.js";
 
@@ -19,13 +19,13 @@ export async function runBootGate(): Promise<void> {
   const deferred: ClientApi = {
     ...client,
     subscribeShell(_options, onItem) {
-      shellEmit = onItem;
+      shellEmit = (item) => onItem(item as ShellFrame);
       return () => {
         shellEmit = null;
       };
     },
     subscribeThread(threadId, _options, onItem) {
-      threadEmits.set(threadId, onItem);
+      threadEmits.set(threadId, (item) => onItem(item as ThreadFrame));
       return () => {
         threadEmits.delete(threadId);
       };

@@ -1,9 +1,9 @@
 import { basename, resolve } from "node:path";
 
-import { buildImageAttachments, extractMentions } from "../../model/attachments.js";
+import { buildImageAttachments, extractMentions } from "../../../core/attachments.js";
 import { dispatchErrorMessage } from "../../../core/errors.js";
 import type { ModelSelection, RuntimeMode, ProjectEnvelope, ThreadEnvelope } from "../../../core/types.js";
-import type { ImageAttachmentUpload } from "../../model/attachments.js";
+import type { ImageAttachmentUpload } from "../../../core/attachments.js";
 import type { ClientApi } from "../../../server/api.js";
 import type { PickerName } from "../../features/pickers/pickerTypes.js";
 import { threadTitle } from "../utils.js";
@@ -91,7 +91,6 @@ export function useThreadCreation(params: {
         setError(built.error.slice(0, 120));
         return;
       }
-      const nowIso = new Date().toISOString();
       const threadId = crypto.randomUUID();
       const title = threadTitle(parsed.text);
       const interactionMode = source?.interactionMode ?? "default";
@@ -103,7 +102,6 @@ export function useThreadCreation(params: {
       const runtimeMode = creatingRuntimeMode ?? source?.runtimeMode ?? "full-access";
       const create = {
         type: "thread.create",
-        commandId: crypto.randomUUID(),
         threadId,
         projectId,
         title,
@@ -111,25 +109,13 @@ export function useThreadCreation(params: {
         runtimeMode,
         interactionMode,
         branch: source?.branch ?? null,
-        worktreePath: null,
-        createdAt: nowIso,
-      };
+      } as const;
       const start = {
         type: "thread.turn.start",
-        commandId: crypto.randomUUID(),
         threadId,
-        message: {
-          messageId: crypto.randomUUID(),
-          role: "user",
-          text: parsed.text,
-          attachments: [...pending, ...built.attachments],
-        },
+        message: { text: parsed.text, attachments: [...pending, ...built.attachments] },
         ...(modelSelection === undefined ? {} : { modelSelection }),
-        titleSeed: title,
-        runtimeMode,
-        interactionMode,
-        createdAt: nowIso,
-      };
+      } as const;
       void (async () => {
         try {
           await client.dispatch(create);
@@ -200,13 +186,9 @@ export function useThreadCreation(params: {
     void client
       .dispatch({
         type: "project.create",
-        commandId: crypto.randomUUID(),
         projectId,
         title,
         workspaceRoot,
-        createWorkspaceRootIfMissing: true,
-        defaultModelSelection: null,
-        createdAt: new Date().toISOString(),
       })
       .then(() => pickCreatingProject(projectId))
       .catch((cause: unknown) => setError(dispatchErrorMessage(cause)));

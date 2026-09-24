@@ -42,6 +42,13 @@ function elapsed(entries: readonly TimelineEntry[]): { durationMs: number; start
 export function groupTurns(entries: readonly TimelineEntry[]): TurnGroup[] {
   const groups: TurnGroup[] = [];
   let current: TurnGroup | null = null;
+  // Live user prompts usually carry a null turnId — the server only assigns
+  // the turn id once the turn starts, so the prompt that opened a turn
+  // arrives (and stays) without one while its reply, tool calls, and
+  // checkpoint all carry the real id. Buffer such prompts and flush them
+  // into the group the next turnId'd entry opens: otherwise every prompt
+  // orphans into its own reply-less group and the turn reads as prompt-less.
+  let pendingPrompts: TimelineEntry[] = [];
 
   const open = (entry: TimelineEntry): TurnGroup => {
     const group: TurnGroup = {
@@ -56,6 +63,10 @@ export function groupTurns(entries: readonly TimelineEntry[]): TurnGroup[] {
       durationMs: 0,
       startedAt: entry.at,
     };
+    if (pendingPrompts.length > 0) {
+      group.prompts.unshift(...pendingPrompts);
+      pendingPrompts = [];
+    }
     groups.push(group);
     return group;
   };
@@ -77,13 +88,19 @@ export function groupTurns(entries: readonly TimelineEntry[]): TurnGroup[] {
   };
 
   for (const entry of entries) {
-    // A user prompt starts a new group unless it shares the open group's turn
-    // id: a follow-up "nudge" sent while a turn is still running carries the
-    // same turnId as the prompt that opened it, so merging it here keeps the
-    // turn's elapsed clock anchored to the first prompt instead of
-    // restarting on every nudge.
+    // A turnId'd user prompt starts a new group unless it shares the open
+    // group's turn id: a follow-up "nudge" sent while a turn is still running
+    // carries the same turnId as the prompt that opened it, so merging it
+    // here keeps the turn's elapsed clock anchored to the first prompt
+    // instead of restarting on every nudge. A null-turnId prompt (the live
+    // shape above) buffers for the next turn instead of opening a group the
+    // turn's own entries would then refuse to join.
     if (entry.kind === "user") {
-      if (current === null || entry.turnId === null || current.turnId === null || entry.turnId !== current.turnId) {
+      if (entry.turnId === null) {
+        pendingPrompts.push(entry);
+        continue;
+      }
+      if (current === null || current.turnId === null || entry.turnId !== current.turnId) {
         current = open(entry);
       } else {
         demoteStaleReply(current, entry);
@@ -92,12 +109,8 @@ export function groupTurns(entries: readonly TimelineEntry[]): TurnGroup[] {
       continue;
     }
     if (current === null || (entry.turnId !== null && entry.turnId !== current.turnId)) {
-      // A turnId'd entry always resolves to its own turn's group — even when
-      // the open group is a null-turn prompt. Live user prompts carry a null
-      // turnId, so without the split their whole turn's work (and the
-      // checkpoint diff entry) would merge into the prompt's group while the
-      // turn-diff orphaned into a work-less group of its own — leaving rows
-      // like inline diffs with no turn to resolve against. Entries with no
+      // A turnId'd entry always resolves to its own turn's group — buffered
+      // null-turn prompts flush into it via `open` above. Entries with no
       // turnId of their own (system rows) still ride along.
       current = open(entry);
     }
@@ -106,11 +119,12 @@ export function groupTurns(entries: readonly TimelineEntry[]): TurnGroup[] {
       // null-turnId system activities) must not absorb it, or the row
       // renders under the wrong turn — and no group carries the
       // checkpoint's turnId for jump lookups afterwards.
-      if (current.turnId !== entry.turnId) current = open(entry);
+      if (current === null || current.turnId !== entry.turnId) current = open(entry);
       current.diff = entry;
       continue;
     }
     if (entry.kind === "proposed-plan") {
+      if (current === null) current = open(entry);
       current.proposedPlan = entry;
       continue;
     }
@@ -135,6 +149,14 @@ export function groupTurns(entries: readonly TimelineEntry[]): TurnGroup[] {
     // punish the common case. Only a nudge (above) or a genuinely new reply
     // (below) proves the old one was superseded.
     current.work.push(entry);
+  }
+
+  // Prompts the server never assigned a turn — the turn hasn't started yet,
+  // or the snapshot landed mid-flight — keep their own group rather than
+  // dropping them: `open` flushes the buffer into it.
+  if (pendingPrompts.length > 0) {
+    const first = pendingPrompts[0];
+    if (first !== undefined) open(first);
   }
 
   for (const group of groups) {

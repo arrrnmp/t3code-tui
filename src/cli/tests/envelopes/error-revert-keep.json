@@ -1,0 +1,10 @@
+{
+  "ok": false,
+  "error": {
+    "code": "INVALID_THREAD_OPTION",
+    "message": "--keep must be a whole number of turns, 0 or more.",
+    "details": {
+      "keep": "-1"
+    }
+  }
+}

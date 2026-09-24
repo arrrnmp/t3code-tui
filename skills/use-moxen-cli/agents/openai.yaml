@@ -1,0 +1,4 @@
+interface:
+  display_name: "Moxen CLI"
+  short_description: "Create handovers and manage Moxen threads"
+  default_prompt: "Use $use-moxen to hand this repository over to a new Moxen thread or manage an existing Moxen thread."

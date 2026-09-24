@@ -18,6 +18,7 @@ import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 
 import { CliError } from "../../errors.js";
+import { plainSkill, type SkillInventory, type SkillSummary } from "../../catalog/summary.js";
 import type { InteractionMode, ModelSelection, RuntimeMode } from "../../types.js";
 import { JsonRpcPeer } from "../stdio.js";
 import type {
@@ -25,6 +26,8 @@ import type {
   ProviderAdapter,
   ProviderAdapterCapabilities,
   ProviderApprovalDecision,
+  ContextWindowUsage,
+  ProviderImage,
   ProviderRuntimeEvent,
   ProviderSendTurnInput,
   ProviderSession,
@@ -36,12 +39,14 @@ import type {
   TokenUsageDelta,
   TurnId,
 } from "../spi.js";
+import type { McpServerSpec } from "../../mcp.js";
 import {
   codexAccountTypeOf,
   codexSignedOutMessage,
   isCodexAuthErrorText,
   normalizeCodexSettings,
   resolveCodexHome,
+  resolveCodexModel,
   type CodexAccountType,
   type CodexSettings,
 } from "./config.js";
@@ -96,6 +101,17 @@ interface TranscriptTurn {
   status: "running" | CodexTurnStatus;
   text: string;
   error: string | null;
+  /**
+   * The turn's `agentMessage` items by id, in arrival order. A turn can hold
+   * several: interim `commentary` updates between tool calls, then the
+   * `final_answer`. Only non-commentary messages make up the turn's text.
+   */
+  readonly messages: Map<string, AgentMessage>;
+}
+
+interface AgentMessage {
+  text: string;
+  phase: string | null;
 }
 
 interface ParkedCodex {
@@ -107,6 +123,8 @@ interface ParkedCodex {
 
 interface CodexSession {
   readonly threadId: ThreadId;
+  /** Latest `thread/tokenUsage/updated` reading of the context window. */
+  context: ContextWindowUsage | null;
   codexThreadId: string | null;
   readonly peer: JsonRpcPeer;
   readonly workingDirectory: string;
@@ -126,7 +144,7 @@ interface CodexSession {
   startedAt: string;
 }
 
-const CLIENT_INFO = { name: "monvex", title: "monvex", version: "0.0.0" };
+const CLIENT_INFO = { name: "moxen", title: "moxen", version: "0.0.0" };
 
 // Serialized per CODEX_HOME so concurrent reset-credit consumes never race.
 const resetCreditLocks = new Map<string, Promise<void>>();
@@ -156,8 +174,39 @@ function textOfDelta(params: unknown): string | null {
   return null;
 }
 
-function userInputBlocks(prompt: string): Array<Record<string, unknown>> {
-  return [{ type: "text", text: prompt }];
+/**
+ * The turn's answer: its non-`commentary` agent messages. Codex marks
+ * interim progress updates `phase: "commentary"`; folding those in put the
+ * model's working narration into the final output. A phase of `null` is
+ * "unknown" (older models) and counts as answer text. A turn whose every
+ * message is commentary falls back to the last one rather than to nothing.
+ */
+function answerText(messages: ReadonlyMap<string, AgentMessage>): string {
+  const all = [...messages.values()];
+  const answer = all.filter((message) => message.phase !== "commentary");
+  if (answer.length > 0) return answer.map((message) => message.text).join("\n\n");
+  return all.at(-1)?.text ?? "";
+}
+
+/** The `agentMessage` item a notification carries, if any. */
+function agentMessageItem(params: unknown): { id: string; text: string | null; phase: string | null } | null {
+  const item = asRecord(asRecord(params)?.["item"]);
+  if (!item || item["type"] !== "agentMessage") return null;
+  const id = asString(item["id"]);
+  if (!id) return null;
+  return {
+    id,
+    text: typeof item["text"] === "string" ? (item["text"] as string) : null,
+    phase: asString(item["phase"]),
+  };
+}
+
+/** `UserInput[]`: the text, then each image as an `image` input with a data URL. */
+function userInputBlocks(prompt: string, images: readonly ProviderImage[] = []): Array<Record<string, unknown>> {
+  return [
+    { type: "text", text: prompt },
+    ...images.map((image) => ({ type: "image", url: `data:${image.mimeType};base64,${image.data}` })),
+  ];
 }
 
 export class CodexDriver implements ProviderAdapter<CliError> {
@@ -172,6 +221,8 @@ export class CodexDriver implements ProviderAdapter<CliError> {
   private readonly transport: CodexTransport;
   private readonly rateLimitsTimeoutMs: number;
   private readonly sessions = new Map<ThreadId, CodexSession>();
+  /** Codex thread id per thread, kept past session teardown (see `resumeCursor`). */
+  private readonly resumable = new Map<ThreadId, string>();
   private readonly queue = Effect.runSync(Queue.unbounded<ProviderRuntimeEvent>());
 
   constructor(options: CodexDriverOptions = {}) {
@@ -241,11 +292,12 @@ export class CodexDriver implements ProviderAdapter<CliError> {
       const session: CodexSession = {
         threadId: input.threadId,
         codexThreadId: null,
+        context: null,
         peer,
         workingDirectory: input.workingDirectory,
         closed: false,
         accountType: "unknown",
-        model: input.modelSelection?.model ?? null,
+        model: resolveCodexModel(input.modelSelection?.model),
         runtimeMode: input.runtimeMode ?? "full-access",
         transcript: [],
         waiters: new Map(),
@@ -278,23 +330,25 @@ export class CodexDriver implements ProviderAdapter<CliError> {
         session.accountType = codexAccountTypeOf(account);
         await this.probeRateLimits(session);
         const policy = staticPolicyForRuntimeMode(session.runtimeMode);
-        const started = await peer.request(CODEX_METHODS.threadStart, {
+        const overrides = {
           cwd: input.workingDirectory,
           ...(session.model ? { model: session.model } : {}),
           approvalPolicy: policy.approvalPolicy,
           sandbox: policy.sandbox,
-        });
-        const startedRecord = asRecord(started);
+          ...(input.mcpServers && input.mcpServers.length > 0 ? { config: codexMcpConfig(input.mcpServers) } : {}),
+          // `ThreadStartParams` / `ThreadResumeParams.developerInstructions`.
+          ...(input.instructions ? { developerInstructions: input.instructions } : {}),
+        };
         const codexThreadId =
-          asString(startedRecord?.["threadId"]) ??
-          asString(asRecord(startedRecord?.["thread"])?.["id"]) ??
-          asString(startedRecord?.["id"]);
+          (await this.resumeThread(peer, this.resumable.get(input.threadId) ?? input.resumeCursor, overrides)) ??
+          codexThreadIdOf(await peer.request(CODEX_METHODS.threadStart, overrides));
         if (!codexThreadId) {
           throw new CliError("CODEX_START_FAILED", "The app-server did not return a thread id.", {
             details: { threadId: input.threadId },
           });
         }
         session.codexThreadId = codexThreadId;
+        this.resumable.set(input.threadId, codexThreadId);
         return this.describeSession(session);
       } catch (cause) {
         session.closed = true;
@@ -307,6 +361,57 @@ export class CodexDriver implements ProviderAdapter<CliError> {
         throw cause;
       }
     });
+
+  readonly resumeCursor = (threadId: ThreadId): string | null => this.resumable.get(threadId) ?? null;
+
+  readonly contextUsage = async (threadId: ThreadId): Promise<ContextWindowUsage | null> =>
+    this.sessions.get(threadId)?.context ?? null;
+
+  /**
+   * `turn/steer`, pinned to the running turn by `expectedTurnId`: if that
+   * turn ended in the meantime the app-server refuses rather than steering
+   * whatever runs next.
+   */
+  readonly steerTurn = (threadId: ThreadId, text: string): Effect.Effect<void, CliError> =>
+    this.attempt("CODEX_STEER_FAILED", `Could not steer the turn on thread ${threadId}`, async () => {
+      const session = this.requireSession(threadId);
+      const open = session.transcript.find((turn) => turn.status === "running");
+      if (!open || !open.serverTurnId) {
+        throw new CliError("TURN_NOT_RUNNING", `Thread ${threadId} has no running turn to steer.`, {
+          details: { threadId },
+        });
+      }
+      await session.peer.request(CODEX_METHODS.turnSteer, {
+        threadId: this.requireCodexThread(session),
+        expectedTurnId: open.serverTurnId,
+        input: [{ type: "text", text }],
+      });
+      open.items.push({ kind: "user", text });
+    });
+
+  /**
+   * Reattach to a Codex thread a previous session created, history intact
+   * on the app-server side. `excludeTurns` because the transcript already
+   * lives in our ledger. A thread the app-server no longer knows (rollout
+   * pruned, another machine) yields null and the caller starts fresh.
+   */
+  private async resumeThread(
+    peer: CodexSession["peer"],
+    cursor: string | undefined,
+    overrides: Record<string, unknown>,
+  ): Promise<string | null> {
+    if (!cursor) return null;
+    try {
+      const resumed = await peer.request(CODEX_METHODS.threadResume, {
+        ...overrides,
+        threadId: cursor,
+        excludeTurns: true,
+      });
+      return codexThreadIdOf(resumed);
+    } catch {
+      return null;
+    }
+  }
 
   private describeSession(session: CodexSession): ProviderSession {
     return {
@@ -401,8 +506,8 @@ export class CodexDriver implements ProviderAdapter<CliError> {
           details: { threadId: input.threadId, turnId: open.id },
         });
       }
-      const model = input.modelSelection?.model ?? session.model;
-      if (model) session.model = model;
+      const model = input.modelSelection ? resolveCodexModel(input.modelSelection.model) : session.model;
+      session.model = model;
       if (input.runtimeMode) session.runtimeMode = input.runtimeMode;
       const policy = staticPolicyForRuntimeMode(session.runtimeMode);
       // Plan mode constrains the turn to untrusted approvals. A per-turn
@@ -428,13 +533,14 @@ export class CodexDriver implements ProviderAdapter<CliError> {
         status: "running",
         text: "",
         error: null,
+        messages: new Map(),
       };
       session.transcript.push(turn);
       session.lastActiveAt = Date.now();
       session.lastActiveThreadId = session.threadId;
       await session.peer.request(CODEX_METHODS.turnStart, {
         threadId: codexThreadId,
-        input: userInputBlocks(input.prompt),
+        input: userInputBlocks(input.prompt, input.images),
         ...(effort ? { effort } : {}),
         ...(model ? { model } : {}),
         ...(serviceTier ? { serviceTier } : {}),
@@ -642,7 +748,21 @@ export class CodexDriver implements ProviderAdapter<CliError> {
           details: { threadId, requestId },
         });
       }
+      // A *dismissed question* arrives here, not only a miscalled
+      // permission: the panel closes a question the same way it declines a
+      // permission, and the request is still blocking the server call.
+      // Throwing left the turn parked until the next interrupt, so release
+      // it with this kind's own empty-answer shape instead.
       if (parked.kind === "user_input" || parked.kind === "elicitation") {
+        if (decision.kind === "decline" || decision.kind === "cancel") {
+          parked.resolve(
+            decision.kind === "cancel"
+              ? this.cancelResponse(parked.kind, "Cancelled.")
+              : this.declineResponse(parked.kind),
+          );
+          return;
+        }
+        // Accepting is still a miscall: there is no answer to accept.
         throw new CliError("REQUEST_MISMATCH", `Request ${requestId} needs user input, not a permission decision.`, {
           details: { threadId, requestId, kind: parked.kind },
         });
@@ -664,6 +784,11 @@ export class CodexDriver implements ProviderAdapter<CliError> {
     if (kind === "dynamic_tool_call") {
       return { success: false, contentItems: [{ type: "text", text: "Declined." }] };
     }
+    // A declined question answers nothing rather than refusing a
+    // permission: `{ decision }` is not a shape either request understands,
+    // and sending it would fail the call we are trying to release.
+    if (kind === "user_input") return { answers: {} };
+    if (kind === "elicitation") return { action: "decline" };
     return { decision: "decline" };
   }
 
@@ -740,11 +865,19 @@ export class CodexDriver implements ProviderAdapter<CliError> {
       case CODEX_METHODS.agentMessageDelta: {
         const text = textOfDelta(params);
         const open = session.transcript.find((candidate) => candidate.status === "running");
+        const itemId = asString(asRecord(params)?.["itemId"]) ?? "";
+        let commentary = false;
         if (text && open) {
-          open.text += text;
+          const message = open.messages.get(itemId) ?? { text: "", phase: null };
+          message.text += text;
+          open.messages.set(itemId, message);
+          open.text = answerText(open.messages);
           open.items.push({ kind: "assistant", text });
+          commentary = message.phase === "commentary";
         }
-        if (text) {
+        // Commentary is working narration, not the answer: keep it out of
+        // the live answer stream too.
+        if (text && !commentary) {
           this.publish({
             type: "message.part.updated",
             provider: "codex",
@@ -770,6 +903,16 @@ export class CodexDriver implements ProviderAdapter<CliError> {
           asString(item?.["type"]) ??
           "tool";
         const open = session.transcript.find((candidate) => candidate.status === "running");
+        const agentMessage = method === CODEX_METHODS.commandOutputDelta ? null : agentMessageItem(params);
+        if (open && agentMessage) {
+          const message = open.messages.get(agentMessage.id) ?? { text: "", phase: null };
+          message.phase = agentMessage.phase ?? message.phase;
+          // The completed item carries the whole message; prefer it to the
+          // deltas we pieced together.
+          if (method === CODEX_METHODS.itemCompleted && agentMessage.text !== null) message.text = agentMessage.text;
+          open.messages.set(agentMessage.id, message);
+          open.text = answerText(open.messages);
+        }
         if (open && method === CODEX_METHODS.itemCompleted) {
           open.items.push({ kind: "tool", tool, text: textOfDelta(params) ?? tool });
         }
@@ -805,6 +948,7 @@ export class CodexDriver implements ProviderAdapter<CliError> {
         const total = codexTokenBreakdownOf(usage?.["total"] ?? usage);
         const last = codexTokenBreakdownOf(usage?.["last"] ?? {});
         const totals = session.usage.observe(open?.id ?? "unknown", total, last);
+        session.context = codexContextUsageOf(usage) ?? session.context;
         this.publish({
           type: "token-usage.updated",
           provider: "codex",
@@ -863,15 +1007,20 @@ export class CodexDriver implements ProviderAdapter<CliError> {
       }
       const session = this.requireSession(threadId);
       const codexThreadId = this.requireCodexThread(session);
-      if (numTurns >= session.transcript.length) {
+      // Only this process's turns are in `transcript`; a session resumed
+      // after a restart has none of the earlier ones. The app-server holds
+      // the history, so without local ids we ask it by count and let it
+      // refuse a count it cannot honour.
+      const removed = session.transcript.slice(Math.max(0, session.transcript.length - numTurns));
+      const withServerIds = removed.filter((turn) => turn.serverTurnId !== null);
+      const known = removed.length === numTurns;
+      if (known && numTurns >= session.transcript.length && session.transcript.length > 0 && withServerIds.length === 0) {
         throw new CliError("ROLLBACK_UNAVAILABLE", "Cannot roll back past the first turn.", {
           details: { threadId, numTurns },
         });
       }
-      const removed = session.transcript.slice(session.transcript.length - numTurns);
-      const withServerIds = removed.filter((turn) => turn.serverTurnId !== null);
       try {
-        if (withServerIds.length === removed.length && withServerIds.length > 0) {
+        if (known && withServerIds.length === removed.length && withServerIds.length > 0) {
           await session.peer.request(CODEX_METHODS.threadRevert, {
             threadId: codexThreadId,
             beforeTurnId: withServerIds[0]!.serverTurnId,
@@ -885,7 +1034,7 @@ export class CodexDriver implements ProviderAdapter<CliError> {
       } catch (cause) {
         throw toCliError("ROLLBACK_FAILED", `Rollback failed on thread ${threadId}`, cause);
       }
-      session.transcript = session.transcript.slice(0, session.transcript.length - numTurns);
+      session.transcript = session.transcript.slice(0, Math.max(0, session.transcript.length - numTurns));
       return {
         threadId,
         turns: session.transcript.map((turn) => ({
@@ -907,6 +1056,39 @@ export class CodexDriver implements ProviderAdapter<CliError> {
     });
 
   /** Live model list; no allowlist — the server is the source of truth. */
+  /**
+   * `skills/list` for `cwd` (app-server `SkillsListParams.cwds`), on a
+   * catalog session of its own. Codex invokes a skill as `$name`.
+   */
+  readonly skillInventory = async (cwd: string): Promise<SkillInventory> => {
+    const threadId = `moxen-skills-${randomUUID()}`;
+    await Effect.runPromise(this.startSession({ threadId, workingDirectory: cwd }));
+    try {
+      const result = asRecord(await this.requireSession(threadId).peer.request(CODEX_METHODS.skillsList, { cwds: [cwd] }));
+      const entries = Array.isArray(result?.["data"]) ? (result["data"] as unknown[]) : [];
+      const skills: SkillSummary[] = [];
+      for (const entry of entries) {
+        const list = asRecord(entry)?.["skills"];
+        for (const raw of Array.isArray(list) ? list : []) {
+          const skill = asRecord(raw);
+          const name = asString(skill?.["name"]);
+          if (!skill || !name) continue;
+          const face = asRecord(skill["interface"]);
+          skills.push(
+            plainSkill(name, asString(skill["description"]), {
+              displayName: asString(face?.["displayName"]),
+              shortDescription: asString(face?.["shortDescription"]) ?? asString(skill["shortDescription"]),
+              enabled: skill["enabled"] !== false,
+            }),
+          );
+        }
+      }
+      return { trigger: "$", skills, commands: [] };
+    } finally {
+      await Effect.runPromise(this.stopSession(threadId)).catch(() => undefined);
+    }
+  };
+
   async listModels(threadId: ThreadId): Promise<ReadonlyArray<CodexListedModel>> {
     const session = this.requireSession(threadId);
     const result = await session.peer.request(CODEX_METHODS.modelList, {});
@@ -967,4 +1149,56 @@ export class CodexDriver implements ProviderAdapter<CliError> {
   accountTypeOf(threadId: ThreadId): CodexAccountType {
     return this.requireSession(threadId).accountType;
   }
+}
+
+/** `thread/start` and `thread/resume` both answer `{ thread: { id } }`; older builds used flatter shapes. */
+function codexThreadIdOf(response: unknown): string | null {
+  const record = asRecord(response);
+  return (
+    asString(record?.["threadId"]) ??
+    asString(asRecord(record?.["thread"])?.["id"]) ??
+    asString(record?.["id"])
+  );
+}
+
+/**
+ * `ThreadTokenUsage` → `ContextWindowUsage`. `last` is the most recent
+ * request — the one whose prompt is what the window holds now — and
+ * `modelContextWindow` its size. Codex reports no auto-compact policy.
+ */
+export function codexContextUsageOf(raw: unknown): ContextWindowUsage | null {
+  const usage = asRecord(raw);
+  const last = asRecord(usage?.["last"]);
+  if (!last) return null;
+  const number = (value: unknown): number | null => (typeof value === "number" && Number.isFinite(value) ? value : null);
+  const used = number(last["totalTokens"]) ?? (number(last["inputTokens"]) ?? 0) + (number(last["outputTokens"]) ?? 0);
+  if (used <= 0) return null;
+  return {
+    usedTokens: used,
+    maxTokens: number(usage?.["modelContextWindow"]),
+    cachedInputTokens: number(last["cachedInputTokens"]),
+    autoCompactThreshold: null,
+    compactsAutomatically: null,
+  };
+}
+
+/**
+ * moxen's MCP servers as `thread/start` / `thread/resume` config
+ * overrides. Each server is its own dotted key, `mcp_servers.<name>`, so
+ * it is added next to the user's `config.toml` servers rather than
+ * replacing the whole table (names are validated dot-free in `core/mcp`).
+ */
+function codexMcpConfig(servers: readonly McpServerSpec[]): Record<string, unknown> {
+  return Object.fromEntries(
+    servers.map((server) => [
+      `mcp_servers.${server.name}`,
+      server.type === "http"
+        ? { url: server.url, ...(Object.keys(server.headers).length > 0 ? { http_headers: { ...server.headers } } : {}) }
+        : {
+            command: server.command,
+            args: [...server.args],
+            ...(Object.keys(server.env).length > 0 ? { env: { ...server.env } } : {}),
+          },
+    ]),
+  );
 }

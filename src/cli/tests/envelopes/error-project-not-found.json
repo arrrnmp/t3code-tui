@@ -1,0 +1,11 @@
+{
+  "ok": false,
+  "error": {
+    "code": "PROJECT_NOT_FOUND",
+    "message": "No moxen project exists for <root>.",
+    "details": {
+      "workspaceRoot": "<root>",
+      "projectPolicy": "existing"
+    }
+  }
+}

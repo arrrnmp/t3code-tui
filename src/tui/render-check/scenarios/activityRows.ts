@@ -128,4 +128,33 @@ export async function runActivityRows(setup: TestRendererSetup): Promise<void> {
   console.log(expandFrame);
   if (expandFrame.includes("# probe-tail-marker")) fail("command header click did not contract");
   if (!expandFrame.includes("more lines")) fail("contracted command row lost its expander");
+
+  // Claude's PowerShell calls get the same `$` command card as Bash, with
+  // real syntax highlighting: the command line must carry more than one
+  // foreground color (plain text renders in a single one).
+  let pwshFrame = "";
+  for (let wheel = 0; wheel < 30; wheel += 1) {
+    await act(async () => setup.mockMouse.scroll(70, 5, "down"));
+    await setup.flush();
+    pwshFrame = setup.captureCharFrame();
+    if (pwshFrame.includes("$ PowerShell") && pwshFrame.includes("Get-ChildItem")) break;
+  }
+  console.log("--- powershell command row ---");
+  console.log(pwshFrame.split("\n").filter((line) => /PowerShell|Get-ChildItem/.test(line)).join("\n"));
+  if (!pwshFrame.includes("$ PowerShell")) fail("PowerShell call did not render as a command card");
+  // Highlighting resolves asynchronously (tree-sitter parses off the render path).
+  let colors = 0;
+  for (let attempt = 0; attempt < 40 && colors < 2; attempt += 1) {
+    await setup.flush();
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const line = setup.captureSpans().lines.find((row) => row.spans.some((span) => span.text.includes("Get-ChildItem")));
+    const fgs = new Set(
+      (line?.spans ?? [])
+        .filter((span) => /[A-Za-z$]/.test(span.text))
+        .map((span) => [span.fg.r, span.fg.g, span.fg.b].map((value) => Math.round(value * 255)).join(",")),
+    );
+    colors = fgs.size;
+  }
+  console.log("powershell command colors:", colors);
+  if (colors < 2) fail("PowerShell command renders without syntax highlighting");
 }

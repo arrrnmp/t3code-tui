@@ -1,0 +1,4 @@
+interface:
+  display_name: "Moxen diagnostics"
+  short_description: "Check whether Moxen is running and reachable"
+  default_prompt: "Use $moxen-doctor to check whether Moxen is running and reachable."

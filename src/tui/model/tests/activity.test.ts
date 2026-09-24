@@ -92,6 +92,19 @@ describe("describeActivity", () => {
     });
   });
 
+  it("maps provider-native PowerShell rows to the command view", () => {
+    const view = describeActivity(
+      activity("tool.completed", {
+        itemType: "dynamic_tool_call",
+        toolCallId: "call-ps",
+        status: "completed",
+        title: "PowerShell",
+        data: { toolName: "PowerShell", input: { command: "Get-Process | Select-Object -First 3" } },
+      }),
+    );
+    expect(view).toMatchObject({ kind: "command", tool: "powershell", command: "Get-Process | Select-Object -First 3" });
+  });
+
   it("maps namespaced harness Bash rows to the same command view", () => {
     const view = describeActivity(
       activity("tool.completed", {
@@ -612,7 +625,30 @@ describe("describeActivity", () => {
         data: { toolName: "ToolSearch", input: { query: "WebFetch" } },
       }),
     );
-    expect(toolSearch).toMatchObject({ kind: "tool", tool: "Searching for tool", detail: "WebFetch" });
+    expect(toolSearch).toMatchObject({ kind: "tool", tool: "Searching for tools", detail: "WebFetch" });
+  });
+
+  it("reads a ToolSearch query instead of echoing its wire syntax", () => {
+    const row = (query: string, status = "completed") =>
+      describeActivity(
+        activity("tool.completed", {
+          itemType: "dynamic_tool_call",
+          toolCallId: `toolu_ts_${query}`,
+          status,
+          title: "Tool call",
+          detail: `ToolSearch: {"query":"${query}"}`,
+          data: { toolName: "ToolSearch", input: { query } },
+        }),
+      );
+    // `select:` names tools outright — nothing is being searched for.
+    expect(row("select:EnterPlanMode,ExitPlanMode")).toMatchObject({
+      tool: "Loaded tools",
+      detail: "EnterPlanMode, ExitPlanMode",
+    });
+    expect(row("select:Read", "inProgress")).toMatchObject({ tool: "Loading tools", detail: "Read" });
+    // A leading `+` pins a required term; it is syntax, not part of the query.
+    expect(row("+slack send")).toMatchObject({ tool: "Searching for tools", detail: "slack send" });
+    expect(row("")).toMatchObject({ tool: "Searching for tools", detail: "" });
   });
 
   it("beautifies a raw mcp__server__tool name into 'server: tool'", () => {
@@ -695,10 +731,10 @@ describe("describeActivity", () => {
         toolCallId: "toolu_011wH3XQHvvtjdNcJKvkPFhC",
         status: "completed",
         title: "Tool call",
-        detail: 'Read: {"file_path":"/Users/aaron/Documents/monvex/src/tui/timeline.tsx","offset":213,"limit":15}',
+        detail: 'Read: {"file_path":"/Users/aaron/Documents/moxen/src/tui/timeline.tsx","offset":213,"limit":15}',
         data: {
           toolName: "Read",
-          input: { file_path: "/Users/aaron/Documents/monvex/src/tui/timeline.tsx", offset: 213, limit: 15 },
+          input: { file_path: "/Users/aaron/Documents/moxen/src/tui/timeline.tsx", offset: 213, limit: 15 },
         },
       }),
     );
@@ -735,7 +771,7 @@ describe("describeActivity", () => {
         status: "completed",
         title: "src/tui/timeline.tsx",
         detail:
-          "<path>/Users/aaron/Documents/monvex/src/tui/timeline.tsx</path>\n<type>file</type>\n<content>\n1: import type { RefObject } from \"react\";",
+          "<path>/Users/aaron/Documents/moxen/src/tui/timeline.tsx</path>\n<type>file</type>\n<content>\n1: import type { RefObject } from \"react\";",
         data: {},
       }),
     );
@@ -748,11 +784,11 @@ describe("describeActivity", () => {
         toolCallId: "oc-read-2",
         status: "completed",
         title: null,
-        detail: "<path>/Users/aaron/Documents/monvex/package.json</path>\n<type>file</type>\n<content>\n1: {",
+        detail: "<path>/Users/aaron/Documents/moxen/package.json</path>\n<type>file</type>\n<content>\n1: {",
         data: {},
       }),
     );
-    expect(untitled).toMatchObject({ kind: "read", path: "monvex/package.json" });
+    expect(untitled).toMatchObject({ kind: "read", path: "moxen/package.json" });
 
     // A listing row whose input survived (or came back via backfill) keeps
     // its section range instead of rendering bare.
@@ -775,11 +811,11 @@ describe("describeActivity", () => {
         toolCallId: "oc-list-1",
         status: "completed",
         title: "src",
-        detail: "<path>/Users/aaron/Documents/monvex/src</path>\n<type>directory</type>\n<entries>\ncatalog/",
+        detail: "<path>/Users/aaron/Documents/moxen/src</path>\n<type>directory</type>\n<entries>\ncatalog/",
         data: {},
       }),
     );
-    expect(dir).toMatchObject({ kind: "list", path: "monvex/src" });
+    expect(dir).toMatchObject({ kind: "list", path: "moxen/src" });
   });
 
   it("matches subtitle counts to the hunks that actually render", () => {

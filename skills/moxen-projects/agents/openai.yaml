@@ -1,0 +1,4 @@
+interface:
+  display_name: "Moxen projects"
+  short_description: "Resolve folders to Moxen projects and ensure they exist"
+  default_prompt: "Use $moxen-projects to resolve this folder to its Moxen project."

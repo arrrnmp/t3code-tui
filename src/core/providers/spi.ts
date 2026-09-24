@@ -10,6 +10,7 @@
 import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
 
+import type { McpServerSpec } from "../mcp.js";
 import type { InteractionMode, ModelSelection, RuntimeMode } from "../types.js";
 
 /** Provider surfaces we own. Cursor and Antigravity are out of scope. */
@@ -41,6 +42,41 @@ export interface ProviderSessionStartInput {
   readonly modelSelection?: ModelSelection;
   readonly runtimeMode?: RuntimeMode;
   readonly interactionMode?: InteractionMode;
+  /**
+   * The native session handle a previous process left behind (see
+   * `ProviderAdapter.resumeCursor`). A driver resumes that provider-side
+   * session — history included — when it still exists, and starts fresh
+   * when it does not; a stale cursor must never fail the start.
+   */
+  readonly resumeCursor?: string;
+  /**
+   * MCP servers to expose in this session (`core/mcp.ts`), in addition to
+   * whatever the provider's own config already loads. Each driver maps
+   * them to its native form; a server the provider cannot run (Grok
+   * without `mcpCapabilities.http`) is dropped rather than failing.
+   */
+  readonly mcpServers?: readonly McpServerSpec[];
+  /**
+   * Runtime instructions (`core/threads/instructions.ts`), appended to the
+   * provider's own system prompt through its native channel. Absent when
+   * none apply; a driver must then leave the prompt exactly as it is.
+   */
+  readonly instructions?: string;
+}
+
+/**
+ * How full the provider's context window is right now — what the model
+ * will see on its next request, not tokens spent (`TokenUsageDelta`).
+ * Every field but `usedTokens` is null when the provider does not say.
+ */
+export interface ContextWindowUsage {
+  readonly usedTokens: number;
+  readonly maxTokens: number | null;
+  /** Of `usedTokens`, how much the last request read from the prompt cache. */
+  readonly cachedInputTokens: number | null;
+  /** Where the provider compacts on its own, when it does. */
+  readonly autoCompactThreshold: number | null;
+  readonly compactsAutomatically: boolean | null;
 }
 
 export interface ProviderSession {
@@ -50,9 +86,22 @@ export interface ProviderSession {
   readonly startedAt: string;
 }
 
+/** An image sent with a prompt: raw base64, not a data URL. */
+export interface ProviderImage {
+  readonly name: string;
+  readonly mimeType: string;
+  readonly data: string;
+}
+
 export interface ProviderSendTurnInput {
   readonly threadId: ThreadId;
   readonly prompt: string;
+  /**
+   * Images for the model to see, in each provider's native form. A driver
+   * whose provider cannot take them names them in the prompt instead —
+   * see `imageMention` — so an image is never silently dropped.
+   */
+  readonly images?: readonly ProviderImage[];
   readonly modelSelection?: ModelSelection;
   readonly runtimeMode?: RuntimeMode;
   readonly interactionMode?: InteractionMode;
@@ -207,6 +256,31 @@ export interface ProviderAdapter<TError = unknown> {
   readonly startSession: (
     input: ProviderSessionStartInput,
   ) => Effect.Effect<ProviderSession, TError>;
+
+  /**
+   * The native handle that resumes this thread's provider-side session in a
+   * later process, or null while there is none yet. The turn runner
+   * persists it on the thread; without it every restart of the host
+   * process silently started the provider with an empty history.
+   */
+  readonly resumeCursor: (threadId: ThreadId) => string | null;
+
+  /**
+   * The thread's current context-window reading, or null when the driver
+   * has none. Read by the turn runner as a turn settles and recorded as a
+   * `context-window.updated` activity, which is what the TUI's context
+   * indicator shows. Omitted by drivers whose provider reports nothing.
+   */
+  readonly contextUsage?: (threadId: ThreadId) => Promise<ContextWindowUsage | null>;
+
+  /**
+   * Hand the running turn more input without interrupting it: the model
+   * picks the text up at its next step (Claude folds it in between tool
+   * rounds; Codex `turn/steer`). Fails when no turn is running. Omitted by
+   * drivers whose provider cannot take input mid-turn (Grok's ACP has no
+   * such request) — a steer then stays recorded in the ledger only.
+   */
+  readonly steerTurn?: (threadId: ThreadId, text: string) => Effect.Effect<void, TError>;
 
   readonly sendTurn: (
     input: ProviderSendTurnInput,

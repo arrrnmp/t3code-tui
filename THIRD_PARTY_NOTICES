@@ -1,6 +1,6 @@
-# Third-party notices for monvex
+# Third-party notices for moxen
 
-`monvex` as a whole is **AGPL-3.0-only** (see `LICENSE`).
+`moxen` as a whole is **AGPL-3.0-only** (see `LICENSE`).
 This file records every third-party file vendored into this repo, per
 `ARCHITECTURE.md`. MIT-licensed reuse is permitted provided the
 copyright and permission notice travel with the file; the combined work

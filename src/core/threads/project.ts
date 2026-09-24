@@ -82,6 +82,7 @@ export function toMessageEnvelope(message: StoredMessage): MessageEnvelope {
     streaming: false,
     createdAt: message.createdAt,
     updatedAt: message.createdAt,
+    ...(message.attachments?.length ? { attachments: message.attachments } : {}),
   };
 }
 
@@ -120,7 +121,10 @@ export interface ProjectThreadInput {
 export function toThreadEnvelope(thread: StoredThread, turns: StoredTurn[], input: ProjectThreadInput = {}): ThreadEnvelope {
   const running = turns.find((turn) => turn.status === "running") ?? null;
   const latestUser = [...(input.messages ?? [])].reverse().find((message) => message.role === "user") ?? null;
-  const turnIndex = new Map(turns.map((turn, index) => [turn.id, index] as const));
+  // `checkpointTurnCount` is how many turns the thread had once this one
+  // finished — 1-based, as every consumer reads it (the TUI's revert target
+  // is `count - 1`; `turnDiff(threadId, count)` reads `turns[count - 1]`).
+  const turnCount = new Map(turns.map((turn, index) => [turn.id, index + 1] as const));
   return {
     id: thread.id,
     projectId: thread.projectId,
@@ -147,8 +151,11 @@ export function toThreadEnvelope(thread: StoredThread, turns: StoredTurn[], inpu
     ...(input.messages ? { messages: input.messages.map(toMessageEnvelope) } : {}),
     ...(input.activities ? { activities: input.activities.map(toActivityEnvelope) } : {}),
     ...(input.checkpoints
-      ? { checkpoints: input.checkpoints.map((checkpoint) => toCheckpointEnvelope(checkpoint, turnIndex.get(checkpoint.turnId) ?? -1)) }
+      ? { checkpoints: input.checkpoints.map((checkpoint) => toCheckpointEnvelope(checkpoint, turnCount.get(checkpoint.turnId) ?? 0)) }
       : {}),
     proposedPlans: input.plans ?? [],
+    turnModelSelections: Object.fromEntries(
+      turns.flatMap((turn) => (turn.modelSelection ? [[turn.id, turn.modelSelection] as const] : [])),
+    ),
   };
 }

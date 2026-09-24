@@ -49,7 +49,128 @@ function startedDriver(script: Record<string, unknown> = {}, runtimeMode = "full
   return { transport, driver, runtimeMode };
 }
 
+describe("grok session resume", () => {
+  it("loads the previous session and keeps its replay out of the live turn", async () => {
+    const { transport, driver } = startedDriver({ loadSession: true });
+    await Effect.runPromise(driver.startSession({ ...START, resumeCursor: "acp-session-old" }));
+    const server = transport.sessions[0]!.server;
+    expect(server.requestsTo("session/load")[0]!.params).toMatchObject({ sessionId: "acp-session-old", cwd: "/repo" });
+    expect(server.requestsTo("session/new")).toEqual([]);
+    expect(driver.resumeCursor("thread-1")).toBe("acp-session-old");
+
+    server.promptHandler = async () => {
+      server.update("acp-session-old", { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "hello" } });
+      return { stopReason: "end_turn" };
+    };
+    // Everything the driver published, from the load through the turn's
+    // end: a replayed chunk would surface here as live assistant text.
+    const published = Effect.runPromise(
+      Stream.runCollect(Stream.takeUntil(driver.streamEvents, (event) => event.type === "turn.completed")),
+    );
+    const sent = await Effect.runPromise(driver.sendTurn({ threadId: "thread-1", prompt: "hi" }));
+    expect(await driver.awaitTurn("thread-1", sent.turnId)).toMatchObject({ status: "completed", text: "hello" });
+    const texts = [...(await published)].flatMap((event) => (event.type === "message.part.updated" ? [event.text] : []));
+    expect(texts).toEqual(["hello"]);
+  });
+
+  it("starts a new session when the agent cannot load, or lost, the old one", async () => {
+    for (const script of [{}, { loadSession: true, lostSessions: ["acp-session-old"] }]) {
+      const { transport, driver } = startedDriver(script);
+      await Effect.runPromise(driver.startSession({ ...START, resumeCursor: "acp-session-old" }));
+      expect(transport.sessions[0]!.server.requestsTo("session/new")).toHaveLength(1);
+      expect(driver.resumeCursor("thread-1")).toBe("acp-session-1");
+    }
+  });
+});
+
 describe("grok driver turns", () => {
+  it("lists skills from grok inspect, under the name Grok invokes them by", async () => {
+    const seen: string[] = [];
+    const driver = new GrokDriver({
+      transport: new FakeGrokTransport(),
+      billingProbe: async () => null,
+      inspect: async (cwd) => {
+        seen.push(cwd);
+        // Fields as grok 1.0.40 reports them.
+        return JSON.stringify({
+          skills: [
+            { name: "pdf", description: "PDF tools", invocableAs: "/pdf", userInvocable: true, compatibilityStatus: "enabled" },
+            { name: "internal", description: "Agent only", userInvocable: false },
+            { name: "cursor-thing", description: "Off", compatibilityStatus: "disabled" },
+          ],
+        });
+      },
+    });
+    const inventory = await driver.skillInventory("/repo");
+    expect(seen).toEqual(["/repo"]);
+    expect(inventory.trigger).toBe("/");
+    expect(inventory.skills).toMatchObject([
+      { name: "pdf", description: "PDF tools", userInvocable: true, enabled: true },
+      { name: "internal", userInvocable: false },
+      { name: "cursor-thing", enabled: false },
+    ]);
+  });
+
+  it("passes runtime instructions as session/new _meta.rules", async () => {
+    const { transport, driver } = startedDriver({ models: MODELS });
+    await Effect.runPromise(driver.startSession({ ...START, instructions: "Report back." }));
+    expect(transport.sessions[0]!.server.requestsTo("session/new")[0]!.params).toMatchObject({
+      _meta: { rules: "Report back." },
+    });
+  });
+
+  it("reads usage from _meta and the context window from Grok's extensions", async () => {
+    const { transport, driver } = startedDriver({ models: MODELS });
+    await Effect.runPromise(driver.startSession(START));
+    const server = transport.sessions[0]!.server;
+    // Shapes as observed from grok 1.0.40.
+    server.notify("_x.ai/models/update", {
+      currentModelId: "m-1",
+      availableModels: [{ modelId: "m-1", _meta: { totalContextTokens: 500000 } }],
+    });
+    server.promptHandler = async () => {
+      server.notify("_x.ai/session_notification", {
+        sessionId: "acp-session-1",
+        update: {
+          sessionUpdate: "response_completed",
+          usage: { input_tokens: 17461, output_tokens: 30, cache_read_input_tokens: 1152, cache_creation_input_tokens: 0 },
+        },
+      });
+      return {
+        stopReason: "end_turn",
+        _meta: { usage: { inputTokens: 18613, outputTokens: 30, cachedReadTokens: 1152, cacheCreationTokens: 0, reasoningTokens: 29 } },
+      };
+    };
+    const sent = await Effect.runPromise(driver.sendTurn({ threadId: "thread-1", prompt: "hi" }));
+    const outcome = await driver.awaitTurn("thread-1", sent.turnId);
+    // `_meta.usage.inputTokens` includes the cache reads; ours does not.
+    expect(outcome.usage).toMatchObject({ input: 17461, cacheRead: 1152, output: 30, thinking: 29 });
+    expect(await driver.contextUsage("thread-1")).toEqual({
+      usedTokens: 17461 + 1152 + 30,
+      maxTokens: 500000,
+      cachedInputTokens: 1152,
+      autoCompactThreshold: null,
+      compactsAutomatically: null,
+    });
+  });
+
+  it("answers with the last message, not the notes before tool calls", async () => {
+    const { transport, driver } = startedDriver({ models: MODELS });
+    await Effect.runPromise(driver.startSession(START));
+    const server = transport.sessions[0]!.server;
+    server.promptHandler = async () => {
+      server.update("acp-session-1", { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "hmm" } });
+      server.update("acp-session-1", { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Looking." } });
+      server.update("acp-session-1", { sessionUpdate: "tool_call", toolCallId: "c-1", title: "Read a.ts", kind: "read" });
+      server.update("acp-session-1", { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Found " } });
+      server.update("acp-session-1", { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "it." } });
+      return { stopReason: "end_turn" };
+    };
+    const sent = await Effect.runPromise(driver.sendTurn({ threadId: "thread-1", prompt: "hi" }));
+    const outcome = await driver.awaitTurn("thread-1", sent.turnId);
+    expect(outcome).toMatchObject({ status: "completed", text: "Found it." });
+  });
+
   it("starts a session with models and sends a prompt", async () => {
     const { transport, driver } = startedDriver({ models: MODELS });
     await Effect.runPromise(driver.startSession(START));
@@ -239,6 +360,27 @@ describe("grok driver permissions", () => {
     expect(questionAnswer).toEqual({ answers: { q: "a" } });
   });
 
+  it("releases a parked question when it is dismissed", async () => {
+    // Dismissal used to fall through to REQUEST_UNKNOWN, so closing the
+    // panel left the agent's RPC blocked until the next interrupt. It
+    // resolves with no answers rather than rejecting: a dismissal releases
+    // the turn, it does not fail it.
+    const { transport, driver } = startedDriver();
+    await Effect.runPromise(driver.startSession(START));
+    const server = transport.sessions[0]!.server;
+    let questionAnswer: unknown = null;
+    server.promptHandler = async () => {
+      questionAnswer = await server.askQuestion({ questions: [{ id: "q" }] });
+      return { stopReason: "end_turn" };
+    };
+    const eventsPromise = collectEvents(driver, 1);
+    const sendPromise = Effect.runPromise(driver.sendTurn({ threadId: "thread-1", prompt: "hi" }));
+    const requestId = openedRequestId(await eventsPromise, "user-input.request.opened");
+    await Effect.runPromise(driver.respondToRequest("thread-1", requestId, { kind: "decline" }));
+    await sendPromise;
+    expect(questionAnswer).toEqual({ answers: {} });
+  });
+
   it("settles parked permissions as cancelled on interrupt", async () => {
     const { transport, driver } = startedDriver({}, "approval-required");
     await Effect.runPromise(driver.startSession({ ...START, runtimeMode: "approval-required" }));
@@ -367,5 +509,53 @@ describe("grok driver lifecycle extras", () => {
     await Effect.runPromise(driver.startSession(START));
     await Effect.runPromise(driver.stopSession("thread-1"));
     expect(await Effect.runPromise(driver.hasSession("thread-1"))).toBe(false);
+  });
+});
+
+describe("grok images", () => {
+  const image = { name: "a.png", mimeType: "image/png", data: "iVBORw0KGgo=" };
+
+  it("sends ACP image blocks when the agent advertises them", async () => {
+    const { transport, driver } = startedDriver({ images: true });
+    await Effect.runPromise(driver.startSession(START));
+    const sent = await Effect.runPromise(driver.sendTurn({ threadId: "thread-1", prompt: "look", images: [image] }));
+    await driver.awaitTurn("thread-1", sent.turnId);
+    expect(transport.sessions[0]!.server.requestsTo("session/prompt")[0]!.params).toMatchObject({
+      prompt: [{ type: "text", text: "look" }, { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }],
+    });
+  });
+
+  it("names them in the prompt when it does not", async () => {
+    const { transport, driver } = startedDriver();
+    await Effect.runPromise(driver.startSession(START));
+    const sent = await Effect.runPromise(driver.sendTurn({ threadId: "thread-1", prompt: "look", images: [image] }));
+    await driver.awaitTurn("thread-1", sent.turnId);
+    expect(transport.sessions[0]!.server.requestsTo("session/prompt")[0]!.params).toMatchObject({
+      prompt: [{ type: "text", text: "look\n\n[attached images: a.png]" }],
+    });
+  });
+});
+const MCP = [
+  { name: "docs", type: "http" as const, url: "https://docs.example/mcp", headers: { Authorization: "Bearer t" } },
+  { name: "fs", type: "stdio" as const, command: "npx", args: ["-y", "fs-mcp"], env: { ROOT: "/" } },
+];
+
+describe("grok MCP injection", () => {
+  it("sends stdio servers as ACP McpServer entries, and drops http without the capability", async () => {
+    const { transport, driver } = startedDriver();
+    await Effect.runPromise(driver.startSession({ ...START, mcpServers: MCP }));
+    expect(transport.sessions[0]!.server.requestsTo("session/new")[0]!.params).toMatchObject({
+      mcpServers: [{ name: "fs", command: "npx", args: ["-y", "fs-mcp"], env: [{ name: "ROOT", value: "/" }] }],
+    });
+  });
+
+  it("includes http servers when the agent advertises mcpCapabilities.http, on load too", async () => {
+    const { transport, driver } = startedDriver({ mcpHttp: true, loadSession: true });
+    await Effect.runPromise(driver.startSession({ ...START, resumeCursor: "acp-session-old", mcpServers: MCP }));
+    const params = transport.sessions[0]!.server.requestsTo("session/load")[0]!.params as { mcpServers: unknown[] };
+    expect(params.mcpServers).toEqual([
+      { type: "http", name: "docs", url: "https://docs.example/mcp", headers: [{ name: "Authorization", value: "Bearer t" }] },
+      { name: "fs", command: "npx", args: ["-y", "fs-mcp"], env: [{ name: "ROOT", value: "/" }] },
+    ]);
   });
 });

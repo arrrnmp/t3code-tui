@@ -2,6 +2,7 @@ import { act } from "react";
 import type { TestRendererSetup } from "@opentui/core/testing";
 import { testRender } from "@opentui/react/test-utils";
 
+import type { ClientApi } from "../../../server/api.js";
 import { App, client } from "../fixtures.js";
 import { fail } from "../helpers.js";
 
@@ -50,14 +51,14 @@ export async function runModelPicker(setup: TestRendererSetup): Promise<void> {
   // in the creating view — the model picker must open there too (I1), and a
   // disabled provider's models must stay hidden even with no provider lock
   // (I2, the friend's Grok rows).
-  const emptyClient = {
+  const emptyClient: ClientApi = {
     ...client,
-    subscribeShell(_options: unknown, onItem: (item: unknown) => void) {
+    subscribeShell(_options, onItem) {
       onItem({
         kind: "snapshot",
         snapshot: {
           snapshotSequence: 1,
-          projects: [{ id: "p-cli", title: "monvex", workspaceRoot: "C:\\repo" }],
+          projects: [{ id: "p-cli", title: "moxen", workspaceRoot: "C:\\repo", defaultModelSelection: null }],
           threads: [],
         },
       });

@@ -37,13 +37,13 @@ export const OauthCallbackPage = {
   success(options?: { provider?: string }): string {
     const who = options?.provider ?? "the provider";
     const title = "Authorization successful";
-    const body = `mvx is now connected to ${escapeHtml(who)}. You can close this window.`;
+    const body = `moxen is now connected to ${escapeHtml(who)}. You can close this window.`;
     return renderPage(title, body);
   },
   error(detail: string, options?: { provider?: string }): string {
     const title = "Authorization failed";
     const body =
-      `mvx couldn't finish connecting` +
+      `moxen couldn't finish connecting` +
       (options?.provider ? ` to ${escapeHtml(options.provider)}` : "") +
       `. ${escapeHtml(detail)} Close this window and try again.`;
     return renderPage(title, body);

@@ -64,6 +64,18 @@ describe("toolActivityRow", () => {
     expect(view(done!)).toMatchObject({ running: false });
   });
 
+  it("maps a Claude PowerShell call to the same command row as Bash", () => {
+    const row = toolActivityRow(
+      event({
+        provider: "claude",
+        tool: "PowerShell",
+        raw: { toolUseId: "toolu_ps", input: { command: "Get-ChildItem -Recurse" } },
+      }),
+    );
+    expect(view(row!)).toMatchObject({ kind: "command", tool: "PowerShell", command: "Get-ChildItem -Recurse" });
+    expect(row?.summary).toBe("$ Get-ChildItem -Recurse");
+  });
+
   it("maps a Claude Read call to a read row with its path", () => {
     const row = toolActivityRow(
       event({ provider: "claude", tool: "Read", raw: { toolUseId: "toolu_2", input: { file_path: "/repo/src/app.ts" } } }),

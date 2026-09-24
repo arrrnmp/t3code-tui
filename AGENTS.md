@@ -1,6 +1,6 @@
 # AGENTS.md
 
-`monvex` (command: `mvx`) is an interactive terminal UI plus CLI for coding-agent threads, running `claude`, `codex`, `grok` and `opencode` directly (Bun + TypeScript + React via `@opentui/react`). See `ARCHITECTURE.md` for the provider and thread design.
+`moxen` (command: `moxen`) is an interactive terminal UI plus CLI for coding-agent threads, running `claude`, `codex`, `grok` and `opencode` directly (Bun + TypeScript + React via `@opentui/react`). See `ARCHITECTURE.md` for the runtime rules (who owns a provider session, in-process vs shared server, what a turn records) and what is not built yet.
 
 ## Layout
 
@@ -10,26 +10,37 @@ The tree is **one core, several clients**.
 (a contract test asserting a client can read core's output belongs on
 the client side, as `tui/model/tests/toolactivity.test.ts` does).
 
-The reverse is partial, honestly: the shared kernel (`core/types.ts`,
-`core/errors.ts`, `core/config.ts`) is common vocabulary and imported
-freely. Beyond it, the TUI goes through `server/` — but **the CLI still
-drives `core/` directly**, ~56 imports' worth. Routing it through
-`ClientApi` too is the next step, not a thing this layout already did.
+The shared kernel (`core/types.ts`, `core/errors.ts`, `core/config.ts`,
+`core/mcp.ts`, and pure rules like `catalog/selection.ts` and
+`threads/views.ts`) is common vocabulary and imported freely.
+The reverse now holds too, apart from the shared kernel: both clients go
+through `server/` (`ClientApi`) for every operation, `doctor` included
+(it is a server query). `src/tests/layering.test.ts` pins this, with no
+exceptions.
 
 - `src/core/` — the domain, with no opinion about how it is driven:
   `providers/` (the four driver implementations + `spi.ts`), `threads/`
-  (store, lifecycle, turn runner, tool-activity mapping), `projects/`,
+  (store, lifecycle, turn runner, tool-activity mapping, read views, and
+  `operations.ts` — handover, delegation, send policies — that every
+  client calls), `projects/` (registry + workspace resolution),
   `checkpoints/`, `usage/`, `events/`, `catalog/`, plus the shared kernel
   `types.ts` / `errors.ts` / `config.ts`. Each area keeps its own `tests/`.
-- `src/server/` — the boundary: `api.ts` is `ClientApi`, the five-method
-  contract every frontend talks through (`dispatch`, `subscribeShell`,
-  `subscribeThread`, `turnDiff`, `getConfig`); `connection.ts` is the
-  in-process implementation over `core/`. A transport-backed one (socket
-  or stdio, for an out-of-process app) implements the same interface.
+- `src/server/` — the boundary: `api.ts` is `ClientApi`, the typed
+  contract every frontend talks through (`dispatch` for commands, `query`
+  for reads, `subscribeShell`, `subscribeThread`, `turnDiff`,
+  `getConfig`); `protocol.ts` holds the command/query/frame shapes and
+  their runtime decoders; `connection.ts` is the in-process implementation
+  over `core/`; `transport/` serves it over a named pipe / unix socket
+  (`serve.ts`) and implements it remotely (`remote.ts`); `client.ts` picks
+  one per `MOXEN_SERVER` (`direct` | `auto` | `daemon`); `main.ts` is the
+  server process; `mcp/` is the `moxen` MCP server every top-level provider
+  session gets (`delegate` / `task_status` / `task_cancel`, over `ClientApi`).
   **New frontend surface goes here, not into a client.**
 - `src/cli/` — a client: `index.ts` (command definitions; thin dispatch
   over the modules below), `output.ts`, `doctor.ts`, and `catalog/`,
-  `handover/`, `infra/`, `projects/`, `shared/`, `testing/`, `threads/`.
+  `handover/`, `infra/` (`client.ts` — the CLI's `ClientApi`), `projects/`,
+  `threads/` — flags, prompts and `--json` envelopes over `ClientApi`;
+  `tests/envelopes/` pins every envelope byte-for-byte.
   Each has its own `tests/` subfolder.
 - `src/tui/` — a client, the interactive app:
   - `app/` — the root component: `app.tsx` wires hooks together and holds root identity/picker-orchestration state, `hooks/` for cross-cutting hooks used by `app.tsx` but not owned by one feature (`useThreadCreation`, `useThreadOps`, `useQuitConfirm`), plus `utils.ts` / `constants.ts`.
@@ -43,7 +54,7 @@ drives `core/` directly**, ~56 imports' worth. Routing it through
 ## Workflow
 
 1. Inspect `git status --short --branch` and the files being changed.
-2. Keep CLI JSON envelopes backward compatible.
+2. Keep CLI JSON envelopes backward compatible. `src/cli/tests/envelopes/` pins every one byte-for-byte, in-process and over the wire; update a golden only for an intended change, and say so.
 3. Run `bun run check` (typecheck + tests) before claiming completion.
 4. Extend `render-check.tsx`'s scenarios and `model/*.test.ts` when changing TUI behavior.
 
@@ -64,4 +75,5 @@ drives `core/` directly**, ~56 imports' worth. Routing it through
 - Install: `bun install`
 - Typecheck and test: `bun run check`
 - TUI snapshot harness: `bun src/tui/render-check.tsx`
-- Diagnose live integration: `mvx --json doctor`
+- Diagnose live integration: `moxen --json doctor`
+- Shared server (every client reaches every live session; turns outlive the client): `moxen server start|status|stop`, or `MOXEN_SERVER=daemon` to autostart

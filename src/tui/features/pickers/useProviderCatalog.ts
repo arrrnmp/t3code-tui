@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 
-import { extractProviders, type ProviderSummary } from "../../../cli/catalog/catalog.js";
+import { extractProviders, type ProviderSummary } from "../../../core/catalog/summary.js";
 import {
   compatibleRuntimeMode,
   displayRuntimeMode,
   runtimeModeChoicesForProvider,
-} from "../../../cli/catalog/permissions.js";
+} from "../../../core/catalog/permissions.js";
 import type { ModelSelection, ProviderOptionSelection, RuntimeMode } from "../../../core/types.js";
 import { defaultEffortChoice, displayEffort, displayModelName, isEffortDescriptor } from "../../model/display.js";
 import { providerColor } from "../../theme.js";
@@ -18,6 +18,11 @@ import type { PickerName } from "./pickerTypes.js";
  * picking dispatches the matching `thread.*.set` command and the thread
  * subscription projects the change back into the footer.
  */
+export interface ModelLabel {
+  readonly name: string;
+  readonly color: string | null;
+}
+
 export function useProviderCatalog(params: {
   client: ClientApi;
   selected: { id: string } | null;
@@ -126,7 +131,6 @@ export function useProviderCatalog(params: {
     void client
       .dispatch({
         type: "thread.model-selection.set",
-        commandId: crypto.randomUUID(),
         threadId: openThreadId,
         modelSelection,
       })
@@ -203,10 +207,8 @@ export function useProviderCatalog(params: {
     void client
       .dispatch({
         type: "thread.runtime-mode.set",
-        commandId: crypto.randomUUID(),
         threadId: openThreadId,
         runtimeMode,
-        createdAt: new Date().toISOString(),
       })
       .then(() => {
         closePicker();
@@ -240,8 +242,16 @@ export function useProviderCatalog(params: {
   const permission = displayRuntimeMode(
     compatibleRuntimeMode(effectiveRuntimeMode ?? "full-access", permissionChoices),
   );
-  const currentSkills = currentProvider?.skills;
   const modelColor = providerColor(currentProvider?.driver, effectiveModelSelection?.instanceId, model);
+  /**
+   * Name and brand color for any selection, not just the current one — the
+   * transcript labels each turn with the model that actually ran it.
+   */
+  const labelFor = (selection: ModelSelection | undefined): ModelLabel => {
+    const name = displayModelName(providers, selection);
+    const driver = providers?.find((candidate) => candidate.instanceId === selection?.instanceId)?.driver;
+    return { name, color: providerColor(driver, selection?.instanceId, name) };
+  };
 
   return {
     providers,
@@ -250,8 +260,8 @@ export function useProviderCatalog(params: {
     effort,
     permission,
     permissionChoices,
-    currentSkills,
     modelColor,
+    labelFor,
     openModelPicker,
     openEffortPicker,
     openPermissionPicker,

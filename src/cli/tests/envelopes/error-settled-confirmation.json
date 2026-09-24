@@ -1,0 +1,11 @@
+{
+  "ok": false,
+  "error": {
+    "code": "SETTLED_THREAD_CONFIRMATION_REQUIRED",
+    "message": "Thread thread-existing is settled. Re-run with --wake-settled to send and wake it.",
+    "details": {
+      "threadId": "thread-existing",
+      "settledAt": "<time>"
+    }
+  }
+}

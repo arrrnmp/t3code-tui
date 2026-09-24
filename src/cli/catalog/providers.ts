@@ -1,21 +1,23 @@
-import { buildDirectProviders } from "./direct.js";
-import { selectModel, selectProvider, type ProviderSummary } from "./catalog.js";
-import { loadModelPrefs, saveModelPrefs } from "../../core/catalog/prefs.js";
-import { resolveStoreRoot } from "../../core/threads/store.js";
+import path from "node:path";
+
+import { selectModel, selectProvider, type ProviderSummary } from "../../core/catalog/summary.js";
 import type { CliConfig } from "../../core/types.js";
+import { cliClient } from "../infra/client.js";
 import { directAuth, directRuntime } from "../infra/direct.js";
 
 export async function listProviders(config: CliConfig, options: { refresh?: boolean }) {
-  void config;
   void options;
-  // No server, no runtime discovery, no WS RPC. Every call probes live
-  // sources; failures degrade into each entry's `status`.
-  return {
-    runtime: directRuntime(),
-    auth: directAuth(),
-    refreshed: true,
-    providers: await buildDirectProviders(),
-  };
+  // Every call probes live sources; failures degrade into each entry's
+  // `status`, so there is never a stale cache to refresh.
+  const { providers } = await (await cliClient(config)).query({ type: "providers.list" });
+  return { runtime: directRuntime(), auth: directAuth(), refreshed: true, providers: [...providers] };
+}
+
+/** Skills and slash commands one provider resolves for a directory (the cwd by default). */
+export async function listSkills(config: CliConfig, options: { provider: string; cwd?: string }) {
+  const cwd = path.resolve(options.cwd ?? process.cwd());
+  const inventory = await (await cliClient(config)).query({ type: "skills.list", instanceId: options.provider, cwd });
+  return { runtime: directRuntime(), auth: directAuth(), provider: options.provider, cwd, ...inventory };
 }
 
 export async function listModels(
@@ -70,23 +72,19 @@ export async function setModelHidden(
   config: CliConfig,
   options: { provider: string; model: string; hidden: boolean },
 ) {
-  void config;
-  const providers = await buildDirectProviders();
-  const provider = selectProvider(providers, options.provider);
+  const client = await cliClient(config);
+  const { providers } = await client.query({ type: "providers.list" });
+  const provider = selectProvider([...providers], options.provider);
   const model = selectModel(provider, options.model);
-  const storeRoot = resolveStoreRoot();
-  const prefs = await loadModelPrefs(storeRoot);
-  const current = prefs.hidden[provider.instanceId] ?? [];
-  const next = options.hidden
-    ? [...current.filter((slug) => slug !== model.slug), model.slug]
-    : current.filter((slug) => slug !== model.slug);
-  const hidden = { ...prefs.hidden };
-  if (next.length > 0) hidden[provider.instanceId] = next;
-  else delete hidden[provider.instanceId];
-  await saveModelPrefs(storeRoot, { ...prefs, hidden });
+  const { hidden } = await client.dispatch({
+    type: "model.visibility.set",
+    instanceId: provider.instanceId,
+    model: model.slug,
+    hidden: options.hidden,
+  });
   return {
     provider: { instanceId: provider.instanceId },
     model: { slug: model.slug, name: model.name },
-    hidden: next.includes(model.slug),
+    hidden,
   };
 }

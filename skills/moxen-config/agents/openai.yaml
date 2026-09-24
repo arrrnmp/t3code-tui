@@ -1,0 +1,4 @@
+interface:
+  display_name: "Moxen CLI settings"
+  short_description: "View or change moxen CLI settings"
+  default_prompt: "Use $moxen-config to view or change the moxen CLI settings."

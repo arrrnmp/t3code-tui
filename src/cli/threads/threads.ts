@@ -1,55 +1,39 @@
 /**
- * Threads CLI over the own store. Same envelopes, same guards, same error
- * codes as before — only the transport changed: ledger reads replace
- * snapshot GETs, store ops replace dispatch-then-poll (acceptance is
- * synchronous, so `dispatch` is always null and `verification` is
- * synthesized with `accepted: true`), and provider runs continue in the
- * background through `executeTurn`.
+ * Threads CLI: argument handling and `--json` envelopes over `ClientApi`.
+ *
+ * Every read is a `query` and every change a `dispatch`, through the same
+ * contract the TUI uses (`../infra/client.ts`). What stays here is what
+ * only the CLI has: its envelope keys (`runtime`, `auth`, `command`,
+ * `dispatch`, `verification`, `opened` — kept byte-compatible for `--json`
+ * consumers, pinned by `../tests/envelopes/`), flag-worded errors, the
+ * interactive settled-thread prompt, dry-run previews, and blocking a
+ * one-shot process until its turn settles.
  */
 import { randomUUID } from "node:crypto";
 
-import * as Effect from "effect/Effect";
-
+import { defaultModelSelection, followUpSelection, type ModelRequest } from "../../core/catalog/selection.js";
 import { CliError } from "../../core/errors.js";
-import { listStoredProjects } from "../../core/projects/projects.js";
-import { openThreadStore, resolveStoreRoot, ThreadStore } from "../../core/threads/store.js";
 import {
-  archiveThread as archiveStoredThread,
-  createThread as createStoredThread,
-  inspectThread as inspectStoredThread,
-  interruptTurn as interruptStoredTurn,
-  listThreads as listStoredThreads,
-  readThread as readStoredThread,
-  sendTurn as sendStoredTurn,
-  settleThread as settleStoredThread,
-  snoozeThread as snoozeStoredThread,
-  unsettleThread as unsettleStoredThread,
-  unsnoozeThread as unsnoozeStoredThread,
-} from "../../core/threads/threads.js";
-import { delegationForChild } from "../../core/threads/threads.js";
-import { driverForInstance, executeTurn, waitForTurnTerminal, type TurnDriverFactories } from "../../core/threads/execute.js";
-import { toThreadEnvelope } from "../../core/threads/project.js";
-import type {
-  CliConfig,
-  InteractionMode,
-  ModelSelection,
-  OpenMode,
-  RuntimeMode,
-  SpeedMode,
-  ProjectEnvelope,
-  ThreadEnvelope,
-} from "../../core/types.js";
+  isThreadActive,
+  isThreadBusy,
+  openQuestions,
+  threadListStatus,
+  type OpenRequest,
+  type ThreadListStatus,
+  type ThreadReadView,
+} from "../../core/threads/views.js";
+import type { CliConfig, OpenMode, ProjectEnvelope, SpeedMode, ThreadEnvelope } from "../../core/types.js";
+import type { ClientApi } from "../../server/api.js";
+import { awaitTurn, cliClient, type TurnDriverFactories } from "../infra/client.js";
 import { directAuth, directRuntime } from "../infra/direct.js";
-import { resolveWorkspace } from "../infra/workspace.js";
-import { projectForWorkspace, type WorkspaceOptions } from "../projects/projects.js";
-import {
-  asModelSelection,
-  defaultModelSelection,
-  resolveModelSelection,
-} from "../shared/selection.js";
+import type { WorkspaceOptions } from "../projects/projects.js";
 
-const INSPECT_RECENT_MESSAGE_LIMIT = 6;
-const INSPECT_MESSAGE_TEXT_LIMIT = 2_000;
+export type {
+  DelegatedTaskStatus,
+  DelegatedTaskWorkState,
+  ThreadListStatus,
+  ThreadReadView,
+} from "../../core/threads/views.js";
 
 export interface ThreadSendOptions {
   threadId: string;
@@ -70,53 +54,26 @@ export interface ThreadSendOptions {
   noWait?: boolean;
 }
 
-export type ThreadListStatus = "active" | "settled" | "snoozed" | "all";
-
-export type ThreadReadView = "messages" | "turn-items" | "plans" | "checkpoints" | "transfers";
-
 export type ThreadSendDelivery = "auto" | "steer" | "restart" | "queue";
 
 export type ThreadSendDeliveryResult = "started" | "queued" | "steered" | "restarted";
-
-export type DelegatedTaskStatus = "running" | "completed" | "failed" | "interrupted";
-
-export type DelegatedTaskWorkState = "working" | "result_available";
-
-const DELEGATE_DEFAULT_TIMEOUT_MS = 600_000;
-const DELEGATE_POLL_INTERVAL_MS = 200;
 
 export interface ThreadListOptions extends WorkspaceOptions {
   project?: string;
   status?: ThreadListStatus;
 }
 
-function nonArchivedThread(thread: ThreadEnvelope): boolean {
-  return thread.archivedAt == null && thread.deletedAt == null;
+export interface ThreadReadRequestOptions {
+  lastTurn?: boolean;
+  view?: ThreadReadView;
 }
 
-function threadStatus(thread: ThreadEnvelope): Exclude<ThreadListStatus, "all"> {
-  if (thread.settledAt != null) return "settled";
-  return isSnoozedThread(thread) ? "snoozed" : "active";
-}
-
-function isSnoozedThread(thread: ThreadEnvelope, now = Date.now()): boolean {
-  if (thread.settledAt != null) return false;
-  const until = thread.snoozedUntil;
-  if (typeof until !== "string" || until.length === 0) return false;
-  const parsed = Date.parse(until);
-  return Number.isFinite(parsed) && parsed > now;
-}
-
-function normalizeSnoozeUntil(raw: string): string {
-  const trimmed = raw.trim();
-  const parsed = Date.parse(trimmed);
-  if (!trimmed || !Number.isFinite(parsed)) {
-    throw new CliError("SNOOZE_UNTIL_INVALID", "Use --until with a valid ISO-8601 datetime.", {
-      exitCode: 2,
-      details: { until: raw },
-    });
+function requireThreadId(value: string): string {
+  const threadId = value.trim();
+  if (!threadId) {
+    throw new CliError("THREAD_ID_REQUIRED", "A non-empty thread id is required.", { exitCode: 2 });
   }
-  return new Date(parsed).toISOString();
+  return threadId;
 }
 
 function normalizeDelivery(raw: ThreadSendDelivery | undefined): ThreadSendDelivery {
@@ -139,404 +96,128 @@ function normalizeHandoffNote(raw: string | undefined): string | null {
   return note;
 }
 
-function normalizeReadView(raw: ThreadReadView | undefined): ThreadReadView {
-  const view = raw ?? "messages";
-  if (view !== "messages" && view !== "turn-items" && view !== "plans" && view !== "checkpoints" && view !== "transfers") {
-    throw new CliError("INVALID_THREAD_OPTION", "--view must be messages, turn-items, plans, checkpoints, or transfers.", {
+function normalizeSnoozeUntil(raw: string): string {
+  const trimmed = raw.trim();
+  const parsed = Date.parse(trimmed);
+  if (!trimmed || !Number.isFinite(parsed)) {
+    throw new CliError("SNOOZE_UNTIL_INVALID", "Use --until with a valid ISO-8601 datetime.", {
       exitCode: 2,
-      details: { view: raw },
+      details: { until: raw },
     });
   }
-  return view;
+  return new Date(parsed).toISOString();
 }
 
-function delegatedStatusOf(thread: ThreadEnvelope): DelegatedTaskStatus {
-  const state = thread.latestTurn?.state;
-  if (state === "completed") return "completed";
-  if (state === "error") return "failed";
-  if (state === "interrupted") return "interrupted";
-  return "running";
-}
-
-function delegatedWorkStateOf(status: DelegatedTaskStatus): DelegatedTaskWorkState {
-  return status === "running" ? "working" : "result_available";
-}
-
-function threadAssistantSummary(thread: ThreadEnvelope): string | null {
-  const messages = thread.messages ?? [];
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index]!;
-    if (message.role === "assistant" && message.text.trim().length > 0) return message.text;
-  }
-  return null;
-}
-
-function isThreadActive(thread: ThreadEnvelope): boolean {
-  const latestState = thread.latestTurn?.state as string | undefined;
-  return (
-    thread.session?.status === "starting" ||
-    thread.session?.status === "running" ||
-    thread.session?.activeTurnId != null ||
-    latestState === "running"
-  );
-}
-
-function delegateThreadTitle(task: string, explicitTitle: string | undefined): string {
-  const trimmed = explicitTitle?.trim();
-  if (trimmed) return trimmed.length <= 80 ? trimmed : `${trimmed.slice(0, 79)}…`;
-  const firstLine = task.trim().split(/\r?\n/u)[0]?.replace(/\s+/gu, " ").trim() || "Delegated task";
-  return firstLine.length <= 80 ? firstLine : `${firstLine.slice(0, 79)}…`;
-}
-
-function requireThreadId(value: string): string {
-  const threadId = value.trim();
-  if (!threadId) {
-    throw new CliError("THREAD_ID_REQUIRED", "A non-empty thread id is required.", { exitCode: 2 });
-  }
-  return threadId;
-}
-
-function threadInspectionView(thread: ThreadEnvelope) {
-  const messages = thread.messages ?? [];
-  const summary = { ...thread };
-  delete summary.messages;
-  delete summary.activities;
-  delete summary.checkpoints;
-  delete summary.proposedPlans;
+function modelRequestOf(options: {
+  provider?: string;
+  model?: string;
+  speedMode?: SpeedMode;
+  thinkingEffort?: string;
+}): ModelRequest {
   return {
-    ...summary,
-    status: threadStatus(thread),
-    snoozedUntil: (thread.snoozedUntil as string | null | undefined) ?? null,
-    messageCount: messages.length,
-    recentMessages: messages.slice(-INSPECT_RECENT_MESSAGE_LIMIT).map((message) => ({
-      id: message.id,
-      role: message.role,
-      turnId: message.turnId,
-      text:
-        message.text.length <= INSPECT_MESSAGE_TEXT_LIMIT
-          ? message.text
-          : `${message.text.slice(0, INSPECT_MESSAGE_TEXT_LIMIT - 1)}…`,
-      textTruncated: message.text.length > INSPECT_MESSAGE_TEXT_LIMIT,
-      createdAt: message.createdAt,
-      updatedAt: message.updatedAt,
-    })),
+    ...(options.provider !== undefined ? { provider: options.provider } : {}),
+    ...(options.model !== undefined ? { model: options.model } : {}),
+    ...(options.speedMode !== undefined ? { speedMode: options.speedMode } : {}),
+    ...(options.thinkingEffort !== undefined ? { thinkingEffort: options.thinkingEffort } : {}),
   };
 }
 
-export interface ThreadReadRequestOptions {
-  lastTurn?: boolean;
-  view?: ThreadReadView;
-}
-
-function threadReadView(thread: ThreadEnvelope, options: { lastTurn: boolean; view: ThreadReadView }) {
-  const { lastTurn, view } = options;
-  const summary = { ...thread } as Record<string, unknown>;
-  delete summary.messages;
-  delete summary.activities;
-  delete summary.checkpoints;
-  delete summary.proposedPlans;
-  const base = {
-    ...summary,
-    status: threadStatus(thread),
-  };
-  if (view === "turn-items") {
-    const turnId = lastTurn ? (thread.latestTurn?.turnId ?? null) : null;
-    const activities = thread.activities ?? [];
-    const items = lastTurn
-      ? activities.filter((activity) => turnId !== null && activity.turnId === turnId)
-      : activities;
-    return {
-      ...base,
-      view: "turn-items" as const,
-      itemCount: items.length,
-      items,
-      ...(lastTurn ? { messageFilter: { scope: "last-turn" as const, turnId } } : {}),
-    };
+function requireNotArchived(thread: ThreadEnvelope, action: string): void {
+  if (thread.archivedAt != null) {
+    throw new CliError("THREAD_ARCHIVED", `Thread ${thread.id} is archived and cannot ${action}.`, {
+      exitCode: 4,
+      details: { threadId: thread.id, archivedAt: thread.archivedAt },
+    });
   }
-  if (view === "plans") {
-    const plans = thread.proposedPlans ?? [];
-    return { ...base, view: "plans" as const, planCount: plans.length, plans };
-  }
-  if (view === "checkpoints") {
-    const checkpoints = thread.checkpoints ?? [];
-    return { ...base, view: "checkpoints" as const, checkpointCount: checkpoints.length, checkpoints };
-  }
-  if (view === "transfers") {
-    // No transport exposes ContextTransfer rows; report the empty set
-    // explicitly instead of inventing lineage.
-    return {
-      ...base,
-      view: "transfers" as const,
-      transferCount: 0,
-      transfers: [],
-      note: "V1 threads carry no context transfers.",
-    };
-  }
-  const turnId = lastTurn ? (thread.latestTurn?.turnId ?? null) : null;
-  const messages = lastTurn
-    ? (thread.messages ?? []).filter((message) => turnId !== null && message.turnId === turnId)
-    : (thread.messages ?? []);
-  return {
-    ...base,
-    view: "messages" as const,
-    messageCount: messages.length,
-    messages,
-    ...(lastTurn ? { messageFilter: { scope: "last-turn" as const, turnId } } : {}),
-  };
-}
-
-function isThreadBusy(thread: ThreadEnvelope): boolean {
-  const latestState = thread.latestTurn?.state as string | undefined;
-  return (
-    thread.session?.status === "starting" ||
-    thread.session?.status === "running" ||
-    thread.session?.activeTurnId != null ||
-    latestState === "pending" ||
-    latestState === "running"
-  );
-}
-
-async function openStore(): Promise<ThreadStore> {
-  return await openThreadStore(resolveStoreRoot());
-}
-
-async function storedProjects(): Promise<ProjectEnvelope[]> {
-  return await listStoredProjects(resolveStoreRoot());
-}
-
-function projectOf(projects: ProjectEnvelope[], projectId: string): ProjectEnvelope | null {
-  return projects.find((candidate) => candidate.id === projectId) ?? null;
-}
-
-const driverOwner = {};
-
-async function fullThread(store: ThreadStore, threadId: string): Promise<ThreadEnvelope> {
-  const read = await readStoredThread(store, threadId, { view: "messages" });
-  return toThreadEnvelope(read.thread, read.turns, {
-    messages: read.messages,
-    activities: read.activities,
-    checkpoints: read.checkpoints,
-  });
 }
 
 function openedNone(openMode: OpenMode | undefined, config: CliConfig) {
   return { mode: openMode ?? config.openMode, kind: "none" as const, url: null, exactThread: false };
 }
 
+/** The thread and its project, as the server sees them now. */
+async function inspect(client: ClientApi, threadId: string) {
+  return await client.query({ type: "thread.inspect", threadId });
+}
+
 export async function listThreads(config: CliConfig, options: ThreadListOptions = {}) {
-  const requestedProjectId = options.project?.trim();
-  if (options.project !== undefined && !requestedProjectId) {
-    throw new CliError("PROJECT_ID_REQUIRED", "--project requires a non-empty project id.", {
-      exitCode: 2,
-    });
-  }
-  if (requestedProjectId && options.cwd) {
-    throw new CliError("THREAD_FILTER_CONFLICT", "Use either --project or --cwd, not both.", {
-      exitCode: 2,
-    });
-  }
-  const store = await openStore();
-  const projects = await storedProjects();
-  let project: ProjectEnvelope | null = null;
-  let workspace = null;
-
-  if (requestedProjectId) {
-    project = projects.filter((candidate) => candidate.deletedAt == null).find((candidate) => candidate.id === requestedProjectId) ?? null;
-  } else if (options.cwd) {
-    workspace = await resolveWorkspace(options.cwd, options.workspaceMode ?? config.workspaceMode);
-    project = projectForWorkspace(projects, workspace.workspaceRoot);
-  }
-
-  if ((requestedProjectId || options.cwd) && !project) {
-    throw new CliError(
-      "PROJECT_NOT_FOUND",
-      requestedProjectId
-        ? `No active Monvex project exists with id ${requestedProjectId}.`
-        : `No Monvex project exists for ${workspace!.workspaceRoot}.`,
-      { exitCode: 3 },
-    );
-  }
-
-  const requestedStatus = options.status ?? "all";
-  const stored = await listStoredThreads(store, {
-    status: requestedStatus === "all" ? "all" : requestedStatus,
-    ...(project ? { projectId: project.id } : {}),
+  const listed = await (await cliClient(config)).query({
+    type: "threads.list",
+    ...(options.project !== undefined ? { projectId: options.project } : {}),
+    ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
+    ...(options.workspaceMode !== undefined ? { workspaceMode: options.workspaceMode } : {}),
+    ...(options.status !== undefined ? { status: options.status } : {}),
   });
-  const threads = await Promise.all(
-    stored.map(async (entry) => toThreadEnvelope(entry, await store.readTurns(entry.id))),
-  );
-  const visible = threads
-    .filter(nonArchivedThread)
-    .sort((left, right) => (right.updatedAt ?? "").localeCompare(left.updatedAt ?? ""))
-    .map((thread) => ({ ...thread, status: threadStatus(thread) }));
-
-  return {
-    runtime: directRuntime(),
-    auth: directAuth(),
-    snapshotSequence: 0,
-    filter: {
-      status: requestedStatus,
-      projectId: project?.id ?? null,
-      workspaceRoot: workspace?.workspaceRoot ?? null,
-    },
-    projects: projects.filter((candidate) => candidate.deletedAt == null),
-    threads: visible,
-  };
+  return { runtime: directRuntime(), auth: directAuth(), snapshotSequence: 0, ...listed };
 }
 
 export async function inspectThread(config: CliConfig, rawThreadId: string) {
-  void config;
-  const threadId = requireThreadId(rawThreadId);
-  const store = await openStore();
-  const thread = await fullThread(store, threadId);
-  const project = projectOf(await storedProjects(), thread.projectId);
-  return {
-    runtime: directRuntime(),
-    auth: directAuth(),
-    snapshotSequence: 0,
-    project,
-    thread: threadInspectionView(thread),
-  };
+  const view = await inspect(await cliClient(config), requireThreadId(rawThreadId));
+  return { runtime: directRuntime(), auth: directAuth(), snapshotSequence: 0, ...view };
 }
 
-export async function readThread(
-  config: CliConfig,
-  rawThreadId: string,
-  options: ThreadReadRequestOptions = {},
-) {
-  void config;
-  const threadId = requireThreadId(rawThreadId);
-  const lastTurn = options.lastTurn ?? false;
-  const view = normalizeReadView(options.view);
-  const store = await openStore();
-  const read = await readStoredThread(store, threadId, { view: "messages" });
-  const thread = toThreadEnvelope(read.thread, read.turns, {
-    messages: read.messages,
-    activities: read.activities,
-    checkpoints: read.checkpoints,
+export async function readThread(config: CliConfig, rawThreadId: string, options: ThreadReadRequestOptions = {}) {
+  const view = await (await cliClient(config)).query({
+    type: "thread.read",
+    threadId: requireThreadId(rawThreadId),
+    ...(options.view !== undefined ? { view: options.view } : {}),
+    ...(options.lastTurn !== undefined ? { lastTurn: options.lastTurn } : {}),
   });
-  const project = projectOf(await storedProjects(), thread.projectId);
+  return { runtime: directRuntime(), auth: directAuth(), snapshotSequence: 0, ...view };
+}
+
+async function changeSnooze(config: CliConfig, rawThreadId: string, rawUntil: string | null) {
+  const threadId = requireThreadId(rawThreadId);
+  const snoozedUntil = rawUntil === null ? null : normalizeSnoozeUntil(rawUntil);
+  const client = await cliClient(config);
+  const { project, thread: before } = await inspect(client, threadId);
+  requireNotArchived(before, snoozedUntil === null ? "be unsnoozed" : "be snoozed");
+  const command =
+    snoozedUntil === null
+      ? { type: "thread.unsnooze" as const, commandId: randomUUID(), threadId, reason: "user" as const }
+      : { type: "thread.snooze" as const, commandId: randomUUID(), threadId, snoozedUntil };
+  if (snoozedUntil === null) await client.dispatch({ type: "thread.unsnooze", threadId });
+  else await client.dispatch({ type: "thread.snooze", threadId, snoozedUntil });
+  const { thread: after } = await inspect(client, threadId);
   return {
     runtime: directRuntime(),
     auth: directAuth(),
-    snapshotSequence: 0,
     project,
-    thread: threadReadView(thread, { lastTurn, view }),
+    thread: { id: before.id, projectId: before.projectId, title: before.title, snoozedUntil: after.snoozedUntil },
+    command,
+    dispatch: null,
+    verification: {
+      accepted: true as const,
+      snoozedUntil: after.snoozedUntil,
+      snoozedAt: after.snoozedAt ?? null,
+      snapshotSequence: 0,
+    },
   };
 }
 
 export async function snoozeThread(config: CliConfig, rawThreadId: string, rawUntil: string) {
-  void config;
-  const threadId = requireThreadId(rawThreadId);
-  const snoozedUntil = normalizeSnoozeUntil(rawUntil);
-  const store = await openStore();
-  const before = await fullThread(store, threadId);
-  if (before.archivedAt != null) {
-    throw new CliError("THREAD_ARCHIVED", `Thread ${threadId} is archived and cannot be snoozed.`, {
-      exitCode: 4,
-      details: { threadId, archivedAt: before.archivedAt },
-    });
-  }
-  const project = projectOf(await storedProjects(), before.projectId);
-  const command = {
-    type: "thread.snooze" as const,
-    commandId: randomUUID(),
-    threadId,
-    snoozedUntil,
-  };
-  const changed = await snoozeStoredThread(store, threadId, snoozedUntil);
-  return {
-    runtime: directRuntime(),
-    auth: directAuth(),
-    project,
-    thread: {
-      id: before.id,
-      projectId: before.projectId,
-      title: before.title,
-      snoozedUntil: changed.snoozedUntil,
-    },
-    command,
-    dispatch: null,
-    verification: {
-      accepted: true as const,
-      snoozedUntil: changed.snoozedUntil,
-      snoozedAt: changed.snoozedAt,
-      snapshotSequence: 0,
-    },
-  };
+  return await changeSnooze(config, rawThreadId, rawUntil);
 }
 
 export async function unsnoozeThread(config: CliConfig, rawThreadId: string) {
-  void config;
-  const threadId = requireThreadId(rawThreadId);
-  const store = await openStore();
-  const before = await fullThread(store, threadId);
-  if (before.archivedAt != null) {
-    throw new CliError("THREAD_ARCHIVED", `Thread ${threadId} is archived and cannot be unsnoozed.`, {
-      exitCode: 4,
-      details: { threadId, archivedAt: before.archivedAt },
-    });
-  }
-  const project = projectOf(await storedProjects(), before.projectId);
-  const command = {
-    type: "thread.unsnooze" as const,
-    commandId: randomUUID(),
-    threadId,
-    reason: "user" as const,
-  };
-  const changed = await unsnoozeStoredThread(store, threadId);
-  return {
-    runtime: directRuntime(),
-    auth: directAuth(),
-    project,
-    thread: {
-      id: before.id,
-      projectId: before.projectId,
-      title: before.title,
-      snoozedUntil: changed.snoozedUntil,
-    },
-    command,
-    dispatch: null,
-    verification: {
-      accepted: true as const,
-      snoozedUntil: changed.snoozedUntil,
-      snoozedAt: changed.snoozedAt,
-      snapshotSequence: 0,
-    },
-  };
+  return await changeSnooze(config, rawThreadId, null);
 }
 
-export async function interruptThread(
-  config: CliConfig,
-  rawThreadId: string,
-  options: { run?: string } = {},
-) {
-  void config;
+export async function interruptThread(config: CliConfig, rawThreadId: string, options: { run?: string } = {}) {
   const threadId = requireThreadId(rawThreadId);
   const rawRun = options.run?.trim() ?? "";
   if (options.run !== undefined && !rawRun) {
     throw new CliError("INVALID_THREAD_OPTION", "--run requires a non-empty turn id.", { exitCode: 2 });
   }
   const turnId = rawRun || undefined;
-  const store = await openStore();
-  const thread = await fullThread(store, threadId);
-  if (thread.archivedAt != null) {
-    throw new CliError("THREAD_ARCHIVED", `Thread ${threadId} is archived and cannot be interrupted.`, {
-      exitCode: 4,
-      details: { threadId, archivedAt: thread.archivedAt },
-    });
-  }
-  const project = projectOf(await storedProjects(), thread.projectId);
+  const client = await cliClient(config);
+  const { project, thread } = await inspect(client, threadId);
+  requireNotArchived(thread, "be interrupted");
   const base = {
     runtime: directRuntime(),
     auth: directAuth(),
     project,
-    thread: {
-      id: thread.id,
-      projectId: thread.projectId,
-      title: thread.title,
-      latestTurn: thread.latestTurn ?? null,
-    },
+    thread: { id: thread.id, projectId: thread.projectId, title: thread.title, latestTurn: thread.latestTurn ?? null },
   };
   if (!isThreadActive(thread)) {
     return {
@@ -555,11 +236,8 @@ export async function interruptThread(
     ...(turnId ? { turnId } : {}),
     createdAt: new Date().toISOString(),
   };
-  // The store interrupt flips the ledger and aborts the live driver run
-  // tracked in this process; a foreign process's late completion is
-  // dropped by the runner's terminal-state guard.
-  const interrupted = await interruptStoredTurn(store, threadId, turnId);
-  const after = await fullThread(store, threadId);
+  await client.dispatch({ type: "thread.turn.interrupt", threadId, ...(turnId ? { turnId } : {}) });
+  const { thread: after } = await inspect(client, threadId);
   return {
     ...base,
     run: after.latestTurn?.turnId ?? turnId ?? null,
@@ -575,21 +253,11 @@ export async function interruptThread(
   };
 }
 
-async function changeThreadSettlement(
-  config: CliConfig,
-  rawThreadId: string,
-  state: "settled" | "active",
-) {
-  void config;
+async function changeThreadSettlement(config: CliConfig, rawThreadId: string, state: "settled" | "active") {
   const threadId = requireThreadId(rawThreadId);
-  const store = await openStore();
-  const before = await fullThread(store, threadId);
-  if (before.archivedAt != null) {
-    throw new CliError("THREAD_ARCHIVED", `Thread ${threadId} is archived and cannot change settlement state.`, {
-      exitCode: 4,
-      details: { threadId, archivedAt: before.archivedAt },
-    });
-  }
+  const client = await cliClient(config);
+  const { project, thread: before } = await inspect(client, threadId);
+  requireNotArchived(before, "change settlement state");
   if (
     state === "settled" &&
     (before.session?.status === "starting" ||
@@ -607,14 +275,13 @@ async function changeThreadSettlement(
       },
     });
   }
-  const project = projectOf(await storedProjects(), before.projectId);
-  const command = state === "settled"
-    ? { type: "thread.settle" as const, commandId: randomUUID(), threadId }
-    : { type: "thread.unsettle" as const, commandId: randomUUID(), threadId, reason: "user" as const };
-  const changed = state === "settled"
-    ? await settleStoredThread(store, threadId)
-    : await unsettleStoredThread(store, threadId);
-  const after = toThreadEnvelope(changed, await store.readTurns(threadId));
+  const command =
+    state === "settled"
+      ? { type: "thread.settle" as const, commandId: randomUUID(), threadId }
+      : { type: "thread.unsettle" as const, commandId: randomUUID(), threadId, reason: "user" as const };
+  if (state === "settled") await client.dispatch({ type: "thread.settle", threadId });
+  else await client.dispatch({ type: "thread.unsettle", threadId, reason: "user" });
+  const { thread: after } = await inspect(client, threadId);
   return {
     runtime: directRuntime(),
     auth: directAuth(),
@@ -623,8 +290,8 @@ async function changeThreadSettlement(
       id: before.id,
       projectId: before.projectId,
       title: before.title,
-      statusBefore: threadStatus(before),
-      statusAfter: threadStatus(after),
+      statusBefore: threadListStatus(before),
+      statusAfter: threadListStatus(after),
     },
     command,
     dispatch: null,
@@ -632,8 +299,8 @@ async function changeThreadSettlement(
       accepted: true as const,
       state,
       snapshotSequence: 0,
-      settledAt: changed.settledAt,
-      unsettledAt: changed.unsettledAt,
+      settledAt: after.settledAt ?? null,
+      unsettledAt: after.unsettledAt ?? null,
     },
   };
 }
@@ -644,10 +311,6 @@ export async function settleThread(config: CliConfig, threadId: string) {
 
 export async function unsettleThread(config: CliConfig, threadId: string) {
   return await changeThreadSettlement(config, threadId, "active");
-}
-
-function sleep(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 export interface ThreadDelegateOptions {
@@ -662,360 +325,124 @@ export interface ThreadDelegateOptions {
   timeoutMs?: number;
   openMode?: OpenMode;
   dryRun?: boolean;
+  isolation?: "shared" | "worktree";
   drivers?: TurnDriverFactories;
 }
 
-function normalizeDelegateTimeout(raw: number | undefined): number {
-  const timeoutMs = raw ?? DELEGATE_DEFAULT_TIMEOUT_MS;
-  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
-    throw new CliError("INVALID_THREAD_OPTION", "--timeout-ms must be a positive integer.", {
-      exitCode: 2,
-      details: { timeoutMs: raw },
-    });
-  }
-  return timeoutMs;
-}
-
-function requireParentModes(thread: ThreadEnvelope): { runtimeMode: RuntimeMode; interactionMode: InteractionMode } {
-  const runtimeMode = thread.runtimeMode;
-  const interactionMode = thread.interactionMode;
-  if (
-    !["approval-required", "auto", "auto-accept-edits", "full-access"].includes(runtimeMode ?? "") ||
-    !["default", "plan"].includes(interactionMode ?? "")
-  ) {
-    throw new CliError(
-      "INVALID_THREAD",
-      `Thread ${thread.id} is missing its runtime or interaction mode.`,
-      { details: { threadId: thread.id } },
-    );
-  }
-  return { runtimeMode: runtimeMode as RuntimeMode, interactionMode: interactionMode as InteractionMode };
-}
-
 export async function delegateTask(config: CliConfig, options: ThreadDelegateOptions) {
-  const parentThreadId = requireThreadId(options.parentThreadId);
-  const task = options.task.trim();
-  if (!task) {
-    throw new CliError("PROMPT_REQUIRED", "A non-empty delegated task is required.", { exitCode: 2 });
-  }
-  const wait = options.wait ?? true;
-  const timeoutMs = normalizeDelegateTimeout(options.timeoutMs);
-  const title = delegateThreadTitle(task, options.title);
-
-  const store = await openStore();
-  const parent = await fullThread(store, parentThreadId);
-  if (parent.archivedAt != null) {
-    throw new CliError("THREAD_ARCHIVED", `Thread ${parentThreadId} is archived and cannot delegate work.`, {
-      exitCode: 4,
-      details: { threadId: parentThreadId, archivedAt: parent.archivedAt },
-    });
-  }
-  const project = projectOf(await storedProjects(), parent.projectId);
-
-  const baseSelection =
-    asModelSelection(parent.modelSelection) ??
-    project?.defaultModelSelection ??
-    defaultModelSelection();
-  const hasModelOverride =
-    options.provider !== undefined ||
-    options.model !== undefined ||
-    options.speedMode !== undefined ||
-    options.thinkingEffort !== undefined;
-  const delegateConfig: CliConfig = { ...config };
-  delete delegateConfig.provider;
-  delete delegateConfig.model;
-  delete delegateConfig.speedMode;
-  delete delegateConfig.thinkingEffort;
-  const modelSelection: ModelSelection = hasModelOverride
-    ? resolveModelSelection(baseSelection, delegateConfig, {
-        prompt: task,
-        ...(options.provider !== undefined ? { provider: options.provider } : {}),
-        ...(options.model !== undefined ? { model: options.model } : {}),
-        ...(options.speedMode !== undefined ? { speedMode: options.speedMode } : {}),
-        ...(options.thinkingEffort !== undefined ? { thinkingEffort: options.thinkingEffort } : {}),
-      })
-    : baseSelection;
-  const { runtimeMode, interactionMode } = requireParentModes(parent);
-
+  const result = await (await cliClient(config, options.drivers)).dispatch({
+    type: "thread.delegate",
+    parentThreadId: options.parentThreadId,
+    task: options.task,
+    ...(options.title !== undefined ? { title: options.title } : {}),
+    ...(options.wait !== undefined ? { wait: options.wait } : {}),
+    ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+    ...(options.dryRun !== undefined ? { dryRun: options.dryRun } : {}),
+    ...(options.isolation !== undefined ? { isolation: options.isolation } : {}),
+    ...modelRequestOf(options),
+  });
   const createdAt = new Date().toISOString();
-  const childThreadId = randomUUID();
-  const messageId = randomUUID();
-  const createCommand = {
-    type: "thread.create" as const,
-    commandId: randomUUID(),
-    threadId: childThreadId,
-    projectId: parent.projectId,
-    title,
-    modelSelection,
-    runtimeMode,
-    interactionMode,
-    branch: parent.branch ?? null,
-    worktreePath: null,
-    createdAt,
-  };
-  const turnCommand = {
-    type: "thread.turn.start" as const,
-    commandId: randomUUID(),
-    threadId: childThreadId,
-    message: { messageId, role: "user" as const, text: task, attachments: [] as [] },
-    modelSelection,
-    titleSeed: title,
-    runtimeMode,
-    interactionMode,
-    createdAt,
-  };
-
-  const base = {
+  const { parent, child, modelSelection, runtimeMode, interactionMode } = result;
+  return {
     runtime: directRuntime(),
     auth: directAuth(),
-    project,
+    project: result.project,
     parent: { id: parent.id, projectId: parent.projectId, title: parent.title },
-    child: { id: childThreadId, projectId: parent.projectId, title },
-    createCommand,
-    turnCommand,
-  };
-  if (options.dryRun) {
-    return {
-      ...base,
-      task: {
-        taskId: childThreadId,
-        childThreadId,
-        childRunId: null,
-        status: "running" as DelegatedTaskStatus,
-        workState: "working" as DelegatedTaskWorkState,
-        summary: null,
-        waitTimedOut: false,
-      },
-      dispatch: null,
-      verification: null,
-      opened: openedNone(options.openMode, config),
-      dryRun: true as const,
-    };
-  }
-
-  const created = await createStoredThread(store, {
-    projectId: parent.projectId,
-    title,
-    modelSelection,
-    runtimeMode,
-    interactionMode,
-    env: { ...(await inspectStoredThread(store, parentThreadId)).env },
-  });
-  const childId = created.id;
-  const childEnvPath = created.env.path;
-  const sent = await sendStoredTurn(store, childId, { prompt: task }).catch((cause) => {
-    throw new CliError(
-      "THREAD_START_FAILED",
-      `Created delegated thread ${childId} but could not start its task turn. The child thread was left untouched.`,
-      { cause, details: { threadId: childId } },
-    );
-  });
-  await store.appendDelegation({
-    id: randomUUID(),
-    parentThreadId,
-    childThreadId: childId,
-    prompt: task,
-    status: "running",
-    createdAt,
-    updatedAt: createdAt,
-  }).catch(() => undefined);
-  const driver = driverForInstance(driverOwner, modelSelection.instanceId, options.drivers);
-  const hasSession = await Effect.runPromise(driver.hasSession(childId)).catch(() => false);
-  if (!hasSession) {
-    await Effect.runPromise(driver.startSession({
-      threadId: childId,
-      workingDirectory: childEnvPath.trim().length > 0 ? childEnvPath : process.cwd(),
+    child,
+    createCommand: {
+      type: "thread.create" as const,
+      commandId: randomUUID(),
+      threadId: child.id,
+      projectId: parent.projectId,
+      title: child.title,
       modelSelection,
       runtimeMode,
       interactionMode,
-    })).catch(() => undefined);
-  }
-  void executeTurn({
-    store,
-    driver,
-    threadId: childId,
-    storeTurnId: sent.turn.id,
-    prompt: task,
-    modelSelection,
-    workingDirectory: childEnvPath,
-  }).catch(() => undefined);
-
-  let waitTimedOut = false;
-  let latest = await fullThread(store, childId);
-  if (wait) {
-    const deadline = Date.now() + timeoutMs;
-    for (;;) {
-      const state = latest.latestTurn?.state;
-      if (state === "completed" || state === "interrupted" || state === "error") break;
-      if (Date.now() >= deadline) {
-        waitTimedOut = true;
-        break;
-      }
-      await sleep(DELEGATE_POLL_INTERVAL_MS);
-      latest = await fullThread(store, childId).catch(() => latest);
-    }
-    if (!waitTimedOut) {
-      const state = latest.latestTurn?.state;
-      if (state !== "completed" && state !== "interrupted" && state !== "error") waitTimedOut = true;
-    }
-  }
-  const status = delegatedStatusOf(latest);
-  return {
-    runtime: directRuntime(),
-    auth: directAuth(),
-    project,
-    parent: { id: parent.id, projectId: parent.projectId, title: parent.title },
-    child: { id: latest.id, projectId: latest.projectId, title: latest.title },
-    createCommand: { ...createCommand, threadId: latest.id },
-    turnCommand: { ...turnCommand, threadId: latest.id, message: { ...turnCommand.message, messageId: sent.messageId } },
-    task: {
-      taskId: latest.id,
-      childThreadId: latest.id,
-      childRunId: latest.latestTurn?.turnId ?? null,
-      status,
-      workState: delegatedWorkStateOf(status),
-      summary: threadAssistantSummary(latest),
-      waitTimedOut,
+      branch: result.worktree?.branch ?? result.branch,
+      worktreePath: result.worktree?.path ?? null,
+      createdAt,
     },
+    turnCommand: {
+      type: "thread.turn.start" as const,
+      commandId: randomUUID(),
+      threadId: child.id,
+      message: {
+        messageId: result.messageId ?? randomUUID(),
+        role: "user" as const,
+        text: options.task.trim(),
+        attachments: [] as [],
+      },
+      modelSelection,
+      titleSeed: child.title,
+      runtimeMode,
+      interactionMode,
+      createdAt,
+    },
+    task: result.task,
     dispatch: null,
-    verification: {
-      accepted: true as const,
-      method: "message-id" as const,
-      snapshotSequence: 0,
-      messageId: sent.messageId,
-    },
+    verification:
+      result.messageId === null
+        ? null
+        : {
+            accepted: true as const,
+            method: "message-id" as const,
+            snapshotSequence: 0,
+            messageId: result.messageId,
+          },
     opened: openedNone(options.openMode, config),
-    dryRun: false as const,
-  };
-}
-
-async function describeDelegatedTask(
-  store: ThreadStore,
-  parentThreadId: string,
-  rawTaskId: string,
-): Promise<{
-  parent: ThreadEnvelope;
-  child: ThreadEnvelope;
-  task: {
-    taskId: string;
-    childThreadId: string;
-    childRunId: string | null;
-    status: DelegatedTaskStatus;
-    workState: DelegatedTaskWorkState;
-    summary: string | null;
-  };
-}> {
-  const taskId = requireThreadId(rawTaskId);
-  const parent = await fullThread(store, parentThreadId);
-  const delegation = await delegationForChild(store, parentThreadId, taskId);
-  const childId = delegation?.childThreadId ?? taskId;
-  let child: ThreadEnvelope | null = null;
-  try {
-    child = await fullThread(store, childId);
-  } catch {
-    child = null;
-  }
-  if (!child || child.projectId !== parent.projectId) {
-    throw new CliError("TASK_NOT_FOUND", `No delegated task exists with id ${taskId} for thread ${parentThreadId}.`, {
-      exitCode: 3,
-      details: { taskId, parentThreadId },
-    });
-  }
-  const status = delegatedStatusOf(child);
-  return {
-    parent,
-    child,
-    task: {
-      taskId,
-      childThreadId: child.id,
-      childRunId: child.latestTurn?.turnId ?? null,
-      status,
-      workState: delegatedWorkStateOf(status),
-      summary: threadAssistantSummary(child),
-    },
+    dryRun: options.dryRun === true,
   };
 }
 
 export async function taskStatus(config: CliConfig, rawParentThreadId: string, rawTaskId: string) {
-  void config;
-  const parentThreadId = requireThreadId(rawParentThreadId);
-  const store = await openStore();
-  const described = await describeDelegatedTask(store, parentThreadId, rawTaskId);
-  const project = projectOf(await storedProjects(), described.parent.projectId);
+  const described = await (await cliClient(config)).query({
+    type: "thread.task.status",
+    parentThreadId: requireThreadId(rawParentThreadId),
+    taskId: requireThreadId(rawTaskId),
+  });
   return {
     runtime: directRuntime(),
     auth: directAuth(),
-    project,
+    project: described.project,
     parent: { id: described.parent.id, projectId: described.parent.projectId, title: described.parent.title },
     task: { ...described.task, hasPendingChildRuns: false, waitTimedOut: false },
   };
 }
 
 export async function cancelTask(config: CliConfig, rawParentThreadId: string, rawTaskId: string) {
-  void config;
-  const parentThreadId = requireThreadId(rawParentThreadId);
-  const store = await openStore();
-  const described = await describeDelegatedTask(store, parentThreadId, rawTaskId);
-  const project = projectOf(await storedProjects(), described.parent.projectId);
+  const cancelled = await (await cliClient(config)).dispatch({
+    type: "thread.task.cancel",
+    parentThreadId: requireThreadId(rawParentThreadId),
+    taskId: requireThreadId(rawTaskId),
+  });
   const base = {
     runtime: directRuntime(),
     auth: directAuth(),
-    project,
-    parent: { id: described.parent.id, projectId: described.parent.projectId, title: described.parent.title },
+    project: cancelled.project,
+    parent: { id: cancelled.parent.id, projectId: cancelled.parent.projectId, title: cancelled.parent.title },
+    task: cancelled.task,
   };
-  const child = described.child;
-  if (!isThreadActive(child)) {
-    const terminal = child.latestTurn?.state;
-    const status =
-      terminal === "completed" ? "completed" as const
-      : terminal === "error" ? "failed" as const
-      : terminal === "interrupted" ? "interrupted" as const
-      : "cancelled" as const;
-    return {
-      ...base,
-      task: { ...described.task, status },
-      command: null,
-      dispatch: null,
-      verification: null,
-    };
-  }
-  const command = {
-    type: "thread.turn.interrupt" as const,
-    commandId: randomUUID(),
-    threadId: child.id,
-    createdAt: new Date().toISOString(),
-  };
-  try {
-    await interruptStoredTurn(store, child.id);
-  } catch (cause) {
-    throw new CliError(
-      "TASK_CANCEL_UNSUPPORTED",
-      `Could not interrupt delegated task ${described.task.taskId}; cancellation is unsupported for this thread.`,
-      { exitCode: 4, cause, details: { taskId: described.task.taskId, childThreadId: child.id } },
-    );
-  }
-  const delegation = await delegationForChild(store, parentThreadId, child.id);
-  if (delegation && delegation.status !== "cancelled") {
-    await store.updateDelegation(delegation.id, { status: "cancelled" }).catch(() => null);
-  }
-  const after = await fullThread(store, child.id);
-  const state = after.latestTurn?.state;
+  if (!cancelled.interruptRequested) return { ...base, command: null, dispatch: null, verification: null };
   return {
     ...base,
-    task: {
-      ...described.task,
-      status: state === "interrupted" ? "interrupted" as const : "cancel_requested" as const,
+    command: {
+      type: "thread.turn.interrupt" as const,
+      commandId: randomUUID(),
+      threadId: cancelled.child.id,
+      createdAt: new Date().toISOString(),
     },
-    command,
     dispatch: null,
     verification: {
       accepted: true as const,
       method: "interrupt" as const,
       snapshotSequence: 0,
-      state: state ?? null,
+      state: cancelled.stateAfter,
     },
   };
 }
+
+/** Codes a failed send reports as-is rather than as a failed start. */
+const SEND_PASSTHROUGH_CODES = new Set(["THREAD_BUSY", "PROVIDER_UNKNOWN"]);
 
 export async function sendThreadMessage(config: CliConfig, options: ThreadSendOptions) {
   const threadId = requireThreadId(options.threadId);
@@ -1030,17 +457,12 @@ export async function sendThreadMessage(config: CliConfig, options: ThreadSendOp
   const delivery = normalizeDelivery(options.delivery);
   const handoffNote = normalizeHandoffNote(options.handoffNote);
 
-  const store = await openStore();
-  const thread = await fullThread(store, threadId);
-  if (thread.archivedAt != null) {
-    throw new CliError("THREAD_ARCHIVED", `Thread ${threadId} is archived and cannot receive a new turn.`, {
-      exitCode: 4,
-      details: { threadId, archivedAt: thread.archivedAt },
-    });
-  }
-
-  const project = projectOf(await storedProjects(), thread.projectId);
-  if (threadStatus(thread) === "settled" && !options.wakeSettled) {
+  const client = await cliClient(config, options.drivers);
+  const { project, thread } = await inspect(client, threadId);
+  requireNotArchived(thread, "receive a new turn");
+  // Checked here, ahead of the server's own guards, because only the CLI
+  // can ask: the settled prompt is interactive and the errors name flags.
+  if (threadListStatus(thread) === "settled" && !options.wakeSettled) {
     if (!options.confirmSettled) {
       throw new CliError(
         "SETTLED_THREAD_CONFIRMATION_REQUIRED",
@@ -1055,7 +477,6 @@ export async function sendThreadMessage(config: CliConfig, options: ThreadSendOp
       });
     }
   }
-
   const busy = isThreadBusy(thread);
   if (delivery === "auto" && busy && ifBusy === "reject") {
     throw new CliError("THREAD_BUSY", "The thread has an active or pending turn. Retry when idle or use --if-busy inject.", {
@@ -1075,73 +496,32 @@ export async function sendThreadMessage(config: CliConfig, options: ThreadSendOp
     : delivery === "restart" ? "restarted"
     : "started";
 
-  const baseSelection =
-    asModelSelection(thread.modelSelection) ??
-    project?.defaultModelSelection ??
-    defaultModelSelection();
-  const hasModelOverride =
-    options.provider !== undefined ||
-    options.model !== undefined ||
-    options.speedMode !== undefined ||
-    options.thinkingEffort !== undefined;
-  // Follow-ups keep the thread's model unless flags explicitly override it:
-  // global config provider/model must not flip a scheduled thread's model.
-  const sendConfig: CliConfig = { ...config };
-  delete sendConfig.provider;
-  delete sendConfig.model;
-  delete sendConfig.speedMode;
-  delete sendConfig.thinkingEffort;
-  const modelSelection = hasModelOverride
-    ? resolveModelSelection(baseSelection, sendConfig, {
-        prompt,
-        ...(options.provider !== undefined ? { provider: options.provider } : {}),
-        ...(options.model !== undefined ? { model: options.model } : {}),
-        ...(options.speedMode !== undefined ? { speedMode: options.speedMode } : {}),
-        ...(options.thinkingEffort !== undefined ? { thinkingEffort: options.thinkingEffort } : {}),
-      })
-    : undefined;
-
+  const base = thread.modelSelection ?? project?.defaultModelSelection ?? defaultModelSelection();
+  const modelSelection = followUpSelection(base, config, modelRequestOf(options), prompt);
   const createdAt = new Date().toISOString();
-  const previewCommand = {
-    type: "thread.turn.start" as const,
-    commandId: randomUUID(),
-    threadId,
-    message: { messageId: randomUUID(), role: "user" as const, text: prompt, attachments: [] as [] },
-    runtimeMode: thread.runtimeMode ?? "full-access",
-    interactionMode: thread.interactionMode ?? "default",
-    ...(modelSelection ? { modelSelection } : {}),
-    createdAt,
-  };
+  const envelope = (messageId: string) => ({
+    runtime: directRuntime(),
+    auth: directAuth(),
+    project,
+    thread: { id: thread.id, projectId: thread.projectId, title: thread.title, statusBeforeSend: threadListStatus(thread) },
+    message: { messageId, textLength: prompt.length },
+    command: {
+      type: "thread.turn.start" as const,
+      commandId: randomUUID(),
+      threadId,
+      runtimeMode: thread.runtimeMode ?? "full-access",
+      interactionMode: thread.interactionMode ?? "default",
+      ...(modelSelection ? { modelSelection } : {}),
+      createdAt,
+    },
+    delivery: deliveryResult,
+    handoffNote,
+  });
 
   if (options.dryRun) {
     return {
-      runtime: directRuntime(),
-      auth: directAuth(),
-      project,
-      thread: {
-        id: thread.id,
-        projectId: thread.projectId,
-        title: thread.title,
-        statusBeforeSend: threadStatus(thread),
-      },
-      message: {
-        messageId: previewCommand.message.messageId,
-        textLength: previewCommand.message.text.length,
-      },
-      command: {
-        type: previewCommand.type,
-        commandId: previewCommand.commandId,
-        threadId: previewCommand.threadId,
-        runtimeMode: previewCommand.runtimeMode,
-        interactionMode: previewCommand.interactionMode,
-        ...(modelSelection ? { modelSelection } : {}),
-        createdAt: previewCommand.createdAt,
-      },
-      delivery: deliveryResult,
-      handoffNote,
-      ...(delivery === "restart"
-        ? { interruptPreview: { type: "thread.turn.interrupt", threadId: thread.id } }
-        : {}),
+      ...envelope(randomUUID()),
+      ...(delivery === "restart" ? { interruptPreview: { type: "thread.turn.interrupt", threadId: thread.id } } : {}),
       dispatch: null,
       verification: null,
       opened: openedNone(options.openMode, config),
@@ -1149,91 +529,27 @@ export async function sendThreadMessage(config: CliConfig, options: ThreadSendOp
     };
   }
 
-  // Resolve the driver before touching the ledger: unknown providers fail
-  // without recording a turn.
-  const instanceId = modelSelection?.instanceId ?? thread.modelSelection?.instanceId ?? "codex";
-  const driver = driverForInstance(driverOwner, instanceId, options.drivers);
-
-  // `restart` is atomic in the store: it interrupts the running turn
-  // (aborting the tracked driver run) and chains the replacement turn.
-  const sent = await sendStoredTurn(store, threadId, {
-    prompt,
-    ...(options.ifBusy ? { ifBusy: options.ifBusy } : {}),
-    ...(options.delivery ? { delivery: options.delivery } : {}),
-    ...(options.wakeSettled !== undefined ? { wakeSettled: options.wakeSettled } : {}),
-    ...(modelSelection ? { modelSelection } : {}),
-    ...(options.handoffNote !== undefined ? { handoffNote: options.handoffNote } : {}),
-  }).catch((cause) => {
-    if (cause instanceof CliError && cause.code === "THREAD_BUSY") throw cause;
-    throw new CliError(
-      "THREAD_START_FAILED",
-      `Could not start a turn on thread ${thread.id}. The thread was left untouched.`,
-      { cause, details: { threadId: thread.id } },
-    );
-  });
-
-  const hasSession = await Effect.runPromise(driver.hasSession(threadId)).catch(() => false);
-  if (!hasSession) {
-    await Effect.runPromise(driver.startSession({
+  const sent = await client
+    .dispatch({
+      type: "thread.turn.start",
       threadId,
-      workingDirectory: sent.thread.env.path.trim().length > 0 ? sent.thread.env.path : process.cwd(),
-      modelSelection: sent.thread.modelSelection,
-      runtimeMode: sent.thread.runtimeMode,
-      interactionMode: sent.thread.interactionMode,
-    })).catch(() => undefined);
-  }
-  void executeTurn({
-    store,
-    driver,
-    threadId,
-    storeTurnId: sent.turn.id,
-    prompt,
-    ...(modelSelection ? { modelSelection } : {}),
-    workingDirectory: sent.thread.env.path,
-  }).catch(() => undefined);
-  if (options.noWait !== true) {
-    // One-shot CLI: the process is the only runner. Returning at
-    // acceptance would orphan the run and strand the turn `running`.
-    await waitForTurnTerminal(store, threadId, sent.turn.id, () =>
-      interruptStoredTurn(store, threadId).catch(() => undefined),
-    );
-  }
-
-  const command = {
-    type: "thread.turn.start" as const,
-    commandId: randomUUID(),
-    threadId,
-    message: { messageId: sent.messageId, role: "user" as const, text: prompt, attachments: [] as [] },
-    runtimeMode: thread.runtimeMode ?? "full-access",
-    interactionMode: thread.interactionMode ?? "default",
-    ...(modelSelection ? { modelSelection } : {}),
-    createdAt,
-  };
-  return {
-    runtime: directRuntime(),
-    auth: directAuth(),
-    project,
-    thread: {
-      id: thread.id,
-      projectId: thread.projectId,
-      title: thread.title,
-      statusBeforeSend: threadStatus(thread),
-    },
-    message: {
-      messageId: sent.messageId,
-      textLength: prompt.length,
-    },
-    command: {
-      type: command.type,
-      commandId: command.commandId,
-      threadId: command.threadId,
-      runtimeMode: command.runtimeMode,
-      interactionMode: command.interactionMode,
+      message: { text: prompt },
+      ...(options.ifBusy ? { ifBusy: options.ifBusy } : {}),
+      ...(options.delivery ? { delivery: options.delivery } : {}),
+      ...(options.wakeSettled !== undefined ? { wakeSettled: options.wakeSettled } : {}),
       ...(modelSelection ? { modelSelection } : {}),
-      createdAt: command.createdAt,
-    },
-    delivery: deliveryResult,
-    handoffNote,
+      ...(options.handoffNote !== undefined ? { handoffNote: options.handoffNote } : {}),
+    })
+    .catch((cause: unknown) => {
+      if (cause instanceof CliError && SEND_PASSTHROUGH_CODES.has(cause.code)) throw cause;
+      throw new CliError("THREAD_START_FAILED", `Could not start a turn on thread ${thread.id}. The thread was left untouched.`, {
+        cause,
+        details: { threadId: thread.id },
+      });
+    });
+  if (options.noWait !== true) await awaitTurn(client, threadId, sent.turnId);
+  return {
+    ...envelope(sent.messageId),
     dispatch: null,
     verification: {
       accepted: true as const,
@@ -1249,4 +565,215 @@ export async function sendThreadMessage(config: CliConfig, options: ThreadSendOp
 
 export async function sendThreadPrompt(config: CliConfig, options: ThreadSendOptions) {
   return await sendThreadMessage(config, options);
+}
+
+/**
+ * Archive, delete, rename: thread-record changes that need no running
+ * turn, so they work from any process. (Answering or dismissing a parked
+ * question does not: the question lives in the driver of the process
+ * running the turn, which a separate CLI invocation cannot reach until
+ * the server runs out of process.)
+ */
+async function changeThreadRecord(
+  config: CliConfig,
+  rawThreadId: string,
+  change: "archive" | "delete" | { title: string },
+) {
+  const threadId = requireThreadId(rawThreadId);
+  const client = await cliClient(config);
+  const { project, thread: before } = await inspect(client, threadId);
+  const command =
+    change === "archive"
+      ? { type: "thread.archive" as const, commandId: randomUUID(), threadId }
+      : change === "delete"
+        ? { type: "thread.delete" as const, commandId: randomUUID(), threadId }
+        : { type: "thread.meta.update" as const, commandId: randomUUID(), threadId, title: change.title };
+  if (change === "archive") await client.dispatch({ type: "thread.archive", threadId });
+  else if (change === "delete") await client.dispatch({ type: "thread.delete", threadId });
+  else await client.dispatch({ type: "thread.meta.update", threadId, title: change.title });
+  const { thread: after } = await inspect(client, threadId);
+  return {
+    runtime: directRuntime(),
+    auth: directAuth(),
+    project,
+    thread: {
+      id: before.id,
+      projectId: before.projectId,
+      titleBefore: before.title,
+      title: after.title,
+      archivedAt: after.archivedAt ?? null,
+      deletedAt: after.deletedAt ?? null,
+    },
+    command,
+    dispatch: null,
+    verification: { accepted: true as const, snapshotSequence: 0 },
+  };
+}
+
+export async function archiveThread(config: CliConfig, threadId: string) {
+  return await changeThreadRecord(config, threadId, "archive");
+}
+
+export async function deleteThread(config: CliConfig, threadId: string) {
+  return await changeThreadRecord(config, threadId, "delete");
+}
+
+export async function renameThread(config: CliConfig, threadId: string, rawTitle: string) {
+  const title = rawTitle.trim().replace(/\s+/gu, " ");
+  if (!title) throw new CliError("INVALID_THREAD_OPTION", "--title must be a non-empty string.", { exitCode: 2 });
+  return await changeThreadRecord(config, threadId, { title });
+}
+
+/**
+ * Parked questions: list them, answer them, dismiss them. The answer
+ * reaches the provider only from the process running the turn — which,
+ * with a shared server (`moxen server start`), is every client; without
+ * one the server refuses with `REQUEST_NOT_OWNED` rather than pretending.
+ */
+async function parked(client: ClientApi, threadId: string) {
+  const { project, thread } = await client.query({ type: "thread.read", threadId, view: "turn-items" });
+  const items = "items" in thread ? thread.items : [];
+  return { project, thread, requests: openQuestions({ ...thread, activities: items }) };
+}
+
+export async function listQuestions(config: CliConfig, rawThreadId: string) {
+  const threadId = requireThreadId(rawThreadId);
+  const { project, thread, requests } = await parked(await cliClient(config), threadId);
+  return {
+    runtime: directRuntime(),
+    auth: directAuth(),
+    project,
+    thread: { id: thread.id, projectId: thread.projectId, title: thread.title },
+    requests,
+  };
+}
+
+function pickRequest(requests: readonly OpenRequest[], threadId: string, requestId: string | undefined): OpenRequest {
+  if (requests.length === 0) {
+    throw new CliError("NO_OPEN_QUESTION", `Thread ${threadId} is not waiting on a question.`, {
+      exitCode: 4,
+      details: { threadId },
+    });
+  }
+  if (requestId !== undefined) {
+    const match = requests.find((request) => request.requestId === requestId);
+    if (!match) {
+      throw new CliError("QUESTION_NOT_FOUND", `Thread ${threadId} has no open question ${requestId}.`, {
+        exitCode: 3,
+        details: { threadId, requestId, open: requests.map((request) => request.requestId) },
+      });
+    }
+    return match;
+  }
+  if (requests.length > 1) {
+    throw new CliError("QUESTION_AMBIGUOUS", `Thread ${threadId} has ${requests.length} open questions; pick one with --request.`, {
+      exitCode: 2,
+      details: { threadId, open: requests.map((request) => request.requestId) },
+    });
+  }
+  return requests[0]!;
+}
+
+/** One `--answer` per question, in order; a multi-select answer is comma-separated. */
+function answersFor(request: OpenRequest, raw: readonly string[]): Record<string, string | string[]> {
+  if (raw.length !== request.questions.length) {
+    throw new CliError(
+      "INVALID_THREAD_OPTION",
+      `Question ${request.requestId} asks ${request.questions.length} question(s); pass one --answer for each, in order.`,
+      { exitCode: 2, details: { expected: request.questions.length, received: raw.length } },
+    );
+  }
+  const answers: Record<string, string | string[]> = {};
+  request.questions.forEach((question, index) => {
+    const value = raw[index]!.trim();
+    const picked = question.multiSelect ? value.split(",").map((part) => part.trim()).filter(Boolean) : [value];
+    const labels = question.options.map((option) => option.label);
+    const unknown = picked.filter((choice) => !labels.includes(choice));
+    if (picked.length === 0 || picked[0] === "" || (!question.allowCustomAnswer && unknown.length > 0)) {
+      throw new CliError("INVALID_THREAD_OPTION", `"${value}" is not an option for "${question.question}".`, {
+        exitCode: 2,
+        details: { question: question.question, options: labels },
+      });
+    }
+    answers[question.id] = question.multiSelect ? picked : picked[0]!;
+  });
+  return answers;
+}
+
+export async function answerQuestion(
+  config: CliConfig,
+  rawThreadId: string,
+  options: { requestId?: string; answers: readonly string[] },
+) {
+  const threadId = requireThreadId(rawThreadId);
+  const client = await cliClient(config);
+  const { project, thread, requests } = await parked(client, threadId);
+  const request = pickRequest(requests, threadId, options.requestId);
+  const answers = answersFor(request, options.answers);
+  await client.dispatch({ type: "thread.user-input.respond", threadId, requestId: request.requestId, answers });
+  return {
+    runtime: directRuntime(),
+    auth: directAuth(),
+    project,
+    thread: { id: thread.id, projectId: thread.projectId, title: thread.title },
+    request: { requestId: request.requestId, questions: request.questions.map((question) => question.question) },
+    answers,
+    command: { type: "thread.user-input.respond" as const, commandId: randomUUID(), threadId, requestId: request.requestId },
+    dispatch: null,
+    verification: { accepted: true as const, snapshotSequence: 0 },
+  };
+}
+
+export async function dismissQuestion(config: CliConfig, rawThreadId: string, options: { requestId?: string } = {}) {
+  const threadId = requireThreadId(rawThreadId);
+  const client = await cliClient(config);
+  const { project, thread, requests } = await parked(client, threadId);
+  const request = pickRequest(requests, threadId, options.requestId);
+  await client.dispatch({ type: "thread.user-input.dismiss", threadId, requestId: request.requestId });
+  return {
+    runtime: directRuntime(),
+    auth: directAuth(),
+    project,
+    thread: { id: thread.id, projectId: thread.projectId, title: thread.title },
+    request: { requestId: request.requestId, questions: request.questions.map((question) => question.question) },
+    command: { type: "thread.user-input.dismiss" as const, commandId: randomUUID(), threadId, requestId: request.requestId },
+    dispatch: null,
+    verification: { accepted: true as const, snapshotSequence: 0 },
+  };
+}
+
+/**
+ * Revert the conversation so its first `keep` turns remain. Files are left
+ * as they are; the provider forgets the dropped turns too.
+ */
+export async function revertConversation(
+  config: CliConfig,
+  rawThreadId: string,
+  rawKeep: string | number,
+  options: { drivers?: TurnDriverFactories } = {},
+) {
+  const threadId = requireThreadId(rawThreadId);
+  const keep = typeof rawKeep === "number" ? rawKeep : Number(String(rawKeep).trim());
+  if (!Number.isInteger(keep) || keep < 0) {
+    throw new CliError("INVALID_THREAD_OPTION", "--keep must be a whole number of turns, 0 or more.", {
+      exitCode: 2,
+      details: { keep: rawKeep },
+    });
+  }
+  // Rolling the provider back may mean resuming its session: drivers matter.
+  const client = await cliClient(config, options.drivers);
+  const { project, thread } = await inspect(client, threadId);
+  const result = await client.dispatch({ type: "thread.conversation.revert", threadId, turnCount: keep });
+  return {
+    runtime: directRuntime(),
+    auth: directAuth(),
+    project,
+    thread: { id: thread.id, projectId: thread.projectId, title: thread.title },
+    keptTurns: result.keptTurns,
+    removedTurns: result.removedTurns,
+    providers: result.providers,
+    command: { type: "thread.conversation.revert" as const, commandId: randomUUID(), threadId, turnCount: keep },
+    dispatch: null,
+    verification: { accepted: true as const, snapshotSequence: 0 },
+  };
 }

@@ -7,6 +7,7 @@
  * The CLI projection to envelope shapes happens at the boundary, not here.
  * See ARCHITECTURE.md §9.
  */
+import type { ImageAttachmentUpload } from "../attachments.js";
 import type {
   InteractionMode,
   ModelSelection,
@@ -44,6 +45,14 @@ export interface StoredThread {
   /** Set by drivers; settle is blocked while either is true. */
   readonly hasPendingApprovals: boolean;
   readonly hasPendingUserInput: boolean;
+  /**
+   * Native provider session handle per provider instance (Claude session
+   * id, Codex thread id, ACP session id, OpenCode session id), so a thread
+   * resumes its provider-side history after the process that started the
+   * session exits. Keyed by instance so switching providers and back
+   * resumes rather than restarts. Absent on threads that never ran.
+   */
+  readonly providerSessions?: Readonly<Record<string, string>>;
 }
 
 export type TurnStatus = "queued" | "running" | "completed" | "interrupted" | "failed";
@@ -58,6 +67,10 @@ export interface StoredTurn {
   readonly messageId: string;
   readonly runtimeMode: RuntimeMode;
   readonly interactionMode: InteractionMode;
+  /**
+   * The model the turn ran on. Always set on new turns; `null` only on
+   * turns written before the turn recorded it (read those as unknown).
+   */
   readonly modelSelection: ModelSelection | null;
   /** Steer/restart chains reference the turn they superseded. */
   readonly parentTurnId: string | null;
@@ -67,6 +80,18 @@ export interface StoredTurn {
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly completedAt: string | null;
+  /**
+   * The process expected to run the turn, set when it becomes `running`.
+   * A running turn whose owner has died is orphaned — nothing will ever
+   * settle it — and is interrupted the next time the thread is touched
+   * (`reconcileOrphanedTurn`). Absent on turns written before it existed.
+   */
+  readonly owner?: TurnOwner | null;
+}
+
+export interface TurnOwner {
+  readonly pid: number;
+  readonly host: string;
 }
 
 /** Token totals per turn (mirrors the provider SPI delta, kept local to avoid layer tangles). */
@@ -80,6 +105,17 @@ export interface TurnUsage {
 
 export type MessageRole = "user" | "assistant" | "system";
 
+/** An image sent with a user message, saved under the store root. */
+export interface StoredAttachment {
+  readonly type: "image";
+  readonly id: string;
+  readonly name: string;
+  readonly mimeType: string;
+  readonly sizeBytes: number;
+  /** Absolute path of the saved bytes. */
+  readonly path: string;
+}
+
 export interface StoredMessage {
   readonly id: string;
   readonly threadId: string;
@@ -87,6 +123,7 @@ export interface StoredMessage {
   readonly role: MessageRole;
   readonly text: string;
   readonly createdAt: string;
+  readonly attachments?: readonly StoredAttachment[];
 }
 
 export interface StoredActivity {
@@ -130,6 +167,8 @@ export interface StoredDelegation {
   readonly parentThreadId: string;
   readonly childThreadId: string;
   readonly prompt: string;
+  /** The branch the child's own worktree was cut from; absent when it shares the parent's checkout. */
+  readonly baseBranch?: string | null;
   readonly status: DelegationStatus;
   readonly createdAt: string;
   readonly updatedAt: string;
@@ -159,6 +198,8 @@ export interface SendTurnInput {
   /** Settled threads require an explicit wake before they accept turns. */
   readonly wakeSettled?: boolean;
   readonly handoffNote?: string;
+  /** Images sent with the prompt; saved and recorded on the user message. */
+  readonly attachments?: readonly ImageAttachmentUpload[];
 }
 
 export type ReadView = "messages" | "turn-items" | "plans" | "checkpoints" | "transfers";

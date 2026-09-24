@@ -41,9 +41,8 @@ export function registryFile(root: string): string {
 
 /**
  * Workspace-root equality: resolved + normalized, trailing separators
- * stripped, case-insensitive on win32 only. Same semantics as the former
- * `cli/infra/workspace.ts` `pathsEqual` (kept here so `src/projects`
- * never imports from `src/cli`).
+ * stripped, case-insensitive on win32 only. The one path-equality rule for
+ * workspace roots; `./workspace.ts` resolves them.
  */
 export function workspaceRootsEqual(left: string, right: string): boolean {
   const normalize = (value: string): string => {
@@ -150,15 +149,12 @@ export function projectTitle(workspaceRoot: string): string {
 }
 
 /** Non-deleted projects. Pure; kept for envelope assembly over ProjectEnvelope rows. */
-export function activeProjects(projects: readonly ProjectEnvelope[]): ProjectEnvelope[] {
+export function activeProjects<P extends ProjectEnvelope>(projects: readonly P[]): P[] {
   return projects.filter((project) => project.deletedAt == null);
 }
 
 /** First active project whose normalized root matches. Pure. */
-export function projectForWorkspace(
-  projects: readonly ProjectEnvelope[],
-  workspaceRoot: string,
-): ProjectEnvelope | null {
+export function projectForWorkspace<P extends ProjectEnvelope>(projects: readonly P[], workspaceRoot: string): P | null {
   return activeProjects(projects).find((project) => workspaceRootsEqual(project.workspaceRoot, workspaceRoot)) ?? null;
 }
 
@@ -168,7 +164,7 @@ export async function ensureStoredProject(root: string, input: EnsureProjectInpu
   if (existing) return { project: existing, created: false, command: null };
   const policy = input.policy ?? "create";
   if (policy === "existing") {
-    throw new CliError("PROJECT_NOT_FOUND", `No mvx project exists for ${normalized}.`, {
+    throw new CliError("PROJECT_NOT_FOUND", `No moxen project exists for ${normalized}.`, {
       details: { workspaceRoot: normalized, projectPolicy: policy },
     });
   }

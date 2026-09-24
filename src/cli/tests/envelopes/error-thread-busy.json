@@ -1,0 +1,10 @@
+{
+  "ok": false,
+  "error": {
+    "code": "THREAD_BUSY",
+    "message": "The thread has an active or pending turn. Retry when idle or use --if-busy inject.",
+    "details": {
+      "threadId": "thread-existing"
+    }
+  }
+}

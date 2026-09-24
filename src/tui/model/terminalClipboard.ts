@@ -1,5 +1,6 @@
 import { isSshSession } from "./clipboard.js";
-import { MAX_IMAGE_BYTES, readClipboardImage } from "./attachments.js";
+import { MAX_IMAGE_BYTES } from "../../core/attachments.js";
+import { readClipboardImage } from "./hostClipboard.js";
 
 /**
  * Image paste via Kitty's OSC 5522 clipboard protocol
@@ -200,7 +201,7 @@ export async function queryTerminalClipboardImages(
 ): Promise<TerminalClipboardOutcome> {
   const maxBytes = options?.maxBytes ?? Math.ceil((MAX_IMAGE_BYTES * 4) / 3) + 1024;
   const password = crypto.randomUUID();
-  const queryOptions = { password, humanName: "mvx" };
+  const queryOptions = { password, humanName: "moxen" };
   const send = (query: string) => {
     deps.write(isTmuxSession(deps.env) ? wrapOscForTmux(query) : query);
   };

@@ -1,0 +1,105 @@
+{
+  "ok": true,
+  "data": {
+    "runtime": {
+      "origin": "direct",
+      "stateDir": null,
+      "runtimeStatePath": null,
+      "settingsPath": null,
+      "environmentId": "direct",
+      "serverVersion": "direct",
+      "capabilities": {
+        "threadSettlement": true
+      }
+    },
+    "auth": {
+      "source": "direct",
+      "version": null
+    },
+    "workspace": {
+      "inputPath": "<root>",
+      "workspaceRoot": "<root>",
+      "mode": "repo",
+      "isGitRepository": true,
+      "branch": "main"
+    },
+    "settings": {
+      "defaultThreadEnvMode": "local",
+      "newWorktreesStartFromOrigin": true,
+      "projectDefaultThreadEnvMode": null,
+      "projectFileDefaultThreadEnvMode": null,
+      "effectiveThreadEnvMode": "local",
+      "threadEnvModeSource": "global"
+    },
+    "project": {
+      "id": "<id-1>",
+      "title": "work",
+      "workspaceRoot": "<root>",
+      "defaultModelSelection": null,
+      "createdAt": "<time>",
+      "updatedAt": "<time>",
+      "deletedAt": null
+    },
+    "projectCreated": true,
+    "projectCommand": {
+      "type": "project.create",
+      "commandId": "<id-2>",
+      "projectId": "<id-1>",
+      "title": "work",
+      "workspaceRoot": "<root>",
+      "createWorkspaceRootIfMissing": true,
+      "defaultModelSelection": null,
+      "createdAt": "<time>"
+    },
+    "projectDispatch": null,
+    "thread": {
+      "id": "<id-3>",
+      "title": "Plan the release",
+      "createCommand": {
+        "type": "thread.create",
+        "commandId": "<id-4>",
+        "threadId": "<id-3>",
+        "projectId": "<id-1>",
+        "title": "Plan the release",
+        "modelSelection": {
+          "instanceId": "codex",
+          "model": "gpt-5.4"
+        },
+        "runtimeMode": "full-access",
+        "interactionMode": "default",
+        "branch": "main",
+        "worktreePath": null,
+        "createdAt": "<time>"
+      },
+      "createDispatch": null,
+      "command": {
+        "type": "thread.turn.start",
+        "commandId": "<id-5>",
+        "threadId": "<id-3>",
+        "message": {
+          "messageId": "<id-6>",
+          "role": "user",
+          "text": "Plan the release",
+          "attachments": []
+        },
+        "modelSelection": {
+          "instanceId": "codex",
+          "model": "gpt-5.4"
+        },
+        "titleSeed": "Plan the release",
+        "runtimeMode": "full-access",
+        "interactionMode": "default",
+        "createdAt": "<time>"
+      },
+      "dispatch": null
+    },
+    "worktree": null,
+    "opened": {
+      "mode": "none",
+      "kind": "none",
+      "url": null,
+      "exactThread": false
+    },
+    "dryRun": true
+  }
+}

@@ -27,9 +27,12 @@ import type {
 } from "@anthropic-ai/claude-agent-sdk";
 
 import { CliError } from "../../errors.js";
+import { plainSkill, type SkillInventory, type SkillSummary } from "../../catalog/summary.js";
 import type { InteractionMode, RuntimeMode } from "../../types.js";
 import type {
   ApprovalRequestId,
+  ContextWindowUsage,
+  ProviderImage,
   ProviderAdapter,
   ProviderAdapterCapabilities,
   ProviderApprovalDecision,
@@ -43,6 +46,8 @@ import type {
   ThreadId,
   TurnId,
 } from "../spi.js";
+import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
+import type { McpServerSpec } from "../../mcp.js";
 import {
   claudeSignedOutMessage,
   isClaudeAuthErrorText,
@@ -121,6 +126,11 @@ interface ClaudeSession {
   basePermissionMode: PermissionMode;
   runtimeMode: RuntimeMode;
   interactionMode: InteractionMode;
+  /**
+   * Who put the session into plan mode, which decides whether the agent may
+   * leave it. Null when it is not in plan mode.
+   */
+  planModeSource: "user" | "agent" | null;
   toolUseThreads: Map<string, ThreadId>;
   /**
    * Name and input per in-flight `tool_use` id. The matching `tool_result`
@@ -142,20 +152,34 @@ interface ClaudeSession {
   startedAt: string;
 }
 
+/** A user message: the text, then each image as a base64 content block. */
+function userMessage(text: string, images: readonly ProviderImage[] = []): SDKUserMessage {
+  return {
+    type: "user",
+    message: {
+      role: "user",
+      content: [
+        { type: "text", text },
+        ...images.map((image) => ({
+          type: "image" as const,
+          source: { type: "base64" as const, media_type: image.mimeType, data: image.data },
+        })),
+      ],
+    } as SDKUserMessage["message"],
+    parent_tool_use_id: null,
+  };
+}
+
 class PromptQueue {
-  private pending: string[] = [];
+  private pending: SDKUserMessage[] = [];
   private takers: Array<(result: IteratorResult<SDKUserMessage>) => void> = [];
   closed = false;
 
-  push(text: string): void {
-    const message: SDKUserMessage = {
-      type: "user",
-      message: { role: "user", content: [{ type: "text", text }] },
-      parent_tool_use_id: null,
-    };
+  push(text: string, images: readonly ProviderImage[] = []): void {
+    const message = userMessage(text, images);
     const taker = this.takers.shift();
     if (taker) taker({ value: message, done: false });
-    else this.pending.push(text);
+    else this.pending.push(message);
   }
 
   close(): void {
@@ -166,17 +190,8 @@ class PromptQueue {
   [Symbol.asyncIterator](): AsyncIterator<SDKUserMessage> {
     return {
       next: async (): Promise<IteratorResult<SDKUserMessage>> => {
-        const text = this.pending.shift();
-        if (text !== undefined) {
-          return {
-            value: {
-              type: "user",
-              message: { role: "user", content: [{ type: "text", text }] },
-              parent_tool_use_id: null,
-            },
-            done: false,
-          };
-        }
+        const message = this.pending.shift();
+        if (message !== undefined) return { value: message, done: false };
         if (this.closed) return { value: undefined, done: true };
         return await new Promise<IteratorResult<SDKUserMessage>>((resolve) => {
           this.takers.push(resolve);
@@ -240,6 +255,12 @@ export class ClaudeDriver implements ProviderAdapter<CliError> {
   private readonly sessionApi: ClaudeSessionApi;
   private readonly usageProbeTimeoutMs: number;
   private readonly sessions = new Map<ThreadId, ClaudeSession>();
+  /**
+   * Last resumable CLI session id per thread, kept past session teardown.
+   * `interrupt()` ends the query for good, so the next turn builds a new
+   * session — without this it would start with no history.
+   */
+  private readonly resumable = new Map<ThreadId, string>();
   private readonly queue = Effect.runSync(Queue.unbounded<ProviderRuntimeEvent>());
 
   /** The exact callback handed to the SDK as `canUseTool`; tests drive it directly. */
@@ -305,6 +326,7 @@ export class ClaudeDriver implements ProviderAdapter<CliError> {
         basePermissionMode,
         runtimeMode: input.runtimeMode ?? "full-access",
         interactionMode: input.interactionMode ?? "default",
+        planModeSource: input.interactionMode === "plan" ? "user" : null,
         toolUseThreads: new Map(),
         toolUseCalls: new Map(),
         lastActiveThreadId: null,
@@ -323,9 +345,23 @@ export class ClaudeDriver implements ProviderAdapter<CliError> {
       for (const [key, value] of Object.entries(env)) {
         if (typeof value === "string") stringEnv[key] = value;
       }
+      const resume = this.resumable.get(input.threadId) ?? (await this.liveCursor(input.resumeCursor));
+      session.resumeSessionId = resume ?? null;
+      if (resume) this.resumable.set(input.threadId, resume);
       session.query = this.transport.query(session.input, {
         cwd: input.workingDirectory,
         ...(session.model ? { model: session.model } : {}),
+        ...(resume ? { resume } : {}),
+        ...(input.mcpServers && input.mcpServers.length > 0 ? { mcpServers: claudeMcpServers(input.mcpServers) } : {}),
+        // Always Claude Code's own prompt: the SDK's default when this is
+        // omitted is an *empty* custom prompt (`systemPrompt = ""`), which
+        // left sessions without Claude Code's tool and environment guidance.
+        // moxen's runtime instructions are appended to it, never in place of it.
+        systemPrompt: {
+          type: "preset" as const,
+          preset: "claude_code" as const,
+          ...(input.instructions ? { append: input.instructions } : {}),
+        },
         permissionMode: basePermissionMode,
         ...(needsAllowDangerouslySkipPermissions(basePermissionMode)
           ? { allowDangerouslySkipPermissions: true }
@@ -338,6 +374,89 @@ export class ClaudeDriver implements ProviderAdapter<CliError> {
       void this.pump(session);
       return this.describeSession(session);
     });
+
+  readonly resumeCursor = (threadId: ThreadId): string | null => this.resumable.get(threadId) ?? null;
+
+  /**
+   * Streaming input is how the CLI takes more text mid-turn: a user
+   * message pushed while it works is folded into the running turn between
+   * tool rounds (or, if the run is already finishing, runs next and is
+   * announced by the result's `queued_turn_count`).
+   */
+  readonly steerTurn = (threadId: ThreadId, text: string): Effect.Effect<void, CliError> =>
+    this.attempt("CLAUDE_STEER_FAILED", `Could not steer the turn on thread ${threadId}`, async () => {
+      const session = this.requireSession(threadId);
+      const open = session.transcript.find((turn) => turn.status === "running");
+      if (session.closed || !open) {
+        throw new CliError("TURN_NOT_RUNNING", `Thread ${threadId} has no running turn to steer.`, {
+          details: { threadId },
+        });
+      }
+      open.items.push({ kind: "user", text });
+      session.input.push(text);
+    });
+
+  /**
+   * The CLI's own `/context` reading, in its cheap `summary` form (from the
+   * last response's usage, no token-count calls): tokens in the window,
+   * the window, the auto-compact threshold, and the last request's cache
+   * reads. Null once the session is gone.
+   */
+  readonly contextUsage = async (threadId: ThreadId): Promise<ContextWindowUsage | null> => {
+    const session = this.sessions.get(threadId);
+    if (!session || session.closed || !session.query.getContextUsage) return null;
+    return claudeContextUsageOf(await session.query.getContextUsage({ detail: "summary" }));
+  };
+
+  /**
+   * Skills and slash commands as Claude Code resolves them for `cwd` — user,
+   * project, plugin and MCP ones included — from a query that is never sent
+   * a prompt: the CLI answers `supportedCommands` on initialize, and writes
+   * no session for it (checked against claude 2.1.281).
+   */
+  readonly skillInventory = async (cwd: string): Promise<SkillInventory> => {
+    const never: AsyncIterable<SDKUserMessage> = {
+      [Symbol.asyncIterator]: () => ({ next: () => new Promise<IteratorResult<SDKUserMessage>>(() => undefined) }),
+    };
+    const stringEnv: Record<string, string> = {};
+    for (const [key, value] of Object.entries(this.baseEnv)) if (typeof value === "string") stringEnv[key] = value;
+    const query = this.transport.query(never, {
+      cwd,
+      permissionMode: "default",
+      env: stringEnv,
+      pathToClaudeCodeExecutable: resolveClaudeExecutable(this.settings.binaryPath, this.baseEnv),
+    });
+    try {
+      const entries = (await query.supportedCommands?.()) ?? [];
+      // "(user)" / "(project)" is the CLI's own scope suffix on custom entries.
+      const describe = (text: string): string | null => text.replace(/\s*\((user|project|local)\)$/, "").trim() || null;
+      return {
+        trigger: "/",
+        skills: entries.filter((entry) => entry.builtin !== true).map((entry) => plainSkill(entry.name, describe(entry.description))),
+        commands: entries
+          .filter((entry) => entry.builtin === true)
+          .map((entry) => ({
+            name: entry.name,
+            description: describe(entry.description),
+            argumentHint: entry.argumentHint.trim() || null,
+            builtin: true,
+          })),
+      };
+    } finally {
+      query.close?.();
+    }
+  };
+
+  /**
+   * A cursor from a previous process, if the CLI still has that session.
+   * A lost one (cleared `~/.claude`, another machine) starts fresh instead
+   * of failing the turn; so does a lookup that itself fails.
+   */
+  private async liveCursor(cursor: string | undefined): Promise<string | undefined> {
+    if (!cursor) return undefined;
+    const exists = await this.sessionApi.sessionExists(cursor).catch(() => false);
+    return exists ? cursor : undefined;
+  }
 
   private describeSession(session: ClaudeSession): ProviderSession {
     return {
@@ -420,9 +539,11 @@ export class ClaudeDriver implements ProviderAdapter<CliError> {
       if (input.interactionMode === "plan") {
         await session.query.setPermissionMode("plan");
         session.interactionMode = "plan";
+        session.planModeSource = "user";
       } else if (input.interactionMode === "default") {
         await session.query.setPermissionMode(session.basePermissionMode);
         session.interactionMode = "default";
+        session.planModeSource = null;
       }
       const turn: TranscriptTurn = {
         id: randomUUID(),
@@ -436,7 +557,7 @@ export class ClaudeDriver implements ProviderAdapter<CliError> {
       session.transcript.push(turn);
       session.turnsSinceCompaction += 1;
       session.lastActiveThreadId = session.threadId;
-      session.input.push(input.prompt);
+      session.input.push(input.prompt, input.images ?? []);
       return { threadId: session.threadId, turnId: turn.id };
     });
 
@@ -542,8 +663,19 @@ export class ClaudeDriver implements ProviderAdapter<CliError> {
     if (toolName === "AskUserQuestion") {
       return this.parkInput(session, toolName, input, callbackOptions);
     }
-    // ExitPlanMode is captured as a proposed plan, then denied so the CLI
-    // does not actually exit plan mode on our behalf.
+    // The agent may put itself into plan mode. We have to know that it did:
+    // ExitPlanMode below is denied to keep a *user's* plan from executing
+    // itself, and applying that to a self-entered plan mode leaves the
+    // agent in a mode whose only exit we refuse — it goes quiet mid-turn.
+    if (toolName === "EnterPlanMode") {
+      session.interactionMode = "plan";
+      session.planModeSource = "agent";
+      return Promise.resolve({ behavior: "allow" });
+    }
+    // ExitPlanMode is captured as a proposed plan. A plan the user asked
+    // for is then denied, so the CLI does not act on it before they have
+    // seen it; a plan mode the agent entered on its own is released, since
+    // nobody is waiting to approve it.
     if (toolName === "ExitPlanMode") {
       const plan = extractPlan(input);
       session.transcript
@@ -556,8 +688,13 @@ export class ClaudeDriver implements ProviderAdapter<CliError> {
         provider: "claude",
         threadId: session.threadId,
         turnId: session.transcript.find((turn) => turn.status === "running")?.id ?? null,
-        raw: { toolName, input },
+        raw: { toolName, input, plan },
       });
+      if (session.planModeSource === "agent") {
+        session.interactionMode = "default";
+        session.planModeSource = null;
+        return Promise.resolve({ behavior: "allow" });
+      }
       return Promise.resolve({ behavior: "deny", message: "Recorded as a proposed plan." });
     }
     if (session.sessionAllows.has(sessionAllowKey(toolName))) {
@@ -683,6 +820,25 @@ export class ClaudeDriver implements ProviderAdapter<CliError> {
       const session = this.requireSession(threadId);
       const parked = session.parkedPermissions.get(requestId);
       if (!parked || parked.threadId !== threadId) {
+        // A dismissed *question* lands here too: the panel closes a
+        // question the same way it declines a permission, and the request
+        // is still blocking `canUseTool`. Denying it releases the turn —
+        // closing only the panel would park it until the next interrupt.
+        const parkedInput = session.parkedInputs.get(requestId);
+        if (parkedInput && parkedInput.threadId === threadId) {
+          if (decision.kind !== "decline" && decision.kind !== "cancel") {
+            // Accepting is a miscall: there is no answer to accept.
+            throw new CliError("REQUEST_MISMATCH", `Request ${requestId} needs user input, not a permission decision.`, {
+              details: { threadId, requestId },
+            });
+          }
+          parkedInput.resolve({
+            behavior: "deny",
+            message: decision.kind === "cancel" ? "Cancelled." : "Declined.",
+            ...(decision.kind === "cancel" ? { interrupt: true } : {}),
+          });
+          return;
+        }
         throw new CliError("REQUEST_UNKNOWN", `No pending permission request ${requestId}.`, {
           details: { threadId, requestId },
         });
@@ -708,7 +864,10 @@ export class ClaudeDriver implements ProviderAdapter<CliError> {
           details: { threadId, requestId },
         });
       }
-      parked.resolve({ behavior: "allow", updatedInput: { answers } });
+      // `updatedInput` replaces the tool input wholesale, so the original
+      // `questions` have to ride along — an input of just `{ answers }`
+      // fails the tool's own schema and the turn dies on a valid answer.
+      parked.resolve({ behavior: "allow", updatedInput: { ...parked.input, answers } });
     });
 
   // -- message pump -------------------------------------------------------
@@ -725,7 +884,32 @@ export class ClaudeDriver implements ProviderAdapter<CliError> {
         const text = cause instanceof Error ? cause.message : String(cause);
         this.settleOpenTurn(session, "failed", text.slice(0, 500));
       }
+    } finally {
+      this.retireSession(session);
     }
+  }
+
+  /**
+   * The query is an async iterator: once it finishes — normally, by error,
+   * or because `interrupt()` ended it — no further prompt will ever be read
+   * from `session.input`. The session used to stay in the map with
+   * `closed === false`, so `hasSession` reported it live, `sendTurn` pushed
+   * into a queue nobody drained, and *every* later turn on that thread hung
+   * silently until it was interrupted. Retiring it here makes the next turn
+   * start a fresh session, resumed from `resumable` so history survives.
+   */
+  private retireSession(session: ClaudeSession): void {
+    if (this.sessions.get(session.threadId) !== session) return;
+    session.closed = true;
+    this.denyParked(session, "Session ended.");
+    session.input.close();
+    this.sessions.delete(session.threadId);
+    this.publish({
+      type: "thread.state.changed",
+      provider: "claude",
+      threadId: session.threadId,
+      state: "session-ended",
+    });
   }
 
   private handleMessage(session: ClaudeSession, message: SDKMessage): void {
@@ -753,6 +937,7 @@ export class ClaudeDriver implements ProviderAdapter<CliError> {
   private handleSystem(session: ClaudeSession, message: Extract<SDKMessage, { type: "system" }>): void {
     if (message.subtype === "init") {
       session.resumeSessionId = message.session_id;
+      if (message.session_id) this.resumable.set(session.threadId, message.session_id);
       session.model = message.model ?? session.model;
       const account = (message as unknown as { account?: ClaudeSession["account"] }).account;
       if (account) session.account = account;
@@ -866,7 +1051,19 @@ export class ClaudeDriver implements ProviderAdapter<CliError> {
       const cost = typeof message.total_cost_usd === "number" ? message.total_cost_usd : 0;
       session.usage = { ...session.usage, costUsd: cost };
       const open = session.transcript.find((turn) => turn.status === "running");
-      if (open && !open.text && typeof message.result === "string") open.text = message.result;
+      // A steer that arrived too late to fold into this run is queued as the
+      // CLI's next run, announced here; our turn is not over until it is.
+      const queued = (message as { queued_turn_count?: unknown }).queued_turn_count;
+      if (open && typeof queued === "number" && queued > 0) {
+        if (typeof message.result === "string" && message.result) open.text = message.result;
+        return;
+      }
+      // `result` is the run's final answer. The streamed text blocks also
+      // hold every interim note written between tool calls, so they only
+      // stand in when the CLI reports no result.
+      if (open && typeof message.result === "string" && message.result) {
+        open.text = message.result;
+      }
       this.publish({
         type: "token-usage.updated",
         provider: "claude",
@@ -1008,15 +1205,22 @@ export class ClaudeDriver implements ProviderAdapter<CliError> {
           details: { threadId, numTurns, boundaries: boundaries.length },
         });
       }
+      // The first prompt to drop, and the fork point just before it:
+      // `upToMessageId` is inclusive, so forking *at* the prompt kept it.
       const target = boundaries[boundaries.length - numTurns]!;
-      const forked = await this.sessionApi.forkSession(sessionId, target.uuid);
+      const keepThrough = history[history.indexOf(target) - 1];
+      // Nothing before it: the rolled-back conversation is empty, which is
+      // a fresh session rather than a fork.
+      const forked = keepThrough ? await this.sessionApi.forkSession(sessionId, keepThrough.uuid) : null;
       await this.closeSession(session, "session-forked");
+      if (forked) this.resumable.set(threadId, forked.sessionId);
+      else this.resumable.delete(threadId);
       const next: ClaudeSession = {
         ...session,
         query: undefined as unknown as ClaudeQuery,
         input: new PromptQueue(),
         closed: false,
-        resumeSessionId: forked.sessionId,
+        resumeSessionId: forked?.sessionId ?? null,
         transcript: session.transcript.slice(0, Math.max(0, session.transcript.length - numTurns)),
         waiters: new Map(),
         parkedPermissions: new Map(),
@@ -1102,4 +1306,36 @@ function extractResultError(message: Extract<SDKMessage, { type: "result" }>): s
     if (typeof value === "string" && value.trim()) return value.slice(0, 500);
   }
   return `Claude run failed (${message.subtype}).`;
+}
+
+/** `SDKControlGetContextUsageResponse` → `ContextWindowUsage`; null when it names no token count. */
+export function claudeContextUsageOf(raw: unknown): ContextWindowUsage | null {
+  const record = raw !== null && typeof raw === "object" ? (raw as Record<string, unknown>) : null;
+  if (record === null || typeof record["totalTokens"] !== "number") return null;
+  const number = (value: unknown): number | null => (typeof value === "number" && Number.isFinite(value) ? value : null);
+  const apiUsage = record["apiUsage"] !== null && typeof record["apiUsage"] === "object"
+    ? (record["apiUsage"] as Record<string, unknown>)
+    : null;
+  return {
+    usedTokens: record["totalTokens"],
+    maxTokens: number(record["maxTokens"]),
+    cachedInputTokens: apiUsage ? number(apiUsage["cache_read_input_tokens"]) : null,
+    autoCompactThreshold: number(record["autoCompactThreshold"]),
+    compactsAutomatically: typeof record["isAutoCompactEnabled"] === "boolean" ? record["isAutoCompactEnabled"] : null,
+  };
+}
+
+/**
+ * moxen's MCP servers as the SDK's `mcpServers` record. The CLI loads
+ * them alongside the user's own (`dynamic` scope), so nothing the user
+ * configured in Claude Code is displaced.
+ */
+function claudeMcpServers(servers: readonly McpServerSpec[]): Record<string, McpServerConfig> {
+  return Object.fromEntries(
+    servers.map((server): [string, McpServerConfig] =>
+      server.type === "http"
+        ? [server.name, { type: "http", url: server.url, headers: { ...server.headers } }]
+        : [server.name, { type: "stdio", command: server.command, args: [...server.args], env: { ...server.env } }],
+    ),
+  );
 }

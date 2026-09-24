@@ -1,6 +1,6 @@
 import { COLOR, SURFACE, truncate } from "../theme.js";
 import { formatBytes } from "../model/message.js";
-import type { ImageAttachmentUpload } from "../model/attachments.js";
+import type { ImageAttachmentUpload } from "../../core/attachments.js";
 
 /** Chip labels cap here so one long filename can't overflow the row. */
 const MAX_CHIP_NAME = 40;

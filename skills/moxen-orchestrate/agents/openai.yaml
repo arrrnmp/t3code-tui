@@ -1,0 +1,4 @@
+interface:
+  display_name: "Moxen orchestrator"
+  short_description: "Plan and run multi-model delegations across Moxen threads"
+  default_prompt: "Use $moxen-orchestrate to plan and run this task across the best models for each part."

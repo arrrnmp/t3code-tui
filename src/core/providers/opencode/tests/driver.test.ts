@@ -188,6 +188,23 @@ describe("opencode driver", () => {
     ).rejects.toMatchObject({ code: "REQUEST_UNKNOWN" });
   });
 
+  it("releases a parked question when it is dismissed", async () => {
+    // Dismissal used to throw REQUEST_MISMATCH, so closing the panel left
+    // the server still blocked on the question until the next interrupt.
+    const { transport, driver } = start();
+    await startSession(driver);
+    await Effect.runPromise(driver.sendTurn({ threadId: "thread-1", prompt: "hi" }));
+    await transport.servers[0]?.push({
+      type: "question.asked",
+      properties: { id: "q-9", sessionID: "opencode-session-1", questions: [{ header: "Pick" }] },
+    });
+    await waitFor("question park", () => true);
+    await Effect.runPromise(driver.respondToRequest("thread-1", "q-9", { kind: "decline" }));
+    expect(transport.servers[0]?.callsTo("question.reply")).toMatchObject([
+      { args: { requestID: "q-9", answers: [[]] } },
+    ]);
+  });
+
   it("maps decline/cancel to reject and guards mismatched kinds", async () => {
     const { transport, driver } = start();
     await startSession(driver);
@@ -197,8 +214,9 @@ describe("opencode driver", () => {
       properties: { id: "q-1", sessionID: "opencode-session-1", questions: [{ header: "Pick" }] },
     });
     await waitFor("question park", () => true);
+    // Accepting a question is a miscall — there is no answer to accept.
     await expect(
-      Effect.runPromise(driver.respondToRequest("thread-1", "q-1", { kind: "decline" })),
+      Effect.runPromise(driver.respondToRequest("thread-1", "q-1", { kind: "accept" })),
     ).rejects.toMatchObject({ code: "REQUEST_MISMATCH" });
 
     await Effect.runPromise(driver.respondToUserInput("thread-1", "q-1", { Pick: "a" }));
@@ -409,6 +427,170 @@ describe("opencode driver", () => {
     expect(outcome.text).toBe("pong");
   });
 
+  it("reads the context window the way OpenCode counts it", async () => {
+    const transport = new FakeOpencodeTransport({
+      limits: { "opencode/muse": { context: 1_048_576, output: 65_536 } },
+      messages: [
+        { info: { id: "msg_u", role: "user" }, parts: [] },
+        {
+          info: {
+            id: "msg_a",
+            role: "assistant",
+            parentID: "msg_u",
+            providerID: "opencode",
+            modelID: "muse",
+            tokens: { input: 12310, output: 11, reasoning: 6, cache: { read: 113, write: 0 } },
+          },
+          parts: [],
+        },
+      ],
+    });
+    const driver = new OpenCodeDriver({ transport, env: { OPENCODE_API_KEY: "k" } });
+    drivers.push(driver);
+    await Effect.runPromise(
+      driver.startSession({
+        threadId: "thread-1",
+        workingDirectory: "/repo",
+        modelSelection: { instanceId: "opencode", model: "opencode/muse" },
+      }),
+    );
+    const sent = await Effect.runPromise(driver.sendTurn({ threadId: "thread-1", prompt: "ping" }));
+    const outcomePromise = driver.awaitTurn("thread-1", sent.turnId);
+    await transport.servers[0]?.push({ type: "session.idle", properties: { sessionID: "opencode-session-1" } });
+    await outcomePromise;
+    // Output is not context (upstream `contextTokens`); the threshold is
+    // upstream's `usable()`: context minus min(output limit, 32k).
+    expect(await driver.contextUsage("thread-1")).toEqual({
+      usedTokens: 12310 + 113,
+      maxTokens: 1_048_576,
+      cachedInputTokens: 113,
+      autoCompactThreshold: 1_048_576 - 32_000,
+      compactsAutomatically: true,
+    });
+  });
+
+  it("steers the running turn, and settles only once the steer is answered", async () => {
+    const transport = new FakeOpencodeTransport();
+    const driver = new OpenCodeDriver({ transport, env: { OPENCODE_API_KEY: "k" } });
+    drivers.push(driver);
+    await Effect.runPromise(
+      driver.startSession({
+        threadId: "thread-1",
+        workingDirectory: "/repo",
+        modelSelection: { instanceId: "opencode", model: "opencode/muse" },
+      }),
+    );
+    const sent = await Effect.runPromise(driver.sendTurn({ threadId: "thread-1", prompt: "story" }));
+    const outcomePromise = driver.awaitTurn("thread-1", sent.turnId);
+    let settled = false;
+    void outcomePromise.then(() => {
+      settled = true;
+    });
+    await Effect.runPromise(driver.steerTurn("thread-1", "just say BANANA"));
+    const server = transport.servers[0]!;
+    const prompts = server.callsTo("session.promptAsync").map((call) => call.args as { messageID: string; parts: unknown[] });
+    expect(prompts).toHaveLength(2);
+    expect(prompts[1]!.parts).toEqual([{ type: "text", text: "just say BANANA" }]);
+    const [first, steer] = prompts.map((prompt) => prompt.messageID);
+    const part = (p: Record<string, unknown>) =>
+      server.push({ type: "message.part.updated", properties: { sessionID: "opencode-session-1", part: p } });
+    // The steer's own text echoes back; it must not become answer text.
+    await part({ id: "p-s", messageID: steer, type: "text", text: "just say BANANA" });
+    await part({ id: "p-1", messageID: "msg_a1", type: "text", text: "Once upon a time" });
+
+    // The steer landed as the loop finished: the first idle leaves it unanswered.
+    server.messages = [
+      { info: { id: first, role: "user" }, parts: [] },
+      { info: { id: "msg_a1", role: "assistant", parentID: first, time: { completed: 1 } }, parts: [] },
+      { info: { id: steer, role: "user" }, parts: [] },
+    ];
+    await server.push({ type: "session.idle", properties: { sessionID: "opencode-session-1" } });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(settled).toBe(false);
+
+    await part({ id: "p-2", messageID: "msg_a2", type: "text", text: "BANANA" });
+    server.messages = [
+      ...server.messages,
+      { info: { id: "msg_a2", role: "assistant", parentID: steer, time: { completed: 2 } }, parts: [] },
+    ];
+    await server.push({ type: "session.idle", properties: { sessionID: "opencode-session-1" } });
+    const outcome = await outcomePromise;
+    expect(outcome).toMatchObject({ status: "completed", text: "BANANA" });
+  });
+
+  it("sends runtime instructions as system, and plan mode as the read-only plan agent", async () => {
+    const transport = new FakeOpencodeTransport();
+    const driver = new OpenCodeDriver({ transport, env: { OPENCODE_API_KEY: "k" } });
+    drivers.push(driver);
+    await Effect.runPromise(
+      driver.startSession({ threadId: "thread-1", workingDirectory: "/repo", instructions: "Report back." }),
+    );
+    const sent = await Effect.runPromise(driver.sendTurn({ threadId: "thread-1", prompt: "a", interactionMode: "plan" }));
+    const server = transport.servers[0]!;
+    expect(server.callsTo("session.promptAsync")[0]!.args).toMatchObject({ system: "Report back.", agent: "plan" });
+    const outcome = driver.awaitTurn("thread-1", sent.turnId);
+    await server.push({ type: "session.idle", properties: { sessionID: "opencode-session-1" } });
+    await outcome;
+    await Effect.runPromise(driver.sendTurn({ threadId: "thread-1", prompt: "b", interactionMode: "default" }));
+    expect(server.callsTo("session.promptAsync")[1]!.args).not.toHaveProperty("agent");
+  });
+
+  it("lists skills and commands from the directory's server", async () => {
+    const transport = new FakeOpencodeTransport({
+      commands: [
+        { name: "init", description: "Create AGENTS.md", source: "command", hints: [] },
+        { name: "wait-what", description: "Explain", source: "skill", hints: [] },
+        { name: "docs", description: "MCP prompt", source: "mcp", hints: ["$1"] },
+      ],
+    });
+    const driver = new OpenCodeDriver({ transport, env: { OPENCODE_API_KEY: "k" } });
+    drivers.push(driver);
+    const inventory = await driver.skillInventory("/repo");
+    expect(transport.ensureCalls[0]!.workingDirectory).toBe("/repo");
+    expect(inventory.trigger).toBe("/");
+    expect(inventory.skills.map((skill) => skill.name)).toEqual(["wait-what"]);
+    expect(inventory.commands).toEqual([
+      { name: "init", description: "Create AGENTS.md", argumentHint: null, builtin: false },
+      { name: "docs", description: "MCP prompt", argumentHint: "$1", builtin: false },
+    ]);
+  });
+
+  it("refuses to steer when no turn is running", async () => {
+    const transport = new FakeOpencodeTransport();
+    const driver = new OpenCodeDriver({ transport, env: { OPENCODE_API_KEY: "k" } });
+    drivers.push(driver);
+    await Effect.runPromise(driver.startSession({ threadId: "thread-1", workingDirectory: "/repo" }));
+    const failure = await Effect.runPromise(Effect.flip(driver.steerTurn("thread-1", "hi")));
+    expect(failure.code).toBe("TURN_NOT_RUNNING");
+  });
+
+  it("answers with the last step's message, not the notes of earlier steps", async () => {
+    const transport = new FakeOpencodeTransport();
+    const driver = new OpenCodeDriver({ transport, env: { OPENCODE_API_KEY: "k" } });
+    drivers.push(driver);
+    await Effect.runPromise(
+      driver.startSession({
+        threadId: "thread-1",
+        workingDirectory: "/repo",
+        modelSelection: { instanceId: "opencode", model: "opencode/muse-spark-1.3-contributor-free" },
+      }),
+    );
+    const sent = await Effect.runPromise(driver.sendTurn({ threadId: "thread-1", prompt: "ping" }));
+    const outcomePromise = driver.awaitTurn("thread-1", sent.turnId);
+    const part = (part: Record<string, unknown>) =>
+      transport.servers[0]?.push({
+        type: "message.part.updated",
+        properties: { sessionID: "opencode-session-1", part },
+      });
+    await part({ id: "p-1", messageID: "msg_step1", type: "reasoning", text: "thinking hard" });
+    await part({ id: "p-2", messageID: "msg_step1", type: "text", text: "Checking the tests." });
+    await part({ id: "p-3", messageID: "msg_step1", type: "tool", tool: "read", state: { status: "completed" } });
+    await part({ id: "p-4", messageID: "msg_step2", type: "text", text: "They pass." });
+    await transport.servers[0]?.push({ type: "session.idle", properties: { sessionID: "opencode-session-1" } });
+    const outcome = await outcomePromise;
+    expect(outcome.text).toBe("They pass.");
+  });
+
   it("accepts sends for credentialed and unknown providers alike", async () => {
     const transport = new FakeOpencodeTransport();
     const driver = new OpenCodeDriver({ transport, env: { OPENCODE_API_KEY: "k" } });
@@ -452,5 +634,65 @@ describe("opencode driver", () => {
     const outcome = await driver.awaitTurn("thread-1", sent.turnId);
     expect(outcome.status).toBe("failed");
     expect(outcome.error).toContain("No response from the provider");
+  });
+});
+
+describe("opencode images", () => {
+  it("sends images as file parts carrying a data URL", async () => {
+    const transport = new FakeOpencodeTransport();
+    const driver = new OpenCodeDriver({ transport, env: { ANTHROPIC_API_KEY: "test-key" } });
+    await Effect.runPromise(
+      driver.startSession({
+        threadId: "thread-1",
+        workingDirectory: "/repo",
+        modelSelection: { instanceId: "opencode", model: "anthropic/claude-opus-4-6" },
+      }),
+    );
+    await Effect.runPromise(
+      driver.sendTurn({ threadId: "thread-1", prompt: "look", images: [{ name: "a.png", mimeType: "image/png", data: "iVBORw0KGgo=" }] }),
+    );
+    expect(transport.servers[0]?.callsTo("session.promptAsync")[0]?.args).toMatchObject({
+      parts: [
+        { type: "text", text: "look" },
+        { type: "file", mime: "image/png", filename: "a.png", url: "data:image/png;base64,iVBORw0KGgo=" },
+      ],
+    });
+    await Effect.runPromise(driver.stopAll());
+  });
+});
+const MCP = [
+  { name: "docs", type: "http" as const, url: "https://docs.example/mcp", headers: { Authorization: "Bearer t" } },
+  { name: "fs", type: "stdio" as const, command: "npx", args: ["-y", "fs-mcp"], env: { ROOT: "/" } },
+];
+
+describe("opencode MCP injection", () => {
+  it("adds each server to the directory's instance once, not once per session", async () => {
+    const transport = new FakeOpencodeTransport();
+    const driver = new OpenCodeDriver({ transport, env: { ANTHROPIC_API_KEY: "test-key" } });
+    try {
+      await Effect.runPromise(driver.startSession({ threadId: "thread-1", workingDirectory: "/repo", mcpServers: MCP }));
+      await Effect.runPromise(driver.startSession({ threadId: "thread-2", workingDirectory: "/repo", mcpServers: MCP }));
+      expect(transport.servers).toHaveLength(1);
+      expect(transport.servers[0]!.callsTo("mcp.add").map((call) => call.args)).toEqual([
+        { name: "docs", config: { type: "remote", url: "https://docs.example/mcp", headers: { Authorization: "Bearer t" } } },
+        { name: "fs", config: { type: "local", command: ["npx", "-y", "fs-mcp"], environment: { ROOT: "/" } } },
+      ]);
+    } finally {
+      await Effect.runPromise(driver.stopAll()).catch(() => undefined);
+    }
+  });
+
+  it("does not fail the session when an add fails, and retries on the next start", async () => {
+    const transport = new FakeOpencodeTransport({ failMethods: { "mcp.add": "boom" } });
+    const driver = new OpenCodeDriver({ transport, env: { ANTHROPIC_API_KEY: "test-key" } });
+    try {
+      await Effect.runPromise(driver.startSession({ threadId: "thread-1", workingDirectory: "/repo", mcpServers: MCP.slice(1) }));
+      await Effect.runPromise(driver.startSession({ threadId: "thread-2", workingDirectory: "/repo", mcpServers: MCP.slice(1) }));
+      expect(await Effect.runPromise(driver.hasSession("thread-2"))).toBe(true);
+      // Not remembered as added, so the second start tried again.
+      expect(transport.servers[0]!.callsTo("mcp.add")).toHaveLength(2);
+    } finally {
+      await Effect.runPromise(driver.stopAll()).catch(() => undefined);
+    }
   });
 });

@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { CliError } from "./errors.js";
+import { parseMcpServers, type McpServerEntry } from "./mcp.js";
 import type {
   CliConfig,
   InteractionMode,
@@ -50,6 +51,7 @@ export const CONFIG_KEYS = [
   "speedMode",
   "thinkingEffort",
   "sessionTtl",
+  "instructions",
 ] as const;
 export type ConfigKey = (typeof CONFIG_KEYS)[number];
 
@@ -61,19 +63,34 @@ export function expandHome(value: string): string {
   return value;
 }
 
+/**
+ * The product's name on every surface that persists it: the home and
+ * config directories, the env prefix, the project file and the git ref
+ * namespace. One constant, so the name lives in exactly one place.
+ */
+export const APP_NAME = "moxen";
+
+/** `MOXEN_<name>` from the environment. */
+export function appEnv(name: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
+  return env[`MOXEN_${name}`];
+}
+
+/** `~/.moxen` — threads, caches, attachments. */
+export function appHomeDir(home: string = os.homedir()): string {
+  return path.join(home, `.${APP_NAME}`);
+}
+
+function configRoot(): string {
+  if (process.platform === "win32" && process.env.APPDATA) return process.env.APPDATA;
+  return process.env.XDG_CONFIG_HOME
+    ? path.resolve(expandHome(process.env.XDG_CONFIG_HOME))
+    : path.join(os.homedir(), ".config");
+}
+
 export function defaultConfigPath(): string {
-  const override = process.env.MONVEX_CONFIG;
+  const override = appEnv("CONFIG");
   if (override) return path.resolve(expandHome(override));
-  const dir = (name: string): string => {
-    if (process.platform === "win32" && process.env.APPDATA) {
-      return path.join(process.env.APPDATA, name, "config.json");
-    }
-    const root = process.env.XDG_CONFIG_HOME
-      ? path.resolve(expandHome(process.env.XDG_CONFIG_HOME))
-      : path.join(os.homedir(), ".config");
-    return path.join(root, name, "config.json");
-  };
-  return dir("monvex");
+  return path.join(configRoot(), APP_NAME, "config.json");
 }
 
 function asString(value: unknown, key: string): string {
@@ -131,11 +148,19 @@ export function normalizeConfig(raw: unknown): CliConfig {
     result.thinkingEffort = asString(input.thinkingEffort, "thinkingEffort");
   }
   if (input.sessionTtl !== undefined) result.sessionTtl = asString(input.sessionTtl, "sessionTtl");
+  if (input.instructions !== undefined) {
+    const value = asString(input.instructions, "instructions").trim();
+    if (value) result.instructions = value;
+  }
+  if (input.mcpServers !== undefined) {
+    const servers = parseMcpServers(input.mcpServers, "config") as Record<string, McpServerEntry>;
+    if (Object.keys(servers).length > 0) result.mcpServers = servers;
+  }
   return applyEnvironmentOverrides(result);
 }
 
 function envOverride(name: string): string | undefined {
-  return process.env[`MONVEX_${name}`];
+  return appEnv(name);
 }
 
 function applyEnvironmentOverrides(config: CliConfig): CliConfig {

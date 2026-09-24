@@ -131,6 +131,9 @@ export type ActivityView =
   | ToolView
   | NoteView;
 
+/** Tool verbs rendered as a `$ <shell>` command card. */
+const SHELL_TOOLS: ReadonlySet<string> = new Set(["bash", "shell", "exec", "powershell", "pwsh"]);
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -362,7 +365,7 @@ function buildFileDiff(
  * dedicated view above and never reach this table.
  */
 const FRIENDLY_TOOL_TITLES: Record<string, string> = {
-  toolsearch: "Searching for tool",
+  toolsearch: "Searching for tools",
   notebookedit: "Editing notebook",
   bashoutput: "Checking background output",
   killshell: "Stopping background shell",
@@ -386,6 +389,34 @@ const FRIENDLY_TOOL_TITLES: Record<string, string> = {
   taskoutput: "Checking task output",
   taskstop: "Stopping task",
 };
+
+/**
+ * `ToolSearch` rows used to print their query verbatim, so loading two
+ * tools by name read as `Searching for tool / select:EnterPlanMode,ExitPlanMode`
+ * — wire syntax in the transcript. The query has three documented forms and
+ * each says something different: `select:A,B` names tools outright (nothing
+ * is being *searched*), a leading `+term` pins a required word, and anything
+ * else is a keyword search.
+ */
+function toolSearchView(input: Record<string, unknown>, running: boolean): ActivityView {
+  const query = (asString(input.query) ?? "").trim();
+  if (query.length === 0) return { kind: "tool", tool: "Searching for tools", detail: "", running };
+  if (query.toLowerCase().startsWith("select:")) {
+    const names = query
+      .slice("select:".length)
+      .split(",")
+      .map((name) => name.trim())
+      .filter((name) => name.length > 0);
+    if (names.length > 0) {
+      return { kind: "tool", tool: running ? "Loading tools" : "Loaded tools", detail: names.join(", "), running };
+    }
+  }
+  const terms = query
+    .split(/\s+/)
+    .map((term) => (term.startsWith("+") ? term.slice(1) : term))
+    .filter((term) => term.length > 0);
+  return { kind: "tool", tool: "Searching for tools", detail: terms.join(" ") || query, running };
+}
 
 /** `mcp__linear__create_issue` → `linear: create_issue` — the raw
     double-underscore server/tool encoding reads poorly verbatim. */
@@ -540,7 +571,7 @@ export function describeActivity(activity: ActivityEnvelope): ActivityView {
     // `command_execution` branch above, so without this they fall into the
     // generic raw tool fallback. Map them to the same `$ bash` command view
     // the timeline already renders.
-    if (short === "bash" || short === "shell" || short === "exec") {
+    if (SHELL_TOOLS.has(short)) {
       return {
         kind: "command",
         tool: short,
@@ -611,7 +642,7 @@ export function describeActivity(activity: ActivityEnvelope): ActivityView {
             running,
           };
         }
-        if (titled === "bash" || titled === "shell" || titled === "exec") {
+        if (SHELL_TOOLS.has(titled)) {
           return {
             kind: "command",
             tool: titled,
@@ -675,6 +706,7 @@ export function describeActivity(activity: ActivityEnvelope): ActivityView {
     // whose raw `Name: {json}` echo would only dump wire JSON under it.
     const fallbackName = asString(input.name) ?? title;
     const fallbackTool = display === "tool" ? fallbackName : display;
+    if (fallbackTool.toLowerCase() === "toolsearch") return toolSearchView(input, running);
     const friendlyTitle = friendlyToolTitle(fallbackTool);
     const fallbackDetail =
       summarizeInput(input) || (friendlyTitle === fallbackTool ? (asString(payload.detail) ?? "") : "");

@@ -35,7 +35,7 @@ function git(cwd: string, args: string[]): void {
 }
 
 async function initRepo(): Promise<string> {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "monvex-checkpoints-"));
+  const dir = await mkdtemp(path.join(os.tmpdir(), "moxen-checkpoints-"));
   cleanup.push(() => rm(dir, { recursive: true, force: true }));
   git(dir, ["init"]);
   git(dir, ["config", "user.email", "test@example.com"]);
@@ -53,9 +53,9 @@ async function initRepo(): Promise<string> {
 
 describe("checkpointRef", () => {
   it("namespaces and sanitizes thread/turn ids", () => {
-    expect(checkpointRef("thread-1", "turn-1")).toBe("refs/monvex/checkpoints/thread-1/turn-1/post");
-    expect(checkpointRef("thread-1", "turn-1", "pre")).toBe("refs/monvex/checkpoints/thread-1/turn-1/pre");
-    expect(checkpointRef("a/b", "c d")).toBe("refs/monvex/checkpoints/a-b/c-d/post");
+    expect(checkpointRef("thread-1", "turn-1")).toBe("refs/moxen/checkpoints/thread-1/turn-1/post");
+    expect(checkpointRef("thread-1", "turn-1", "pre")).toBe("refs/moxen/checkpoints/thread-1/turn-1/pre");
+    expect(checkpointRef("a/b", "c d")).toBe("refs/moxen/checkpoints/a-b/c-d/post");
   });
 });
 
@@ -86,7 +86,7 @@ describe.runIf(GIT_AVAILABLE)("git checkpoints", () => {
 
     await pinCheckpointRef("thread-1", "turn-2", post!, dir, "post");
     await pruneCheckpointRefs(dir, "thread-1", ["turn-2"]);
-    const refs = spawnSync("git", ["for-each-ref", "--format=%(refname)", "refs/monvex/checkpoints/"], {
+    const refs = spawnSync("git", ["for-each-ref", "--format=%(refname)", "refs/moxen/checkpoints/"], {
       cwd: dir,
       encoding: "utf8",
     }).stdout;
@@ -95,7 +95,7 @@ describe.runIf(GIT_AVAILABLE)("git checkpoints", () => {
   });
 
   it("returns null outside git repos", async () => {
-    const dir = await mkdtemp(path.join(os.tmpdir(), "monvex-nogit-"));
+    const dir = await mkdtemp(path.join(os.tmpdir(), "moxen-nogit-"));
     cleanup.push(() => rm(dir, { recursive: true, force: true }));
     expect(await captureWorktree(dir, "msg")).toBeNull();
     expect(await diffCheckpointRange(dir, "a", "b")).toBeNull();

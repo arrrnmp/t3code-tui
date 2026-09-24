@@ -12,14 +12,16 @@
 import { appendFile, mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 
+import { appEnv, appHomeDir } from "../config.js";
 import { CliError } from "../errors.js";
 import type { EventBus } from "../events/bus.js";
 import type { BackendEvent } from "../events/bus.js";
+import { decodeDataUrl, imageExtension, type ImageAttachmentUpload } from "../attachments.js";
 import type {
   StoredActivity,
+  StoredAttachment,
   StoredCheckpoint,
   StoredDelegation,
   StoredMessage,
@@ -35,9 +37,9 @@ export interface ThreadStoreOptions {
 
 /** Home of the JSONL thread store + the projects registry. */
 export function resolveStoreRoot(env: NodeJS.ProcessEnv = process.env): string {
-  const raw = env.MONVEX_STORE_ROOT?.trim();
+  const raw = appEnv("STORE_ROOT", env)?.trim();
   if (raw) return path.resolve(raw);
-  return path.join(os.homedir(), ".monvex", "threads");
+  return path.join(appHomeDir(), "threads");
 }
 
 type LedgerName = "turns" | "messages" | "activity" | "checkpoints";
@@ -110,6 +112,11 @@ export class ThreadStore {
     this.aborts.set(turnId, abort);
   }
 
+  /** Whether a run in this process owns the turn. */
+  isTracked(turnId: string): boolean {
+    return this.aborts.has(turnId);
+  }
+
   untrackRunning(turnId: string): void {
     this.aborts.delete(turnId);
   }
@@ -176,6 +183,38 @@ export class ThreadStore {
       .split("\n")
       .filter((line) => line.trim().length > 0)
       .map((line) => parseLedgerLine<T>(line, file));
+  }
+
+  /**
+   * Save an image sent with a message and describe it. Bytes live under
+   * the store root, beside the ledgers that reference them, so a queued
+   * turn — possibly run by another process — can still send them, and the
+   * transcript can show them.
+   */
+  async saveAttachment(upload: ImageAttachmentUpload): Promise<StoredAttachment> {
+    const decoded = decodeDataUrl(upload.dataUrl);
+    if (!decoded) {
+      throw new CliError("ATTACHMENT_INVALID", `${upload.name} is not a base64 data URL.`, {
+        exitCode: 2,
+        details: { name: upload.name },
+      });
+    }
+    const id = this.newId();
+    const dir = path.join(this.root, "attachments");
+    await mkdir(dir, { recursive: true });
+    const file = path.join(dir, `${id}${imageExtension(decoded.mimeType)}`);
+    const bytes = Buffer.from(decoded.data, "base64");
+    await writeFile(file, bytes);
+    return { type: "image", id, name: upload.name, mimeType: decoded.mimeType, sizeBytes: bytes.length, path: file };
+  }
+
+  /** Replace a ledger wholesale (tmp file + rename). Caller holds the thread lock. */
+  async rewriteLedger(threadId: string, name: LedgerName, rows: readonly unknown[]): Promise<void> {
+    await mkdir(this.threadDir(threadId), { recursive: true });
+    const file = ledgerFile(this.root, threadId, name);
+    const tmp = `${file}.tmp.${process.pid}.${this.newId()}`;
+    await writeFile(tmp, rows.map((row) => `${JSON.stringify(row)}\n`).join(""), "utf8");
+    await rename(tmp, file);
   }
 
   async appendLedger(threadId: string, name: LedgerName, row: unknown): Promise<void> {

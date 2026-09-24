@@ -1,0 +1,11 @@
+{
+  "ok": false,
+  "error": {
+    "code": "TASK_NOT_FOUND",
+    "message": "No delegated task exists with id no-such-task for thread thread-existing.",
+    "details": {
+      "taskId": "no-such-task",
+      "parentThreadId": "thread-existing"
+    }
+  }
+}

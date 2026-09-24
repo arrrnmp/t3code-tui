@@ -4,8 +4,11 @@
  * `auto→auto`, `full-access→bypassPermissions` (+
  * `allowDangerouslySkipPermissions`); `approval-required` stays `default`.
  * Launch-arg permission flags fold into the mode rather than passing
- * through. `AskUserQuestion` always surfaces; `ExitPlanMode` is captured
- * as a proposed plan then denied.
+ * through. `AskUserQuestion` always surfaces. Plan mode is tracked by who
+ * entered it: a plan the *user* asked for is captured and `ExitPlanMode`
+ * denied, so the plan reaches them instead of running itself; a plan the
+ * *agent* entered via `EnterPlanMode` is captured and then allowed to
+ * exit, or the agent is trapped in a mode it cannot leave.
  */
 import type { PermissionMode } from "@anthropic-ai/claude-agent-sdk";
 
@@ -13,6 +16,7 @@ import type { RuntimeMode } from "../../types.js";
 
 export type ToolClassification =
   | "question"
+  | "plan-enter"
   | "plan-exit"
   | "file-read"
   | "file-change"
@@ -36,6 +40,7 @@ const COMMAND_TOOLS: ReadonlySet<string> = new Set(["Bash", "BashOutput", "KillS
 
 export function classifyToolUse(toolName: string): ToolClassification {
   if (toolName === "AskUserQuestion") return "question";
+  if (toolName === "EnterPlanMode") return "plan-enter";
   if (toolName === "ExitPlanMode") return "plan-exit";
   if (FILE_READ_TOOLS.has(toolName)) return "file-read";
   if (FILE_CHANGE_TOOLS.has(toolName)) return "file-change";

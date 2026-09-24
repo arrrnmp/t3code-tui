@@ -104,7 +104,7 @@ export function useThreadOps(params: {
     const id = openThreadId;
     const fallback = activeThreadIds.find((threadId) => threadId !== id) ?? null;
     void client
-      .dispatch({ type: "thread.delete", commandId: crypto.randomUUID(), threadId: id })
+      .dispatch({ type: "thread.delete", threadId: id })
       .then(() => {
         toasts.push("thread-deleted", "info", "Thread deleted", COPY_TOAST_MS);
         closePicker("chat");
@@ -138,8 +138,8 @@ export function useThreadOps(params: {
     const id = openThreadId;
     const settled = threadStatus(selected, Date.now()) === "settled";
     const command = settled
-      ? { type: "thread.unsettle", commandId: crypto.randomUUID(), threadId: id, reason: "user" as const }
-      : { type: "thread.settle", commandId: crypto.randomUUID(), threadId: id };
+      ? ({ type: "thread.unsettle", threadId: id, reason: "user" } as const)
+      : ({ type: "thread.settle", threadId: id } as const);
     void client
       .dispatch(command)
       .then(() => {
@@ -169,7 +169,7 @@ export function useThreadOps(params: {
     }
     const id = openThreadId;
     void client
-      .dispatch({ type: "thread.meta.update", commandId: crypto.randomUUID(), threadId: id, regenerateTitle: true })
+      .dispatch({ type: "thread.meta.update", threadId: id, regenerateTitle: true })
       .then(() => {
         toasts.push("thread-regenerate-title", "info", "Regenerating title", COPY_TOAST_MS);
         closePicker(paletteReturnFocus);
@@ -195,7 +195,7 @@ export function useThreadOps(params: {
     const id = openThreadId;
     const fallback = activeThreadIds.find((threadId) => threadId !== id) ?? null;
     void client
-      .dispatch({ type: "thread.archive", commandId: crypto.randomUUID(), threadId: id })
+      .dispatch({ type: "thread.archive", threadId: id })
       .then(() => {
         toasts.push("thread-archived", "info", "Thread archived", COPY_TOAST_MS);
         closePicker("chat");
@@ -229,12 +229,8 @@ export function useThreadOps(params: {
     void client
       .dispatch({
         type: "thread.turn.start",
-        commandId: crypto.randomUUID(),
         threadId: thread.id,
-        message: { messageId: crypto.randomUUID(), role: "user", text: "/compact", attachments: [] },
-        runtimeMode: thread.runtimeMode ?? "full-access",
-        interactionMode: thread.interactionMode ?? "default",
-        createdAt: new Date().toISOString(),
+        message: { text: "/compact" },
       })
       .then(onDispatched)
       .catch((cause: unknown) => setError(String(cause).slice(0, 120)));
@@ -289,10 +285,8 @@ export function useThreadOps(params: {
     void client
       .dispatch({
         type: "thread.conversation.revert",
-        commandId: crypto.randomUUID(),
         threadId: id,
         turnCount: targetTurnCount,
-        createdAt: new Date().toISOString(),
       })
       .then(() => {
         toasts.push("message-reverted", "info", "Turn reverted", COPY_TOAST_MS);
@@ -319,7 +313,7 @@ export function useThreadOps(params: {
     closePicker(paletteReturnFocus);
     if (id === null || trimmed.length === 0 || trimmed === current) return;
     void client
-      .dispatch({ type: "thread.meta.update", commandId: crypto.randomUUID(), threadId: id, title: trimmed })
+      .dispatch({ type: "thread.meta.update", threadId: id, title: trimmed })
       .catch((cause: unknown) => setError(String(cause).slice(0, 120)));
   };
 

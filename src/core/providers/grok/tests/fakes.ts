@@ -17,11 +17,21 @@ export interface FakeAcpScript {
   readonly sessionId?: string;
   readonly models?: FakeAcpModels | null;
   readonly prompt?: (params: unknown) => Promise<{ stopReason: string; usage?: Record<string, unknown> }>;
+  /** Advertise `agentCapabilities.loadSession` and serve `session/load`. */
+  readonly loadSession?: boolean;
+  /** Advertise `agentCapabilities.promptCapabilities.image`. */
+  readonly images?: boolean;
+  /** Advertise `agentCapabilities.mcpCapabilities.http`. */
+  readonly mcpHttp?: boolean;
+  /** Session ids `session/load` no longer knows. */
+  readonly lostSessions?: readonly string[];
 }
 
 export interface FakePromptResponse {
   readonly stopReason: string;
   readonly usage?: Record<string, unknown>;
+  /** Grok puts the prompt's usage here (`_meta.usage`), not in `usage`. */
+  readonly _meta?: Record<string, unknown>;
 }
 
 export class FakeAcpServer {
@@ -50,10 +60,27 @@ export class FakeAcpServer {
   }
 
   private answer(method: string, params: unknown): unknown {
-    void params;
     switch (method) {
       case "initialize":
-        return { protocolVersion: 1, agentCapabilities: {}, _meta: this.script.initializeMeta ?? null };
+        return {
+          protocolVersion: 1,
+          agentCapabilities: {
+            ...(this.script.loadSession ? { loadSession: true } : {}),
+            ...(this.script.images ? { promptCapabilities: { image: true } } : {}),
+            ...(this.script.mcpHttp ? { mcpCapabilities: { http: true } } : {}),
+          },
+          _meta: this.script.initializeMeta ?? null,
+        };
+      case "session/load": {
+        const sessionId = (params as { sessionId?: string } | null)?.sessionId ?? "";
+        if (this.script.lostSessions?.includes(sessionId)) throw new Error(`unknown session ${sessionId}`);
+        // Per ACP, the agent replays the conversation before answering.
+        this.update(sessionId, {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "replayed reply" },
+        });
+        return { models: null };
+      }
       case "session/new": {
         const models = this.script.models;
         return {
@@ -82,6 +109,11 @@ export class FakeAcpServer {
 
   update(sessionId: string, update: Record<string, unknown>): void {
     this.peer.notify("session/update", { sessionId, update });
+  }
+
+  /** A raw notification, e.g. Grok's `_x.ai/*` extensions. */
+  notify(method: string, params: Record<string, unknown>): void {
+    this.peer.notify(method, params);
   }
 
   askPermission(

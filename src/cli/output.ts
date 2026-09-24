@@ -30,7 +30,7 @@ export function writeError(error: unknown, options: OutputOptions): CliError {
       )}\n`,
     );
   } else {
-    process.stderr.write(`mvx: ${cliError.message}\n`);
+    process.stderr.write(`moxen: ${cliError.message}\n`);
   }
   return cliError;
 }

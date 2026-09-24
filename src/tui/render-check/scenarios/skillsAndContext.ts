@@ -2,6 +2,7 @@ import { act } from "react";
 import type { TestRendererSetup } from "@opentui/core/testing";
 
 import { emitLiveRef } from "../fixtures.js";
+import { fail } from "../helpers.js";
 
 /** The `$` skill mention popup, and the context-usage footer segment /
     card triggered by a live provider-thread.updated event. */
@@ -13,7 +14,11 @@ export async function runSkillsAndContext(setup: TestRendererSetup): Promise<voi
   await act(async () => setup.mockInput.pressKey("$"));
   await setup.flush();
   console.log("--- skill picker (unfiltered — names must stay full-width even with long descriptions) ---");
-  console.log(setup.captureCharFrame());
+  const unfiltered = setup.captureCharFrame();
+  console.log(unfiltered);
+  // Skills come from the provider's own inventory (`skills.list`).
+  if (!unfiltered.includes("xlsx")) fail("skill picker is empty: the provider's inventory never reached it");
+  if (unfiltered.includes("agent-only-skill")) fail("skill picker offers an agent-only skill");
   for (const char of ["p", "d"]) {
     await act(async () => setup.mockInput.pressKey(char));
     await setup.flush();
@@ -26,7 +31,10 @@ export async function runSkillsAndContext(setup: TestRendererSetup): Promise<voi
   await act(async () => setup.mockInput.pressEnter());
   await setup.flush();
   console.log("--- skill inserted ---");
-  console.log(setup.captureCharFrame());
+  const inserted = setup.captureCharFrame();
+  console.log(inserted);
+  // Claude runs a skill as `/name`, not Codex's `$name`.
+  if (!inserted.includes("/pdf")) fail("picked skill was not inserted with Claude's / prefix");
 
   // A live provider-thread.updated event (Claude Code only, per the driver)
   // carries `contextUsage` and surfaces the context-window footer segment.

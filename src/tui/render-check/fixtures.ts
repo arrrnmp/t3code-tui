@@ -1,5 +1,9 @@
 import { App } from "../app/app.js";
-import type { ClientApi } from "../../server/api.js";
+import type { ClientApi, ShellFrame, ThreadFrame } from "../../server/api.js";
+import {
+  userInputActivityRow,
+  type UserInputRuntimeEvent,
+} from "../../core/threads/requestactivity.js";
 
 export { App };
 
@@ -42,7 +46,7 @@ const shellFrames = [
     snapshot: {
       snapshotSequence: 10,
       projects: [
-        { id: "p-cli", title: "monvex", workspaceRoot: "C:\\repo" },
+        { id: "p-cli", title: "moxen", workspaceRoot: "C:\\repo" },
         { id: "p-xash", title: "Xash3D RT Streamline", workspaceRoot: "C:\\xash" },
         { id: "p-vibe", title: "vibecheck", workspaceRoot: "C:\\vibe" },
       ],
@@ -81,7 +85,7 @@ const threadFrames = [
           {
             id: "m1",
             role: "user",
-            text: "Render **markdown**, plus diffs and commands ![image.png](monvex-context://v1/image/image_abc)",
+            text: "Render **markdown**, plus diffs and commands ![image.png](moxen-context://v1/image/image_abc)",
             context: {
               version: 1,
               records: [
@@ -432,7 +436,7 @@ const threadFrames = [
               status: "completed",
               title: "src/tui",
               detail:
-                "<path>/Users/aaron/Documents/monvex/src/tui</path>\n<type>directory</type>\n<entries>\napp.tsx",
+                "<path>/Users/aaron/Documents/moxen/src/tui</path>\n<type>directory</type>\n<entries>\napp.tsx",
               data: {},
             },
           },
@@ -506,6 +510,31 @@ const threadFrames = [
               },
             },
           },
+          // Claude's PowerShell tool, as core writes it: must render as a
+          // command card highlighted with the vendored powershell grammar.
+          {
+            id: "a-cmd-pwsh",
+            tone: "tool",
+            kind: "tool.completed",
+            summary: "$ Get-ChildItem",
+            turnId: "turn-2",
+            createdAt: ago(10_000),
+            payload: {
+              itemType: "command_execution",
+              toolCallId: "toolu_pwsh",
+              status: "completed",
+              title: "PowerShell",
+              detail: "",
+              data: {
+                tool: "PowerShell",
+                state: {
+                  status: "completed",
+                  input: { command: "Get-ChildItem -Recurse $env:TEMP | Select-Object -First 5" },
+                  output: "",
+                },
+              },
+            },
+          },
         ],
       },
     },
@@ -515,6 +544,29 @@ const threadFrames = [
   // send it too or the harness would sit on the loading screen forever.
   { kind: "synchronized" },
 ];
+
+/** Claude's `skills.list` answer: invoked as `/name`. */
+const CLAUDE_SKILLS = {
+  trigger: "/",
+  commands: [],
+  skills: [
+    // A long description that would crowd out a short name if the
+    // row ever budgeted width to the description first.
+    {
+      name: "do",
+      description: null,
+      displayName: null,
+      shortDescription:
+        "Use this skill whenever the user wants to create, read, edit, or manipulate Word documents (.docx files). Triggers include: any mention of a report or memo.",
+      enabled: true,
+      userInvocationOnly: false,
+      userInvocable: true,
+    },
+    { name: "pdf", description: null, displayName: null, shortDescription: "Read, edit, and create PDF files.", enabled: true, userInvocationOnly: false, userInvocable: true },
+    { name: "xlsx", description: null, displayName: null, shortDescription: "Spreadsheet tools.", enabled: true, userInvocationOnly: false, userInvocable: true },
+    { name: "agent-only-skill", description: null, displayName: null, shortDescription: null, enabled: true, userInvocationOnly: false, userInvocable: false },
+  ],
+};
 
 /**
  * Late live frames, fired on demand: the mock subscription stashes its
@@ -535,8 +587,41 @@ export function originalShellSnapshot(): unknown {
   return structuredClone(shellFrames[0]);
 }
 
-/** A `user-input.requested` activity frame for the answer-flow steps. */
+/**
+ * A `user-input.requested` activity frame for the answer-flow steps, built
+ * by the *real* writer rather than hand-rolled.
+ *
+ * It used to be hand-rolled, which is how the panel shipped unreachable:
+ * the frame reproduced what the deleted server path used to send, so every
+ * answer scenario stayed green while nothing in the tree emitted that row
+ * any more and a live question parked the turn forever. Going through
+ * `userInputActivityRow` means these steps fail if the writer stops
+ * producing what the panel reads.
+ */
 export function userInputRequestedFrame(requestId: string): unknown {
+  const row = userInputActivityRow({
+    type: "user-input.request.opened",
+    provider: "claude",
+    threadId: "thread-1",
+    requestId,
+    raw: {
+      toolName: "AskUserQuestion",
+      input: {
+        questions: [
+          {
+            header: "Direction",
+            question: "Which direction?",
+            multiSelect: false,
+            options: [
+              { label: "Forward", description: "keep going" },
+              { label: "Sideways", description: "take a detour" },
+            ],
+          },
+        ],
+      },
+    },
+  } as UserInputRuntimeEvent);
+  if (row === null) throw new Error("userInputActivityRow rejected the answer-flow fixture");
   return {
     kind: "event",
     event: {
@@ -544,26 +629,12 @@ export function userInputRequestedFrame(requestId: string): unknown {
       payload: {
         activity: {
           id: "aq-live-1",
-          kind: "user-input.requested",
+          kind: row.kind,
           tone: "info",
-          summary: "User input requested",
+          summary: row.summary,
           turnId: "turn-2",
           createdAt: new Date().toISOString(),
-          payload: {
-            requestId,
-            questions: [
-              {
-                id: "q-live-1",
-                header: "Direction",
-                question: "Which direction?",
-                multiSelect: false,
-                options: [
-                  { label: "Forward", description: "keep going" },
-                  { label: "Sideways", description: "take a detour", value: "side" },
-                ],
-              },
-            ],
-          },
+          payload: row.payload,
         },
       },
     },
@@ -572,8 +643,11 @@ export function userInputRequestedFrame(requestId: string): unknown {
 
 export const client: ClientApi = {
   subscribeShell(_options, onItem) {
-    for (const frame of shellFrames) onItem(frame);
-    emitShellRef.current = (item: unknown) => onItem(item);
+    // The fixtures send loose and legacy frame shapes on purpose — they
+    // exercise the TUI's tolerant decoder — so they are cast once here, at
+    // the mock boundary, rather than made to match the server's types.
+    for (const frame of shellFrames) onItem(frame as ShellFrame);
+    emitShellRef.current = (item: unknown) => onItem(item as ShellFrame);
     return () => {
       emitShellRef.current = null;
     };
@@ -599,15 +673,22 @@ export const client: ClientApi = {
               },
             };
           });
-    for (const frame of frames) onItem(frame);
-    emitLiveRef.current = (item: unknown) => onItem(item);
+    for (const frame of frames) onItem(frame as ThreadFrame);
+    emitLiveRef.current = (item: unknown) => onItem(item as ThreadFrame);
     return () => {
       emitLiveRef.current = null;
     };
   },
-  async dispatch() {
-    return null;
-  },
+  // Accepts everything; scenarios assert on what renders, not on results.
+  dispatch: (async () => ({ accepted: true })) as unknown as ClientApi["dispatch"],
+  // The TUI reads through its subscriptions; the one query it makes is the
+  // composer's skill inventory for the open thread's provider.
+  query: (async (query: { type: string; instanceId?: string }) => {
+    if (query.type === "skills.list") {
+      return query.instanceId === "claudeAgent" ? CLAUDE_SKILLS : { trigger: "/", skills: [], commands: [] };
+    }
+    throw new Error(`render-check client does not serve ${query.type}`);
+  }) as unknown as ClientApi["query"],
   async getConfig() {
     return {
       // Hidden-model preference: `claude-old` stays dispatchable but must
@@ -626,19 +707,7 @@ export const client: ClientApi = {
             { slug: "claude-opus-5", name: "Claude Opus 5", isCustom: false, isDefault: true },
             { slug: "claude-old", name: "Claude Old", isCustom: false },
           ],
-          skills: [
-            // A long description that would crowd out a short name if the
-            // row ever budgeted width to the description first.
-            {
-              name: "do",
-              shortDescription:
-                "Use this skill whenever the user wants to create, read, edit, or manipulate Word documents (.docx files). Triggers include: any mention of a report or memo.",
-              enabled: true,
-            },
-            { name: "pdf", shortDescription: "Read, edit, and create PDF files.", enabled: true },
-            { name: "xlsx", shortDescription: "Spreadsheet tools.", enabled: true },
-            { name: "agent-only-skill", enabled: true, userInvocable: false },
-          ],
+          skills: [],
         },
         // Disabled instance that still reports models over getConfig (the
         // fresh-install case from the issue): the picker must hide it, since

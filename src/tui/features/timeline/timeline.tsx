@@ -68,10 +68,9 @@ function syntaxStyle(): SyntaxStyle {
   return cachedSyntaxStyle;
 }
 
-/** OpenTUI ships a `powershell` grammar (`.ps1`/`.psm1`) alongside `bash`
-    (which also covers zsh/ksh/sh/git-bash) but nothing batch-specific, so a
-    Windows `cmd.exe` row still gets the closest approximation rather than
-    the previous plain, unhighlighted text. */
+/** PowerShell rows use the vendored `powershell` grammar
+    (`parsers-config.json`); everything else gets `bash`, which also covers
+    zsh/ksh/sh/git-bash and is the closest approximation for `cmd.exe`. */
 function commandFiletype(tool: string): string {
   return /powershell|pwsh/i.test(tool) ? "powershell" : "bash";
 }
@@ -1027,8 +1026,7 @@ export function Timeline({
   groups,
   title,
   subtitle,
-  model,
-  modelColor,
+  modelForTurn,
   homeDir,
   expandedTurn,
   expandedWork,
@@ -1049,8 +1047,9 @@ export function Timeline({
   groups: TurnGroup[];
   title: string;
   subtitle: string;
-  model: string;
-  modelColor?: string | null | undefined;
+  /** The model that ran a given turn — each turn keeps its own, so a
+      mid-thread model switch never relabels earlier replies. */
+  modelForTurn: (turnId: string | null) => { name: string; color: string | null };
   homeDir: string | undefined;
   expandedTurn: number | null;
   expandedWork: ReadonlySet<string>;
@@ -1157,12 +1156,13 @@ export function Timeline({
           // Checkpoint hunks win wherever present (loaded-empty included):
           // the working tree may already hold later turns' edits.
           const checkpointFiles = diffTurnCount === undefined ? undefined : turnFileDiffs.get(diffTurnCount);
+          const turnModel = modelForTurn(group.turnId);
           return (
             <TurnBlock
               key={group.id}
               group={group}
-              model={model}
-              modelColor={modelColor}
+              model={turnModel.name}
+              modelColor={turnModel.color}
               homeDir={homeDir}
               open={open}
               now={now}

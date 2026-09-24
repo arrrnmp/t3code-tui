@@ -6,9 +6,11 @@
  */
 import {
   forkSession as sdkForkSession,
+  getSessionInfo as sdkGetSessionInfo,
   getSessionMessages as sdkGetSessionMessages,
   query as sdkQuery,
   type CanUseTool,
+  type McpServerConfig,
   type PermissionMode,
   type SDKMessage,
   type SDKUserMessage,
@@ -21,6 +23,9 @@ export interface ClaudeQueryOptions {
   readonly permissionMode: PermissionMode;
   readonly allowDangerouslySkipPermissions?: boolean;
   readonly resume?: string;
+  readonly mcpServers?: Record<string, McpServerConfig>;
+  /** Claude Code's own prompt with moxen's runtime instructions appended. */
+  readonly systemPrompt?: { readonly type: "preset"; readonly preset: "claude_code"; readonly append?: string };
   readonly env?: Record<string, string>;
   readonly pathToClaudeCodeExecutable?: string;
   readonly canUseTool?: CanUseTool;
@@ -33,6 +38,12 @@ export interface ClaudeQuery extends AsyncIterable<SDKMessage> {
   setPermissionMode(mode: PermissionMode): Promise<void>;
   setModel(model?: string): Promise<void>;
   usageExperimental?(options?: { skipBehaviors?: boolean }): Promise<unknown>;
+  /** What `/context` reports; `summary` answers from the last response without extra API calls. */
+  getContextUsage?(options?: { detail?: "summary" | "full" }): Promise<unknown>;
+  /** Every command and skill the CLI resolved for this session's cwd. */
+  supportedCommands?(): Promise<ReadonlyArray<{ name: string; description: string; argumentHint: string; builtin?: boolean }>>;
+  /** End the CLI process. */
+  close?(): void;
 }
 
 export interface ClaudeTransport {
@@ -68,6 +79,11 @@ export class SdkTransport implements ClaudeTransport {
       interrupt: () => sdk.interrupt(),
       setPermissionMode: (mode) => sdk.setPermissionMode(mode),
       setModel: (model) => sdk.setModel(model),
+      // Without this the driver's `contextUsage` found no method and every
+      // Claude context reading came back null.
+      getContextUsage: (contextOptions) => sdk.getContextUsage(contextOptions),
+      supportedCommands: () => sdk.supportedCommands(),
+      close: () => sdk.close(),
       ...(usageExperimental ? { usageExperimental } : {}),
     };
   }
@@ -80,6 +96,11 @@ export interface ForkSessionResult {
 export interface ClaudeSessionApi {
   getSessionMessages(sessionId: string): Promise<SessionMessage[]>;
   forkSession(sessionId: string, upToMessageId: string): Promise<ForkSessionResult>;
+  /**
+   * Whether the CLI still has this session on disk. Resuming one it has
+   * lost fails the first turn, so a persisted id is checked before use.
+   */
+  sessionExists(sessionId: string): Promise<boolean>;
 }
 
 export class SdkSessionApi implements ClaudeSessionApi {
@@ -90,6 +111,10 @@ export class SdkSessionApi implements ClaudeSessionApi {
   async forkSession(sessionId: string, upToMessageId: string): Promise<ForkSessionResult> {
     const result = await sdkForkSession(sessionId, { upToMessageId });
     return { sessionId: result.sessionId };
+  }
+
+  async sessionExists(sessionId: string): Promise<boolean> {
+    return (await sdkGetSessionInfo(sessionId)) !== undefined;
   }
 }
 

@@ -98,3 +98,35 @@ export async function saveModelPrefs(storeRoot: string, prefs: ModelPrefs): Prom
 export function isModelHidden(prefs: ModelPrefs, instanceId: string, slug: string): boolean {
   return prefs.hidden[instanceId]?.includes(slug) ?? false;
 }
+
+/**
+ * Hide or show one model slug on one provider instance and save it.
+ * Hidden models stay dispatchable; they only leave the pickers. Returns
+ * whether the slug is hidden afterwards.
+ */
+export async function setModelHidden(
+  storeRoot: string,
+  instanceId: string,
+  slug: string,
+  hidden: boolean,
+): Promise<boolean> {
+  const prefs = await loadModelPrefs(storeRoot);
+  const current = prefs.hidden[instanceId] ?? [];
+  const next = hidden ? [...current.filter((entry) => entry !== slug), slug] : current.filter((entry) => entry !== slug);
+  const all = { ...prefs.hidden };
+  if (next.length > 0) all[instanceId] = next;
+  else delete all[instanceId];
+  await saveModelPrefs(storeRoot, { ...prefs, hidden: all });
+  return next.includes(slug);
+}
+
+/**
+ * The prefs as `ServerSettings.providerModelPreferences` — the shape the
+ * catalog decoder (`summary.ts` `extractProviders`) reads hidden models
+ * from, so a hide reaches every client's picker.
+ */
+export function providerModelPreferences(prefs: ModelPrefs): Record<string, { hiddenModels: string[] }> {
+  return Object.fromEntries(
+    Object.entries(prefs.hidden).map(([instanceId, slugs]) => [instanceId, { hiddenModels: [...slugs] }]),
+  );
+}

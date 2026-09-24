@@ -10,7 +10,7 @@ import {
   sendTurn,
   settleThread as settleStoredThread,
 } from "../../../core/threads/threads.js";
-import { testHarness, type TestHarness } from "../../testing/harness.js";
+import { testHarness, type TestHarness } from "../../../core/testing/harness.js";
 import {
   cancelTask,
   delegateTask,
@@ -27,7 +27,7 @@ import {
 } from "../threads.js";
 
 function storeRoot(): string {
-  return process.env.MONVEX_STORE_ROOT!;
+  return process.env.MOXEN_STORE_ROOT!;
 }
 
 async function seedProject(harness: TestHarness, overrides: Record<string, unknown> = {}) {

@@ -30,6 +30,8 @@ export interface AcpModelInfo {
   readonly modelId: string;
   readonly name?: string;
   readonly reasoningEffort?: string;
+  /** Grok's `_meta.totalContextTokens`: the model's context window. */
+  readonly contextTokens?: number;
 }
 
 export interface AcpModelState {
@@ -65,12 +67,12 @@ export interface AcpSessionUpdate {
   readonly update: { readonly sessionUpdate: string; [key: string]: unknown };
 }
 
-function asRecord(value: unknown): Record<string, unknown> | null {
+export function asRecord(value: unknown): Record<string, unknown> | null {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
 }
 
-function asString(value: unknown): string | undefined {
+export function asString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
@@ -86,10 +88,12 @@ export function readModelState(value: unknown): AcpModelState | null {
       if (!modelId) continue;
       const meta = asRecord(item?.["_meta"]);
       const reasoning = meta ? asString(meta["reasoningEffort"]) : undefined;
+      const contextTokens = meta?.["totalContextTokens"];
       availableModels.push({
         modelId,
         ...(item && asString(item["name"]) ? { name: asString(item["name"]) as string } : {}),
         ...(reasoning ? { reasoningEffort: reasoning } : {}),
+        ...(typeof contextTokens === "number" && contextTokens > 0 ? { contextTokens } : {}),
       });
     }
   }
@@ -104,9 +108,29 @@ export interface AcpClientOptions {
 
 const READ_CAP_DEFAULT = 256 * 1024;
 
+/**
+ * ACP's `McpServer`: stdio servers carry no `type`; `env` and `headers` are
+ * name/value lists. `http` is only valid when the agent advertised
+ * `agentCapabilities.mcpCapabilities.http`.
+ */
+export type AcpMcpServer =
+  | {
+      readonly name: string;
+      readonly command: string;
+      readonly args: readonly string[];
+      readonly env: ReadonlyArray<{ readonly name: string; readonly value: string }>;
+    }
+  | {
+      readonly type: "http";
+      readonly name: string;
+      readonly url: string;
+      readonly headers: ReadonlyArray<{ readonly name: string; readonly value: string }>;
+    };
+
 export class AcpClient {
   private permissionHandler: ((request: AcpPermissionRequest) => Promise<AcpPermissionAnswer>) | null = null;
   private updateHandler: ((update: AcpSessionUpdate) => void) | null = null;
+  private extensionHandler: ((method: string, params: unknown) => void) | null = null;
   private customHandlers = new Map<string, (params: unknown) => Promise<unknown> | unknown>();
   private readonly maxReadBytes: number;
 
@@ -129,6 +153,11 @@ export class AcpClient {
     this.updateHandler = handler;
   }
 
+  /** Extension notifications (`_`-prefixed, e.g. `_x.ai/session_notification`). */
+  onExtensionNotification(handler: (method: string, params: unknown) => void): void {
+    this.extensionHandler = handler;
+  }
+
   /** Extension methods (e.g. `_x.ai/ask_user_question`). Thrown = not-found. */
   onCustomRequest(method: string, handler: (params: unknown) => Promise<unknown> | unknown): void {
     this.customHandlers.set(method, handler);
@@ -137,7 +166,7 @@ export class AcpClient {
   async initialize(): Promise<{ agentCapabilities: unknown; authMethods: unknown; _meta: unknown }> {
     const response = (await this.peer.request("initialize", {
       protocolVersion: ACP_PROTOCOL_VERSION,
-      clientInfo: { name: "monvex", version: "0.0.0" },
+      clientInfo: { name: "moxen", version: "0.0.0" },
       clientCapabilities: { fs: { readTextFile: true, writeTextFile: false }, terminal: false },
     })) as Record<string, unknown>;
     return {
@@ -147,8 +176,29 @@ export class AcpClient {
     };
   }
 
-  async newSession(cwd: string): Promise<{ sessionId: string; models: AcpModelState | null; modes: unknown; _meta: unknown }> {
-    const response = (await this.peer.request("session/new", { cwd, mcpServers: [] })) as Record<string, unknown>;
+  /**
+   * ACP `session/load`: reattach to a session the agent persisted. The agent
+   * replays the conversation as `session/update` notifications before it
+   * answers; callers must not treat those as live output.
+   */
+  async loadSession(
+    sessionId: string,
+    cwd: string,
+    mcpServers: readonly AcpMcpServer[] = [],
+    meta?: Record<string, unknown>,
+  ): Promise<{ models: AcpModelState | null }> {
+    const response = (await this.peer.request("session/load", { sessionId, cwd, mcpServers, ...(meta ? { _meta: meta } : {}) })) as
+      | Record<string, unknown>
+      | null;
+    return { models: readModelState(response?.["models"]) };
+  }
+
+  async newSession(
+    cwd: string,
+    mcpServers: readonly AcpMcpServer[] = [],
+    meta?: Record<string, unknown>,
+  ): Promise<{ sessionId: string; models: AcpModelState | null; modes: unknown; _meta: unknown }> {
+    const response = (await this.peer.request("session/new", { cwd, mcpServers, ...(meta ? { _meta: meta } : {}) })) as Record<string, unknown>;
     const sessionId = asString(response["sessionId"]);
     if (!sessionId) throw new Error("session/new did not return a sessionId");
     return {
@@ -162,7 +212,7 @@ export class AcpClient {
   async prompt(
     sessionId: string,
     blocks: AcpPromptContent[],
-  ): Promise<{ stopReason: string; usage: Record<string, unknown> | null }> {
+  ): Promise<{ stopReason: string; usage: Record<string, unknown> | null; metaUsage: Record<string, unknown> | null }> {
     const response = (await this.peer.request("session/prompt", {
       sessionId,
       prompt: blocks,
@@ -170,6 +220,8 @@ export class AcpClient {
     return {
       stopReason: asString(response["stopReason"]) ?? "end_turn",
       usage: asRecord(response["usage"]),
+      // Grok reports the prompt's totals here, not in ACP's `usage`.
+      metaUsage: asRecord(asRecord(response["_meta"])?.["usage"]),
     };
   }
 
@@ -243,6 +295,10 @@ export class AcpClient {
   }
 
   private onNotification(method: string, params: unknown): void {
+    if (method.startsWith("_")) {
+      this.extensionHandler?.(method, params);
+      return;
+    }
     if (method !== "session/update") return;
     const record = asRecord(params);
     const update = asRecord(record?.["update"]);

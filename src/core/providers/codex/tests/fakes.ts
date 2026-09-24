@@ -14,6 +14,10 @@ export interface FakeCodexScript {
   /** Serve the model list under the paginated `data` envelope (codex-cli ≥0.153 shape). */
   readonly modelsEnvelope?: "models" | "data";
   readonly failRequests?: Record<string, string>;
+  /** Thread ids `thread/resume` has no rollout for. */
+  readonly lostThreads?: readonly string[];
+  /** `skills/list` entries (`SkillsListResponse.data`). */
+  readonly skills?: unknown[];
 }
 
 export class FakeCodexServer {
@@ -34,7 +38,6 @@ export class FakeCodexServer {
   private answer(method: string, params: unknown): unknown {
     const failure = this.script.failRequests?.[method];
     if (failure) throw new Error(failure);
-    void params;
     switch (method) {
       case "initialize":
         return { capabilities: {} };
@@ -49,6 +52,15 @@ export class FakeCodexServer {
         );
       case "thread/start":
         return { threadId: this.script.threadId ?? "codex-thread-1" };
+      case "thread/resume": {
+        // The real app-server answers `{ thread: { id } }` and errors on a
+        // thread it has no rollout for.
+        const threadId = (params as { threadId?: string } | null)?.threadId;
+        if (!threadId || this.script.lostThreads?.includes(threadId)) throw new Error(`no rollout found for ${threadId}`);
+        return { thread: { id: threadId }, model: "gpt-test" };
+      }
+      case "turn/steer":
+        return { turnId: (params as { expectedTurnId?: string } | null)?.expectedTurnId ?? "srv" };
       case "turn/start":
       case "turn/interrupt":
       case "thread/compact/start":
@@ -77,7 +89,7 @@ export class FakeCodexServer {
       case "account/rateLimitResetCredit/consume":
         return { status: "consumed" };
       case "skills/list":
-        return { skills: [] };
+        return { data: this.script.skills ?? [] };
       default:
         throw new Error(`unexpected method ${method}`);
     }

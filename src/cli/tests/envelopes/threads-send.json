@@ -1,0 +1,66 @@
+{
+  "ok": true,
+  "data": {
+    "runtime": {
+      "origin": "direct",
+      "stateDir": null,
+      "runtimeStatePath": null,
+      "settingsPath": null,
+      "environmentId": "direct",
+      "serverVersion": "direct",
+      "capabilities": {
+        "threadSettlement": true
+      }
+    },
+    "auth": {
+      "source": "direct",
+      "version": null
+    },
+    "project": {
+      "id": "project-existing",
+      "title": "Existing project",
+      "workspaceRoot": "<root>",
+      "defaultModelSelection": {
+        "instanceId": "codex",
+        "model": "gpt-5.6-sol"
+      },
+      "createdAt": "<time>",
+      "updatedAt": "<time>",
+      "deletedAt": null
+    },
+    "thread": {
+      "id": "thread-existing",
+      "projectId": "project-existing",
+      "title": "Existing thread",
+      "statusBeforeSend": "active"
+    },
+    "message": {
+      "messageId": "<id-1>",
+      "textLength": 11
+    },
+    "command": {
+      "type": "thread.turn.start",
+      "commandId": "<id-2>",
+      "threadId": "thread-existing",
+      "runtimeMode": "full-access",
+      "interactionMode": "default",
+      "createdAt": "<time>"
+    },
+    "delivery": "started",
+    "handoffNote": null,
+    "dispatch": null,
+    "verification": {
+      "accepted": true,
+      "method": "message-id",
+      "snapshotSequence": 0,
+      "messageId": "<id-1>"
+    },
+    "opened": {
+      "mode": "none",
+      "kind": "none",
+      "url": null,
+      "exactThread": false
+    },
+    "dryRun": false
+  }
+}

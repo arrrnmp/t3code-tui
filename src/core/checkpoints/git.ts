@@ -9,14 +9,16 @@
  *   files are not captured (documented gap — `git stash -u` would touch
  *   the worktree). Returns null outside git repos or when there is
  *   nothing to capture.
- * - Each capture is pinned under `refs/monvex/checkpoints/<thread>/<turn>`
+ * - Each capture is pinned under `refs/moxen/checkpoints/<thread>/<turn>`
  *   so GC can prune per thread without touching user refs.
  * - Diff = `git diff <pre> <post>`; rollback = `git checkout <pre> -- .`
  *   (tracked files only, same untracked caveat).
  */
 import { spawn } from "node:child_process";
 
-export const CHECKPOINT_REF_NAMESPACE = "refs/monvex/checkpoints";
+import { APP_NAME } from "../config.js";
+
+export const CHECKPOINT_REF_NAMESPACE = `refs/${APP_NAME}/checkpoints`;
 
 export function checkpointRef(threadId: string, turnId: string, which: "pre" | "post" = "post"): string {
   return `${CHECKPOINT_REF_NAMESPACE}/${sanitizeRefComponent(threadId)}/${sanitizeRefComponent(turnId)}/${which}`;

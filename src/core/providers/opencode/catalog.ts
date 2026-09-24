@@ -12,7 +12,7 @@
  *   (one CLI invocation), so a stale cache triggers one blocking
  *   refresh with snapshot fallback on failure.
  * - Upstream caches in its own `Global.Path.cache`; we keep our own
- *   `~/.monvex/cache/opencode-models.json` so we never contend with the
+ *   `~/.moxen/cache/opencode-models.json` so we never contend with the
  *   server's lock/refresh protocol.
  *
  * Auth status mirrors upstream `packages/opencode/src/auth/index.ts`:
@@ -29,6 +29,8 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+
+import { appHomeDir } from "../../config.js";
 
 export const MODELS_DEV_DEFAULT_URL = "https://models.opencode.ai";
 export const MODELS_DEV_API_PATH = "/api.json";
@@ -227,7 +229,7 @@ export function resolveModelsDevUrl(env: NodeJS.ProcessEnv = process.env): strin
 }
 
 export function defaultModelsDevCachePath(): string {
-  return path.join(os.homedir(), ".monvex", "cache", "opencode-models.json");
+  return path.join(appHomeDir(), "cache", "opencode-models.json");
 }
 
 /**
@@ -353,7 +355,7 @@ async function fetchLiveCatalog(
   const timer = setTimeout(() => controller.abort(), MODELS_DEV_FETCH_TIMEOUT_MS);
   try {
     const response = await fetchImpl(`${resolveModelsDevUrl(env)}${MODELS_DEV_API_PATH}`, {
-      headers: { "User-Agent": "mvx/models-dev-snapshot" },
+      headers: { "User-Agent": "moxen/models-dev-snapshot" },
       signal: controller.signal,
     });
     if (!response.ok) return null;

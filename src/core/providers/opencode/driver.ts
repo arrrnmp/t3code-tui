@@ -21,9 +21,11 @@ import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 
 import { CliError } from "../../errors.js";
+import { plainSkill, type SkillInventory, type SkillSummary } from "../../catalog/summary.js";
 import type { InteractionMode, ModelSelection, RuntimeMode } from "../../types.js";
 import type {
   ApprovalRequestId,
+  ContextWindowUsage,
   ProviderAdapter,
   ProviderAdapterCapabilities,
   ProviderApprovalDecision,
@@ -38,6 +40,7 @@ import type {
   TokenUsageDelta,
   TurnId,
 } from "../spi.js";
+import type { McpServerSpec } from "../../mcp.js";
 import {
   isOpencodeAuthErrorText,
   normalizeOpencodeSettings,
@@ -48,6 +51,8 @@ import { isFreeOpencodeModel, providerEnvNames, readStoredAuthTypes } from "./ca
 import {
   newOpencodeMessageId,
   SpawnOpencodeTransport,
+  type OpencodeContextSettings,
+  type OpencodeMcpConfig,
   type OpencodeServerConnection,
   type OpencodeSubscribedEvent,
   type OpencodeTransport,
@@ -86,8 +91,10 @@ interface OpenCodeTurn {
    * Assigned before the send so no part can arrive unattributed.
    */
   readonly userMessageId: string;
-  /** Latest text per message part (part updates are cumulative snapshots). */
-  partTexts: Map<string, string>;
+  /** User messages steered into this turn: skipped like the prompt's own. */
+  readonly steerMessageIds: Set<string>;
+  /** Text parts by part id, in arrival order, with the message each belongs to. */
+  partTexts: Map<string, { messageId: string | null; text: string }>;
   /** Setup step to append if the server rejects this turn (see `missingCredentialHint`). */
   credentialHint: string | null;
   usage: TokenUsageDelta;
@@ -114,10 +121,79 @@ interface OpenCodeSession {
   modelSlug: string | null;
   runtimeMode: RuntimeMode;
   interactionMode: InteractionMode;
+  /** Runtime instructions, sent as `system` with every prompt (OpenCode keeps none per session). */
+  instructions: string | null;
   turns: Map<TurnId, OpenCodeTurn>;
   waiters: Map<TurnId, Array<{ resolve: (outcome: OpenCodeTurnOutcome) => void; reject: (cause: unknown) => void }>>;
   parked: Map<string, ParkedOpenCode>;
+  /** Latest context-window reading, taken when a turn goes idle. */
+  context: ContextWindowUsage | null;
   startedAt: string;
+}
+
+/**
+ * The turn's answer: the text of its last assistant message. OpenCode opens
+ * one assistant message per model step, so a turn that calls tools leaves
+ * interim notes in the earlier steps; joining every step's text put that
+ * working narration into the final output.
+ */
+function answerText(parts: ReadonlyMap<string, { messageId: string | null; text: string }>): string {
+  const all = [...parts.values()];
+  const last = all.findLast((part) => part.text.length > 0);
+  if (!last) return "";
+  return all.filter((part) => part.messageId === last.messageId).map((part) => part.text).join("");
+}
+
+/** Upstream `ProviderTransform.OUTPUT_TOKEN_MAX` and `session/overflow.ts` `COMPACTION_BUFFER`. */
+const OUTPUT_TOKEN_MAX = 32_000;
+const COMPACTION_BUFFER = 20_000;
+
+/**
+ * The context window after a turn, the way OpenCode itself counts it: the
+ * latest assistant message's `input + cache.read + cache.write` (upstream
+ * `acp/usage.ts` `contextTokens`), against the model's `limit.context`. The
+ * auto-compact threshold is upstream's `usable()` (`session/overflow.ts`).
+ */
+export function opencodeContextOf(
+  messages: ReadonlyArray<{ info: Record<string, unknown> }>,
+  settings: OpencodeContextSettings | null,
+): ContextWindowUsage | null {
+  const info = [...messages].reverse().find((message) => message.info.role === "assistant")?.info;
+  const tokens = asRecord(info?.tokens);
+  if (!info || !tokens) return null;
+  const cache = asRecord(tokens.cache);
+  const number = (value: unknown): number => (typeof value === "number" && Number.isFinite(value) ? value : 0);
+  const cacheRead = number(cache?.read);
+  const used = number(tokens.input) + cacheRead + number(cache?.write);
+  if (used <= 0) return null;
+  const providerId = asString(info.providerID);
+  const modelId = asString(info.modelID);
+  const limit = providerId && modelId ? settings?.limits.get(`${providerId}/${modelId}`) : undefined;
+  let threshold: number | null = null;
+  if (limit && limit.context > 0) {
+    const maxOutput = Math.min(limit.output, OUTPUT_TOKEN_MAX) || OUTPUT_TOKEN_MAX;
+    const reserved = settings?.reserved ?? Math.min(COMPACTION_BUFFER, maxOutput);
+    threshold = limit.input ? Math.max(0, limit.input - reserved) : Math.max(0, limit.context - maxOutput);
+  }
+  return {
+    usedTokens: used,
+    maxTokens: limit?.context ?? null,
+    cachedInputTokens: cacheRead,
+    autoCompactThreshold: threshold,
+    compactsAutomatically: settings ? settings.autoCompact : null,
+  };
+}
+
+/** Whether the session's latest user message has a finished assistant reply. */
+function lastUserAnswered(messages: ReadonlyArray<{ info: Record<string, unknown> }>): boolean {
+  const lastUser = [...messages].reverse().find((message) => message.info.role === "user");
+  const userId = lastUser ? asString(lastUser.info.id) : null;
+  if (!userId) return true;
+  return messages.some((message) =>
+    message.info.role === "assistant" &&
+    message.info.parentID === userId &&
+    asRecord(message.info.time)?.completed !== undefined,
+  );
 }
 
 function emptyUsage(): TokenUsageDelta {
@@ -192,6 +268,8 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
   private readonly stallTimers = new Map<TurnId, ReturnType<typeof setTimeout>>();
   private readonly sessions = new Map<ThreadId, OpenCodeSession>();
   private readonly connections = new Map<string, Promise<OpencodeServerConnection>>();
+  /** `name:config` already registered per server connection (see `registerMcpServers`). */
+  private readonly mcpRegistered = new WeakMap<OpencodeServerConnection, Set<string>>();
   private readonly pumps = new Map<string, { controller: AbortController; done: Promise<void> }>();
   private readonly queue = Effect.runSync(Queue.unbounded<ProviderRuntimeEvent>());
 
@@ -254,9 +332,102 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
     }
   }
 
+  /**
+   * MCP in OpenCode belongs to the directory's instance, not to a session,
+   * so moxen's servers are added once per connection and again only when
+   * their config changes — `mcp.add` restarts the server on every call.
+   * Same rule as OpenCode's own ACP server (`acp/service.ts`,
+   * `mcpRegistrationKey`), including that a failed add does not fail the
+   * session: it is retried on the next start.
+   */
+  private async registerMcpServers(
+    connection: OpencodeServerConnection,
+    servers: readonly McpServerSpec[],
+  ): Promise<void> {
+    if (servers.length === 0) return;
+    let done = this.mcpRegistered.get(connection);
+    if (!done) {
+      done = new Set();
+      this.mcpRegistered.set(connection, done);
+    }
+    for (const server of servers) {
+      const config: OpencodeMcpConfig =
+        server.type === "http"
+          ? { type: "remote", url: server.url, ...(Object.keys(server.headers).length > 0 ? { headers: server.headers } : {}) }
+          : {
+              type: "local",
+              command: [server.command, ...server.args],
+              ...(Object.keys(server.env).length > 0 ? { environment: server.env } : {}),
+            };
+      const key = `${server.name}:${JSON.stringify(config)}`;
+      if (done.has(key)) continue;
+      try {
+        await connection.addMcpServer(server.name, config);
+        done.add(key);
+      } catch {
+        // Retried on the next session start.
+      }
+    }
+  }
+
   private async connectionFor(session: OpenCodeSession): Promise<OpencodeServerConnection> {
     return await this.connectionForSession(session.threadId, session.workingDirectory);
   }
+
+  /** Model limits + compaction config, fetched once per server connection. */
+  private readonly contextSettings = new WeakMap<OpencodeServerConnection, Promise<OpencodeContextSettings>>();
+
+  private async contextSettingsFor(session: OpenCodeSession): Promise<OpencodeContextSettings> {
+    const connection = await this.connectionFor(session);
+    let pending = this.contextSettings.get(connection);
+    if (!pending) {
+      pending = connection.contextSettings();
+      // A failed fetch is retried on the next turn rather than cached.
+      pending.catch(() => this.contextSettings.delete(connection));
+      this.contextSettings.set(connection, pending);
+    }
+    return await pending;
+  }
+
+  /**
+   * `system` and `agent` for one prompt. Plan mode runs OpenCode's built-in
+   * read-only `plan` agent (upstream `agent/agent.ts`); otherwise the
+   * session's default agent answers, as before.
+   */
+  private promptExtras(session: OpenCodeSession, interactionMode?: InteractionMode): { system?: string; agent?: string } {
+    if (interactionMode) session.interactionMode = interactionMode;
+    return {
+      ...(session.instructions ? { system: session.instructions } : {}),
+      ...(session.interactionMode === "plan" ? { agent: "plan" } : {}),
+    };
+  }
+
+  /**
+   * Skills and slash commands from the directory's own server
+   * (`command.list`, the SDK route upstream serves — never `opencode debug
+   * skill`, whose piped output truncates at 64KB). Everything there runs as
+   * `/name`; `source: "skill"` marks skills, the rest are commands.
+   */
+  readonly skillInventory = async (cwd: string): Promise<SkillInventory> => {
+    const connection = await this.connectionForSession(`moxen-skills-${cwd}` as ThreadId, cwd);
+    const entries = await connection.listCommands();
+    return {
+      trigger: "/",
+      skills: entries.filter((entry) => entry.source === "skill").map((entry) => plainSkill(entry.name, entry.description)),
+      commands: entries
+        .filter((entry) => entry.source !== "skill")
+        .map((entry) => ({
+          name: entry.name,
+          description: entry.description,
+          argumentHint: entry.hints.length > 0 ? entry.hints.join(" ") : null,
+          builtin: false,
+        })),
+    };
+  };
+
+  /** The reading taken when the last turn went idle. */
+  readonly contextUsage = async (threadId: ThreadId): Promise<ContextWindowUsage | null> =>
+    this.sessions.get(threadId)?.context ?? null;
 
   // -- session lifecycle -------------------------------------------------
 
@@ -265,24 +436,36 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
       const existing = this.sessions.get(input.threadId);
       if (existing && !existing.closed) return this.describeSession(existing);
       const connection = await this.connectionForSession(input.threadId, input.workingDirectory);
-      const created = await connection.createSession({ title: `mvx ${input.threadId}` });
+      await this.registerMcpServers(connection, input.mcpServers ?? []);
+      // OpenCode keeps sessions on disk, so the previous one — from this
+      // process or an earlier one — is reattached with its history rather
+      // than replaced by an empty session.
+      const cursor = existing?.nativeSessionId ?? input.resumeCursor;
+      const resumed = cursor ? await connection.getSession(cursor).catch(() => null) : null;
+      const nativeSessionId =
+        resumed?.id ?? (await connection.createSession({ title: `moxen ${input.threadId}` })).sessionID;
       const session: OpenCodeSession = {
         threadId: input.threadId,
-        nativeSessionId: created.sessionID,
+        nativeSessionId,
         workingDirectory: input.workingDirectory,
         closed: false,
         instanceId: input.modelSelection?.instanceId ?? "opencode",
         modelSlug: input.modelSelection?.model ?? null,
         runtimeMode: input.runtimeMode ?? "full-access",
         interactionMode: input.interactionMode ?? "default",
+        instructions: input.instructions ?? null,
         turns: new Map(),
         waiters: new Map(),
         parked: new Map(),
+        context: null,
         startedAt: new Date().toISOString(),
       };
       this.sessions.set(input.threadId, session);
       return this.describeSession(session);
     });
+
+  readonly resumeCursor = (threadId: ThreadId): string | null =>
+    this.sessions.get(threadId)?.nativeSessionId ?? null;
 
   readonly sendTurn = (input: ProviderSendTurnInput): Effect.Effect<ProviderTurnStartResult, CliError> =>
     this.attempt("OPENCODE_TURN_FAILED", `Could not send a turn on thread ${input.threadId}`, async () => {
@@ -307,6 +490,7 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
         id: `turn-${randomUUID()}`,
         prompt: input.prompt,
         userMessageId,
+        steerMessageIds: new Set(),
         status: "running",
         text: "",
         error: null,
@@ -322,7 +506,16 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
           sessionID: session.nativeSessionId,
           messageID: userMessageId,
           ...(model ? { model } : {}),
-          parts: [{ type: "text", text: input.prompt }],
+          ...this.promptExtras(session, input.interactionMode),
+          parts: [
+            { type: "text", text: input.prompt },
+            ...(input.images ?? []).map((image) => ({
+              type: "file" as const,
+              mime: image.mimeType,
+              filename: image.name,
+              url: `data:${image.mimeType};base64,${image.data}`,
+            })),
+          ],
         });
       } catch (cause) {
         this.clearStallTimer(turn.id);
@@ -442,6 +635,24 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
           details: { threadId, requestId },
         });
       }
+      // A *dismissed question* arrives here, not only a miscalled
+      // permission: the panel closes a question the same way it declines a
+      // permission, and the request is still blocking the server. Replying
+      // with no answers releases the turn — throwing left it parked until
+      // the next interrupt.
+      if (parked.kind === "question") {
+        if (decision.kind !== "decline" && decision.kind !== "cancel") {
+          // Accepting is a miscall: there is no answer to accept.
+          throw new CliError("REQUEST_MISMATCH", `Request ${requestId} needs user input, not a permission decision.`, {
+            details: { threadId, requestId },
+          });
+        }
+        const connection = await this.connectionFor(session);
+        await connection.replyToQuestion(parked.nativeId, answersFor({}, parked.detail));
+        session.parked.delete(requestId);
+        this.publish({ type: "user-input.request.resolved", provider: this.provider, threadId, requestId });
+        return;
+      }
       if (parked.kind !== "permission") {
         throw new CliError("REQUEST_MISMATCH", `Request ${requestId} needs user input, not a permission decision.`, {
           details: { threadId, requestId },
@@ -532,17 +743,20 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
         });
       }
       const connection = await this.connectionFor(session);
+      // A turn is one user message plus its replies; `session.fork` copies
+      // every message *before* the one named, so the fork point is the
+      // first user message to drop.
       const messages = await connection.sessionMessages(session.nativeSessionId);
-      const ids = messages.flatMap((message) => {
+      const prompts = messages.flatMap((message) => {
         const id = asString(message.info.id);
-        return id ? [id] : [];
+        return id && message.info.role === "user" ? [id] : [];
       });
-      if (ids.length <= numTurns) {
-        throw new CliError("ROLLBACK_UNAVAILABLE", "Cannot roll back past the first turn.", {
-          details: { threadId, numTurns },
+      if (prompts.length < numTurns) {
+        throw new CliError("ROLLBACK_UNAVAILABLE", "Cannot roll back more turns than the session holds.", {
+          details: { threadId, numTurns, turns: prompts.length },
         });
       }
-      const forkPoint = ids[ids.length - 1 - numTurns];
+      const forkPoint = prompts[prompts.length - numTurns];
       const forked = await connection.forkSession(session.nativeSessionId, forkPoint);
       session.nativeSessionId = forked.sessionID;
       return await Effect.runPromise(this.readThread(threadId));
@@ -644,13 +858,16 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
     if (!turn) return;
     // Our own prompt streams back as parts of the user message; never
     // accumulate those into the assistant text.
-    if (asString(part.messageID) === turn.userMessageId) return;
+    const messageId = asString(part.messageID);
+    if (messageId === turn.userMessageId || (messageId && turn.steerMessageIds.has(messageId))) return;
     const partId = asString(part.id) ?? `part-${turn.partTexts.size}`;
     const kind = asString(part.type) ?? "unknown";
     if (kind === "text") {
       const text = typeof part.text === "string" ? part.text : "";
-      turn.partTexts.set(partId, text);
-      turn.text = [...turn.partTexts.values()].join("");
+      if (part.ignored !== true) {
+        turn.partTexts.set(partId, { messageId: asString(part.messageID), text });
+        turn.text = answerText(turn.partTexts);
+      }
       this.publish({
         type: "message.part.updated",
         provider: this.provider,
@@ -736,11 +953,21 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
   private onSessionIdle(session: OpenCodeSession): void {
     const turn = this.openTurn(session);
     if (!turn) return;
+    let settle = true;
     // Best-effort usage: read the latest assistant message tokens off the
     // server. Failures stay silent — usage is advisory, never load-bearing.
     void this.connectionFor(session)
       .then((connection) => connection.sessionMessages(session.nativeSessionId))
-      .then((messages) => {
+      .then(async (messages) => {
+        // A steer that landed as the loop was finishing starts a second run
+        // (and a second idle). The turn is over only once its latest user
+        // message has a finished reply.
+        if (turn.steerMessageIds.size > 0 && !lastUserAnswered(messages)) {
+          settle = false;
+          return;
+        }
+        const settings = await this.contextSettingsFor(session).catch(() => null);
+        session.context = opencodeContextOf(messages, settings) ?? session.context;
         const usage = latestAssistantUsage(messages);
         if (usage) {
           turn.usage = usage;
@@ -754,9 +981,46 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
       })
       .catch(() => undefined)
       .finally(() => {
-        this.settleOpenTurn(session, "completed", "");
+        if (settle) this.settleOpenTurn(session, "completed", "");
       });
   }
+
+  /**
+   * Mid-turn steering. OpenCode's prompt loop runs until the last assistant
+   * message answers the *latest* user message (upstream `session/prompt.ts`
+   * `runLoop`), and a prompt sent to a busy session joins the running loop
+   * (`SessionRunState.ensureRunning`). So a second `promptAsync` is taken
+   * up at the next step boundary of the same run — no restart.
+   */
+  readonly steerTurn = (threadId: ThreadId, text: string): Effect.Effect<void, CliError> =>
+    this.attempt("OPENCODE_STEER_FAILED", `Could not steer the turn on thread ${threadId}`, async () => {
+      const session = this.requireSession(threadId);
+      const turn = this.openTurn(session);
+      if (!turn) {
+        throw new CliError("TURN_NOT_RUNNING", `Thread ${threadId} has no running turn to steer.`, {
+          details: { threadId },
+        });
+      }
+      const model = session.modelSlug
+        ? parseOpencodeModel({ instanceId: session.instanceId, model: session.modelSlug }, session.instanceId)
+        : null;
+      const messageID = newOpencodeMessageId();
+      // Registered before the send so no echoed part is read as answer text.
+      turn.steerMessageIds.add(messageID);
+      const connection = await this.connectionFor(session);
+      try {
+        await connection.promptAsync({
+          sessionID: session.nativeSessionId,
+          messageID,
+          ...(model ? { model } : {}),
+          ...this.promptExtras(session),
+          parts: [{ type: "text", text }],
+        });
+      } catch (cause) {
+        turn.steerMessageIds.delete(messageID);
+        throw cause;
+      }
+    });
 
   /** Fail every open turn on one server: a fault with no session to blame. */
   private onServerError(serverKey: string, event: OpencodeSubscribedEvent): void {

@@ -1,4 +1,0 @@
-interface:
-  display_name: "Monvex diagnostics"
-  short_description: "Check whether Monvex is running and reachable"
-  default_prompt: "Use $mvx-doctor to check whether Monvex is running and reachable."

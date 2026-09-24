@@ -1,0 +1,47 @@
+{
+  "ok": true,
+  "data": {
+    "runtime": {
+      "origin": "direct",
+      "stateDir": null,
+      "runtimeStatePath": null,
+      "settingsPath": null,
+      "environmentId": "direct",
+      "serverVersion": "direct",
+      "capabilities": {
+        "threadSettlement": true
+      }
+    },
+    "auth": {
+      "source": "direct",
+      "version": null
+    },
+    "project": {
+      "id": "project-existing",
+      "title": "Existing project",
+      "workspaceRoot": "<root>",
+      "defaultModelSelection": {
+        "instanceId": "codex",
+        "model": "gpt-5.6-sol"
+      },
+      "createdAt": "<time>",
+      "updatedAt": "<time>",
+      "deletedAt": null
+    },
+    "parent": {
+      "id": "thread-existing",
+      "projectId": "project-existing",
+      "title": "Existing thread"
+    },
+    "task": {
+      "taskId": "<id-1>",
+      "childThreadId": "<id-1>",
+      "childRunId": "<id-2>",
+      "status": "completed",
+      "workState": "result_available",
+      "summary": "Completed: Write the changelog",
+      "hasPendingChildRuns": false,
+      "waitTimedOut": false
+    }
+  }
+}

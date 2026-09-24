@@ -14,6 +14,8 @@ import { runWorkFoldGuards } from "./render-check/scenarios/workFoldGuards.js";
 import { runSkillsAndContext } from "./render-check/scenarios/skillsAndContext.js";
 import { runActivityRows } from "./render-check/scenarios/activityRows.js";
 import { runLifecycleRows } from "./render-check/scenarios/lifecycleRows.js";
+import { runTurnModels } from "./render-check/scenarios/turnModels.js";
+import { registerSyntaxParsers } from "./syntax/register.js";
 
 /**
  * Snapshot harness: drives the app with a mock client, scripts input,
@@ -25,6 +27,10 @@ import { runLifecycleRows } from "./render-check/scenarios/lifecycleRows.js";
  * original order, just split into feature-scoped scenario functions instead
  * of one 1300-line script. `bun src/tui/render-check.tsx` runs it.
  */
+
+// Same vendored grammars the app registers in `index.tsx`, and for the same
+// reason: before the first render, or command rows render unhighlighted.
+await registerSyntaxParsers();
 
 // `exitOnCtrlC` defaults true on the renderer itself (harmless in the real
 // app, which passes `false` in `index.tsx` so its own quit-confirm modal
@@ -52,5 +58,6 @@ await runLifecycleRows(setup);
 // walkthrough above): runs last so its extra renderer cannot perturb the
 // timing-sensitive assertions of the shared scenarios.
 await runBootGate();
+await runTurnModels();
 
 process.exit(0);

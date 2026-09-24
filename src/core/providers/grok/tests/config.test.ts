@@ -36,9 +36,9 @@ describe("grok config", () => {
     expect(grokAcpSpawnArgs(undefined)).toEqual(["agent", "stdio"]);
   });
 
-  it("injects the monvex referrer and switches auth on the api key", () => {
+  it("injects the moxen referrer and switches auth on the api key", () => {
     const env = makeGrokEnv({ OTHER: "1" });
-    expect(env.GROK_OAUTH2_REFERRER).toBe("monvex");
+    expect(env.GROK_OAUTH2_REFERRER).toBe("moxen");
     expect(env.OTHER).toBe("1");
     expect(resolveGrokAuthMethod({})).toBe("cached_token");
     expect(resolveGrokAuthMethod({ XAI_API_KEY: "sk-x" })).toBe("xai.api_key");

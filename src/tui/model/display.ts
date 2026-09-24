@@ -1,6 +1,6 @@
-import type { ProviderSummary } from "../../cli/catalog/catalog.js";
-import type { EffortDescriptor } from "../../cli/catalog/catalog.js";
-import type { ModelSelection } from "../../core/types.js";
+import type { ProviderSummary } from "../../core/catalog/summary.js";
+import type { EffortDescriptor } from "../../core/catalog/summary.js";
+import type { ModelSelection, ThreadEnvelope } from "../../core/types.js";
 
 /**
  * btop-style viewport floor enforced by `MinSizeGate`. Below either
@@ -47,6 +47,25 @@ export function displayModelName(
     ?.models.find((candidate) => candidate.slug === selection.model);
   if (model !== undefined) return model.name;
   return prettifyModelSlug(selection.model);
+}
+
+/**
+ * The model a turn ran on. `thread.modelSelection` is only the *current*
+ * choice — labelling every turn with it is what relabelled a whole
+ * conversation after a mid-thread model switch. Turns recorded before the
+ * server stored a per-turn model (and a live turn whose snapshot has not
+ * landed yet) fall back to the thread's selection, which for the live
+ * turn is exactly what it was sent with.
+ */
+export function turnModelSelection(
+  thread: {
+    readonly modelSelection?: ModelSelection | undefined;
+    readonly turnModelSelections?: ThreadEnvelope["turnModelSelections"] | undefined;
+  } | null,
+  turnId: string | null,
+): ModelSelection | undefined {
+  if (thread === null) return undefined;
+  return (turnId === null ? undefined : thread.turnModelSelections?.[turnId]) ?? thread.modelSelection;
 }
 
 /**

@@ -14,10 +14,13 @@ import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 
 import { CliError } from "../../errors.js";
+import { runProcess } from "../../infra/process.js";
+import { plainSkill, type SkillInventory, type SkillSummary } from "../../catalog/summary.js";
 import type { InteractionMode, ModelSelection, RuntimeMode } from "../../types.js";
 import { JsonRpcPeer } from "../stdio.js";
 import type {
   ApprovalRequestId,
+  ContextWindowUsage,
   ProviderAdapter,
   ProviderAdapterCapabilities,
   ProviderApprovalDecision,
@@ -32,17 +35,24 @@ import type {
   TokenUsageDelta,
   TurnId,
 } from "../spi.js";
+import type { McpServerSpec } from "../../mcp.js";
 import {
   AcpClient,
+  asRecord,
+  asString,
   compactCommandFromMeta,
   readModelState,
+  type AcpMcpServer,
   type AcpModelState,
   type AcpPermissionRequest,
+  type AcpPromptContent,
 } from "./acp.js";
+import { imageMention } from "../../attachments.js";
 import {
   GROK_DEFAULT_MODEL_SLUG,
   grokSignedOutMessage,
   isGrokAuthErrorText,
+  makeGrokEnv,
   normalizeGrokReasoningEffort,
   normalizeGrokSettings,
   resolveGrokModelId,
@@ -62,6 +72,8 @@ export interface GrokDriverOptions {
   readonly transport?: GrokTransport;
   readonly initializeTimeoutMs?: number;
   readonly billingProbe?: () => Promise<{ id: "subscription"; label: string; usedPercent: number; resetsAt: string | null; exhausted: boolean } | null>;
+  /** `grok inspect --json` in a directory (tests); defaults to running the binary. */
+  readonly inspect?: (cwd: string) => Promise<string>;
 }
 
 export type GrokTurnStatus = "completed" | "failed" | "interrupted";
@@ -86,6 +98,12 @@ interface TranscriptTurn {
   status: "running" | GrokTurnStatus;
   text: string;
   error: string | null;
+  /**
+   * A tool call landed since the last message chunk: the text so far was an
+   * interim note, and the next chunk starts a new message. ACP chunks carry
+   * no message id, so the tool call is the only boundary we see.
+   */
+  textSealed: boolean;
 }
 
 interface ParkedPermission {
@@ -104,6 +122,8 @@ interface ParkedInput {
 interface GrokSession {
   readonly threadId: ThreadId;
   acpSessionId: string | null;
+  /** `agentCapabilities.promptCapabilities.image` from initialize. */
+  acceptsImages: boolean;
   readonly peer: JsonRpcPeer;
   readonly acp: AcpClient;
   readonly workingDirectory: string;
@@ -123,6 +143,8 @@ interface GrokSession {
   toolInFlight: boolean;
   compactCommand: string;
   usage: TokenUsageDelta;
+  /** Latest context-window reading (`response_completed`), if any. */
+  context: ContextWindowUsage | null;
   startedAt: string;
 }
 
@@ -164,6 +186,53 @@ function usageOfResponse(value: unknown): TokenUsageDelta {
   };
 }
 
+/**
+ * Grok's own per-prompt totals (`session/prompt` → `_meta.usage`), summed
+ * over the prompt's model calls. Its `inputTokens` *includes* cache reads
+ * and writes (18613 = 17461 fresh + 1152 cached, observed live), and
+ * `outputTokens` includes reasoning.
+ */
+export function grokMetaUsage(value: Record<string, unknown>): TokenUsageDelta {
+  const num = (key: string): number => {
+    const candidate = value[key];
+    return typeof candidate === "number" && Number.isFinite(candidate) ? candidate : 0;
+  };
+  const cacheRead = num("cachedReadTokens");
+  const cacheCreate = num("cacheCreationTokens");
+  return {
+    input: Math.max(0, num("inputTokens") - cacheRead - cacheCreate),
+    cacheRead,
+    cacheCreate,
+    output: num("outputTokens"),
+    thinking: num("reasoningTokens"),
+  };
+}
+
+/**
+ * The context window after one model call, from Grok's
+ * `response_completed` usage (snake_case, cache counted *separately* from
+ * `input_tokens`): everything the next call re-reads.
+ */
+export function grokContextOf(
+  usage: Record<string, unknown>,
+  maxTokens: number | null,
+): ContextWindowUsage | null {
+  const num = (key: string): number => {
+    const candidate = usage[key];
+    return typeof candidate === "number" && Number.isFinite(candidate) ? candidate : 0;
+  };
+  const cacheRead = num("cache_read_input_tokens");
+  const used = num("input_tokens") + cacheRead + num("cache_creation_input_tokens") + num("output_tokens");
+  if (used <= 0) return null;
+  return {
+    usedTokens: used,
+    maxTokens,
+    cachedInputTokens: cacheRead,
+    autoCompactThreshold: null,
+    compactsAutomatically: null,
+  };
+}
+
 export class GrokDriver implements ProviderAdapter<CliError> {
   readonly provider = "grok" as const;
   readonly capabilities: ProviderAdapterCapabilities = {
@@ -177,9 +246,14 @@ export class GrokDriver implements ProviderAdapter<CliError> {
   private readonly transport: GrokTransport;
   private readonly initializeTimeoutMs: number;
   private readonly sessions = new Map<ThreadId, GrokSession>();
+  /** ACP session id per thread, kept past session teardown (see `resumeCursor`). */
+  private readonly resumable = new Map<ThreadId, string>();
+
+  readonly resumeCursor = (threadId: ThreadId): string | null => this.resumable.get(threadId) ?? null;
   private readonly queue = Effect.runSync(Queue.unbounded<ProviderRuntimeEvent>());
   private stallTimer: ReturnType<typeof setInterval> | null = null;
   private readonly billingProbe: () => Promise<{ id: "subscription"; label: string; usedPercent: number; resetsAt: string | null; exhausted: boolean } | null>;
+  private readonly inspect: (cwd: string) => Promise<string>;
 
   constructor(options: GrokDriverOptions = {}) {
     this.settings = normalizeGrokSettings(options.settings);
@@ -187,7 +261,36 @@ export class GrokDriver implements ProviderAdapter<CliError> {
     this.transport = options.transport ?? new SpawnGrokTransport();
     this.initializeTimeoutMs = options.initializeTimeoutMs ?? 8000;
     this.billingProbe = options.billingProbe ?? (() => probeGrokBilling({ env: this.baseEnv }));
+    this.inspect =
+      options.inspect ??
+      (async (cwd) =>
+        (await runProcess(this.settings.binaryPath, ["inspect", "--json"], { cwd, env: makeGrokEnv(this.baseEnv) })).stdout);
   }
+
+  /**
+   * Skills as Grok resolves them for `cwd` — its priority tiers, the Claude
+   * and Cursor compatibility scans and folder trust included — from
+   * `grok inspect --json`, which reads without starting a session. Grok runs
+   * a skill as `/name` (`invocableAs`).
+   */
+  readonly skillInventory = async (cwd: string): Promise<SkillInventory> => {
+    const report = asRecord(JSON.parse(await this.inspect(cwd)) as unknown);
+    const entries = Array.isArray(report?.["skills"]) ? (report["skills"] as unknown[]) : [];
+    const skills: SkillSummary[] = [];
+    for (const entry of entries) {
+      const skill = asRecord(entry);
+      const invocable = asString(skill?.["invocableAs"])?.replace(/^\//, "");
+      const name = invocable || asString(skill?.["name"]);
+      if (!skill || !name) continue;
+      skills.push(
+        plainSkill(name, asString(skill["description"]) ?? null, {
+          userInvocable: skill["userInvocable"] !== false,
+          enabled: skill["compatibilityStatus"] === undefined || skill["compatibilityStatus"] === "enabled",
+        }),
+      );
+    }
+    return { trigger: "/", skills, commands: [] };
+  };
 
   get streamEvents(): Stream.Stream<ProviderRuntimeEvent> {
     return Stream.fromQueue(this.queue);
@@ -232,6 +335,7 @@ export class GrokDriver implements ProviderAdapter<CliError> {
       const session: GrokSession = {
         threadId: input.threadId,
         acpSessionId: null,
+        acceptsImages: false,
         peer,
         acp,
         workingDirectory: input.workingDirectory,
@@ -251,6 +355,7 @@ export class GrokDriver implements ProviderAdapter<CliError> {
         toolInFlight: false,
         compactCommand: "/compact",
         usage: { input: 0, cacheRead: 0, cacheCreate: 0, output: 0, thinking: 0 },
+        context: null,
         startedAt: new Date().toISOString(),
       };
       acp.onPermissionRequest((request) => this.onPermissionRequest(session, request));
@@ -258,6 +363,7 @@ export class GrokDriver implements ProviderAdapter<CliError> {
         if (update.sessionId === session.acpSessionId) this.onSessionUpdate(session, update.update);
       });
       acp.onCustomRequest("_x.ai/ask_user_question", (params) => this.onAskUserQuestion(session, params));
+      acp.onExtensionNotification((method, params) => this.onExtensionNotification(session, method, params));
       peer.onExit(() => {
         if (!session.closed) {
           session.closed = true;
@@ -270,6 +376,7 @@ export class GrokDriver implements ProviderAdapter<CliError> {
         // initialize() is warning-only per the reference: a timeout still
         // yields a usable session; a hard failure does not.
         let meta: unknown = null;
+        let capabilities: unknown = null;
         try {
           const init = await Promise.race([
             acp.initialize(),
@@ -278,13 +385,31 @@ export class GrokDriver implements ProviderAdapter<CliError> {
             }),
           ]);
           meta = init._meta;
+          capabilities = init.agentCapabilities;
+          session.acceptsImages = acceptsImages(capabilities);
         } catch (cause) {
           const text = cause instanceof Error ? cause.message : String(cause);
           if (!/timed out/i.test(text)) throw cause;
         }
         session.compactCommand = compactCommandFromMeta(meta) ?? "/compact";
-        const created = await acp.newSession(input.workingDirectory);
+        // `acpSessionId` is assigned only once load/new answers: the update
+        // filter above drops everything until then, which is what keeps
+        // `session/load`'s history replay out of the live transcript.
+        const cursor = this.resumable.get(input.threadId) ?? input.resumeCursor;
+        const mcpServers = acpMcpServers(input.mcpServers ?? [], capabilities);
+        // Grok's `session/new` `_meta.rules`: "extra rules appended to the
+        // system prompt" (its agent-mode guide; verified against grok 1.0.40).
+        const sessionMeta = input.instructions ? { rules: input.instructions } : undefined;
+        const loaded =
+          cursor && supportsLoadSession(capabilities)
+            ? await acp.loadSession(cursor, input.workingDirectory, mcpServers, sessionMeta).then(
+                (result) => ({ sessionId: cursor, models: result.models }),
+                () => null,
+              )
+            : null;
+        const created = loaded ?? (await acp.newSession(input.workingDirectory, mcpServers, sessionMeta));
         session.acpSessionId = created.sessionId;
+        this.resumable.set(input.threadId, created.sessionId);
         session.models = created.models;
         const current = created.models?.currentModelId;
         if (current) session.model = current;
@@ -329,6 +454,10 @@ export class GrokDriver implements ProviderAdapter<CliError> {
       // Best effort: unavailable on API-key/custom deployments by design.
     }
   }
+
+  /** The latest `response_completed` reading, against the current model's window. */
+  readonly contextUsage = async (threadId: ThreadId): Promise<ContextWindowUsage | null> =>
+    this.sessions.get(threadId)?.context ?? null;
 
   readonly stopSession = (threadId: ThreadId): Effect.Effect<void, CliError> =>
     this.attempt("GROK_SPAWN_FAILED", `Could not stop the Grok session for thread ${threadId}`, async () => {
@@ -416,18 +545,24 @@ export class GrokDriver implements ProviderAdapter<CliError> {
         status: "running",
         text: "",
         error: null,
+        textSealed: false,
       };
       session.transcript.push(turn);
       session.promptsInFlight += 1;
       session.lastActivityAt = Date.now();
       try {
-        // Attachments beyond text are a follow-up; other files travel as
-        // prompt path text in this version.
-        const response = await session.acp.prompt(session.acpSessionId, [
-          { type: "text", text: input.prompt },
-        ]);
+        // Image blocks only for an agent that advertised them (ACP
+        // `promptCapabilities.image`); otherwise the prompt names them.
+        const images = input.images ?? [];
+        const blocks: AcpPromptContent[] = session.acceptsImages
+          ? [
+              { type: "text", text: input.prompt },
+              ...images.map((image) => ({ type: "image" as const, data: image.data, mimeType: image.mimeType })),
+            ]
+          : [{ type: "text", text: imageMention(input.prompt, images.map((image) => image.name)) }];
+        const response = await session.acp.prompt(session.acpSessionId, blocks);
         session.lastActivityAt = Date.now();
-        const usage = usageOfResponse(response.usage);
+        const usage = response.metaUsage ? grokMetaUsage(response.metaUsage) : usageOfResponse(response.usage);
         session.usage = {
           input: session.usage.input + usage.input,
           cacheRead: session.usage.cacheRead + usage.cacheRead,
@@ -582,6 +717,23 @@ export class GrokDriver implements ProviderAdapter<CliError> {
       const session = this.requireSession(threadId);
       const parked = session.parkedPermissions.get(requestId);
       if (!parked || parked.threadId !== threadId) {
+        // A *dismissed question* lands here too: the panel closes a
+        // question the same way it declines a permission, and the request
+        // is still blocking the agent's RPC. Resolving it with no answers
+        // releases the turn — closing only the panel would park it until
+        // the next interrupt. Rejecting instead would fail the whole turn,
+        // and a dismissal is not a failure.
+        const parkedInput = session.parkedInputs.get(requestId);
+        if (parkedInput && parkedInput.threadId === threadId) {
+          if (decision.kind !== "decline" && decision.kind !== "cancel") {
+            // Accepting is a miscall: there is no answer to accept.
+            throw new CliError("REQUEST_MISMATCH", `Request ${requestId} needs user input, not a permission decision.`, {
+              details: { threadId, requestId },
+            });
+          }
+          parkedInput.resolve({});
+          return;
+        }
         throw new CliError("REQUEST_UNKNOWN", `No pending permission request ${requestId}.`, {
           details: { threadId, requestId },
         });
@@ -661,6 +813,36 @@ export class GrokDriver implements ProviderAdapter<CliError> {
 
   // -- updates ---------------------------------------------------------------------
 
+  /**
+   * Grok's `_x.ai/*` notifications. Two carry what ACP itself does not:
+   * `models/update` (each model's `totalContextTokens`) and
+   * `session_notification` → `response_completed`, the usage of every model
+   * call, which is the context-window reading.
+   */
+  private onExtensionNotification(session: GrokSession, method: string, params: unknown): void {
+    const record = asRecord(params);
+    if (!record) return;
+    if (method === "_x.ai/models/update") {
+      const models = readModelState(record);
+      if (models && models.availableModels.length > 0) session.models = models;
+      return;
+    }
+    if (method !== "_x.ai/session_notification") return;
+    if (asString(record["sessionId"]) !== session.acpSessionId) return;
+    const update = asRecord(record["update"]);
+    if (update?.["sessionUpdate"] !== "response_completed") return;
+    const usage = asRecord(update["usage"]);
+    if (!usage) return;
+    session.context = grokContextOf(usage, this.contextWindowOf(session)) ?? session.context;
+  }
+
+  private contextWindowOf(session: GrokSession): number | null {
+    const models = session.models?.availableModels ?? [];
+    const current = session.model ?? session.models?.currentModelId ?? null;
+    const model = models.find((candidate) => candidate.modelId === current) ?? (models.length === 1 ? models[0] : undefined);
+    return model?.contextTokens ?? null;
+  }
+
   private onSessionUpdate(session: GrokSession, update: { sessionUpdate: string; [key: string]: unknown }): void {
     session.lastActivityAt = Date.now();
     const open = session.transcript.find((turn) => turn.status === "running") ?? null;
@@ -669,6 +851,12 @@ export class GrokDriver implements ProviderAdapter<CliError> {
       case "agent_message_chunk": {
         const text = content && typeof content["text"] === "string" ? (content["text"] as string) : null;
         if (text && open) {
+          // The turn's answer is its last message, not every note written
+          // between tool calls on the way there.
+          if (open.textSealed) {
+            open.text = "";
+            open.textSealed = false;
+          }
           open.text += text;
           open.items.push({ kind: "assistant", text });
         }
@@ -695,7 +883,10 @@ export class GrokDriver implements ProviderAdapter<CliError> {
           "tool";
         session.toolInFlight = true;
         session.lastToolAt = Date.now();
-        if (open) open.items.push({ kind: "tool", tool: title, text: title });
+        if (open) {
+          open.items.push({ kind: "tool", tool: title, text: title });
+          if (open.text) open.textSealed = true;
+        }
         this.publish({
           type: "tool.execute.started",
           provider: "grok",
@@ -855,4 +1046,40 @@ export function grokModelStateForTests(
   const session = (driver as unknown as { sessions: Map<ThreadId, GrokSession> }).sessions.get(threadId);
   if (!session) throw new Error(`no session for ${threadId}`);
   return { model: session.model, models: session.models };
+}
+
+/**
+ * moxen's MCP servers in ACP form. Every ACP agent must take stdio
+ * servers; an http one is sent only when the agent advertised
+ * `mcpCapabilities.http`, and dropped otherwise rather than failing
+ * `session/new`.
+ */
+export function acpMcpServers(servers: readonly McpServerSpec[], capabilities: unknown): AcpMcpServer[] {
+  const record = capabilities !== null && typeof capabilities === "object" ? (capabilities as Record<string, unknown>) : null;
+  const mcp = record?.["mcpCapabilities"];
+  const http = mcp !== null && typeof mcp === "object" && (mcp as Record<string, unknown>)["http"] === true;
+  const pairs = (values: Readonly<Record<string, string>>) =>
+    Object.entries(values).map(([name, value]) => ({ name, value }));
+  return servers.flatMap((server): AcpMcpServer[] => {
+    if (server.type === "http") {
+      return http ? [{ type: "http", name: server.name, url: server.url, headers: pairs(server.headers) }] : [];
+    }
+    return [{ name: server.name, command: server.command, args: [...server.args], env: pairs(server.env) }];
+  });
+}
+
+/** ACP advertises `session/load` through `agentCapabilities.loadSession`. */
+function supportsLoadSession(capabilities: unknown): boolean {
+  return (
+    capabilities !== null &&
+    typeof capabilities === "object" &&
+    (capabilities as Record<string, unknown>)["loadSession"] === true
+  );
+}
+
+/** ACP advertises image prompts through `agentCapabilities.promptCapabilities.image`. */
+function acceptsImages(capabilities: unknown): boolean {
+  const record = capabilities !== null && typeof capabilities === "object" ? (capabilities as Record<string, unknown>) : null;
+  const prompt = record?.["promptCapabilities"];
+  return prompt !== null && typeof prompt === "object" && (prompt as Record<string, unknown>)["image"] === true;
 }

@@ -10,7 +10,6 @@ import { openThreadStore, ThreadStore } from "../store.js";
 import {
   completeTurn,
   createThread,
-  delegateTask,
   failTurn,
   inspectThread,
   interruptTurn,
@@ -19,12 +18,12 @@ import {
   sendTurn,
   settleThread,
   snoozeThread,
-  taskCancel,
-  taskStatus,
   threadStatus,
   unsettleThread,
   unsnoozeThread,
+  updateThreadMeta,
 } from "../threads.js";
+import { toThreadEnvelope } from "../project.js";
 
 const MODEL = { instanceId: "claude", model: "test-model" };
 
@@ -35,7 +34,7 @@ afterEach(async () => {
 });
 
 async function testStore(options: { clock?: () => number; bus?: ReturnType<typeof createEventBus<BackendEvent>> } = {}) {
-  const root = await mkdtemp(path.join(os.tmpdir(), "mvx-threads-"));
+  const root = await mkdtemp(path.join(os.tmpdir(), "moxen-threads-"));
   cleanup.push(() => rm(root, { recursive: true, force: true }));
   return await openThreadStore(root, options);
 }
@@ -69,7 +68,7 @@ describe("thread store", () => {
   });
 
   it("persists across reopen", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "mvx-threads-"));
+    const root = await mkdtemp(path.join(os.tmpdir(), "moxen-threads-"));
     cleanup.push(() => rm(root, { recursive: true, force: true }));
     const first = await openThreadStore(root);
     const thread = await createThread(first, {
@@ -255,50 +254,6 @@ describe("interrupt", () => {
   });
 });
 
-describe("delegation", () => {
-  it("delegates without waiting, then reports status and cancels", async () => {
-    const store = await testStore();
-    const parent = await createThread(store, { projectId: "p", title: "parent", modelSelection: MODEL });
-    const { delegation, child } = await delegateTask(store, parent.id, {
-      task: "do the thing",
-      wait: false,
-    });
-    expect(delegation.status).toBe("running");
-    expect(child.projectId).toBe("p");
-
-    expect((await taskStatus(store, delegation.id)).delegation.status).toBe("running");
-    const cancelled = await taskCancel(store, delegation.id);
-    expect(cancelled.delegation.status).toBe("cancelled");
-    expect(cancelled.interrupted).toBe(true);
-    const again = await taskCancel(store, delegation.id);
-    expect(again.delegation.status).toBe("cancelled");
-    expect(again.interrupted).toBe(false);
-  });
-
-  it("waits for the child to finish and times out on a stuck child", async () => {
-    const store = await testStore();
-    const parent = await createThread(store, { projectId: "p", title: "parent", modelSelection: MODEL });
-    const pending = await delegateTask(store, parent.id, { task: "slow", wait: false });
-    const childTurns = (await readThread(store, pending.child.id)).turns;
-    await completeTurn(store, pending.child.id, childTurns[0]!.id, { text: "done" });
-    expect((await taskStatus(store, pending.delegation.id)).delegation.status).toBe("completed");
-
-    const stuck = await delegateTask(store, parent.id, {
-      task: "stuck",
-      wait: true,
-      timeoutMs: 50,
-    });
-    expect(stuck.delegation.status).toBe("waitTimedOut");
-  });
-
-  it("rejects empty tasks and unknown delegations", async () => {
-    const store = await testStore();
-    const parent = await createThread(store, { projectId: "p", title: "parent", modelSelection: MODEL });
-    expect(await codeOf(() => delegateTask(store, parent.id, { task: "  " }))).toBe("PROMPT_REQUIRED");
-    expect(await codeOf(() => taskStatus(store, "missing"))).toBe("DELEGATION_NOT_FOUND");
-  });
-});
-
 describe("events", () => {
   it("publishes lifecycle reasons", async () => {
     const bus = createEventBus<BackendEvent>();
@@ -331,5 +286,39 @@ describe("archived threads", () => {
       "THREAD_ARCHIVED",
     );
     expect(await codeOf(() => interruptTurn(store, thread.id))).toBe("THREAD_ARCHIVED");
+  });
+});
+
+/**
+ * A turn used to store `modelSelection: null` unless the send overrode the
+ * model, which reads back as "whatever the thread says now" — so switching
+ * models mid-conversation relabelled every earlier turn with the new one.
+ */
+describe("per-turn model", () => {
+  it("records the model each turn ran on, surviving a later switch", async () => {
+    const store = await testStore();
+    const thread = await createThread(store, { projectId: "p", title: "t", modelSelection: MODEL });
+    const first = await sendTurn(store, thread.id, { prompt: "one" });
+    await completeTurn(store, thread.id, first.turn.id, { text: "done" });
+
+    const next = { instanceId: "claude", model: "next-model" };
+    await updateThreadMeta(store, thread.id, { modelSelection: next });
+    const second = await sendTurn(store, thread.id, { prompt: "two" });
+    const override = { instanceId: "codex", model: "gpt-override" };
+    await completeTurn(store, thread.id, second.turn.id, { text: "done" });
+    const third = await sendTurn(store, thread.id, { prompt: "three", modelSelection: override });
+
+    expect(first.turn.modelSelection).toEqual(MODEL);
+    expect(second.turn.modelSelection).toEqual(next);
+    expect(third.turn.modelSelection).toEqual(override);
+
+    const turns = await store.readTurns(thread.id);
+    const envelope = toThreadEnvelope((await store.readThreadRecord(thread.id))!, turns);
+    expect(envelope.modelSelection).toEqual(next);
+    expect(envelope.turnModelSelections).toEqual({
+      [first.turn.id]: MODEL,
+      [second.turn.id]: next,
+      [third.turn.id]: override,
+    });
   });
 });

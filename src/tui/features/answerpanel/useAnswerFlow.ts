@@ -115,11 +115,9 @@ export function useAnswerFlow(
     void client
       .dispatch({
         type: "thread.user-input.respond",
-        commandId: crypto.randomUUID(),
         threadId: id,
         requestId: draft.requestId,
         answers,
-        createdAt: new Date().toISOString(),
       })
       .then(() => {
         toasts.push("answer-submitted", "info", "Answer submitted", COPY_TOAST_MS);
@@ -169,10 +167,8 @@ export function useAnswerFlow(
     void client
       .dispatch({
         type: "thread.user-input.dismiss",
-        commandId: crypto.randomUUID(),
         threadId: id,
         requestId: draft.requestId,
-        createdAt: new Date().toISOString(),
       })
       .then(() => {
         toasts.push("answer-dismissed", "info", "Question dismissed", COPY_TOAST_MS);

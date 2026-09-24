@@ -1,0 +1,34 @@
+{
+  "ok": true,
+  "data": {
+    "runtime": {
+      "origin": "direct",
+      "stateDir": null,
+      "runtimeStatePath": null,
+      "settingsPath": null,
+      "environmentId": "direct",
+      "serverVersion": "direct",
+      "capabilities": {
+        "threadSettlement": true
+      }
+    },
+    "auth": {
+      "source": "direct",
+      "version": null
+    },
+    "projects": [
+      {
+        "id": "project-existing",
+        "title": "Existing project",
+        "workspaceRoot": "<root>",
+        "defaultModelSelection": {
+          "instanceId": "codex",
+          "model": "gpt-5.6-sol"
+        },
+        "createdAt": "<time>",
+        "updatedAt": "<time>",
+        "deletedAt": null
+      }
+    ]
+  }
+}

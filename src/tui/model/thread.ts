@@ -183,9 +183,10 @@ function decodeContextUsage(raw: Record<string, unknown>): ContextUsage | null {
  * `context-window.updated` *activity* (`{usedTokens, maxTokens,
  * totalProcessedTokens, inputTokens, outputTokens}`) appended after tool
  * calls, not the `provider-thread.updated`/`contextUsage` shape
- * `snapshotContextUsage` below expects and which no thread observed here has
- * ever actually sent. No cache or auto-compact fields exist in this shape,
- * so those stay null rather than guessed.
+ * `snapshotContextUsage` below expects. The turn runner writes one as each
+ * turn settles (`core/threads/execute.ts` `recordContextUsage`); cache and
+ * auto-compact fields are present when the provider reports them
+ * (Claude: all of them; Codex: cache only) and null otherwise.
  */
 function decodeContextWindowActivity(activity: ActivityEnvelope): ContextUsage | null {
   const payload = asRecord(activity.payload);
@@ -194,9 +195,9 @@ function decodeContextWindowActivity(activity: ActivityEnvelope): ContextUsage |
     usedTokens: payload.usedTokens,
     maxTokens: typeof payload.maxTokens === "number" ? payload.maxTokens : null,
     totalProcessedTokens: typeof payload.totalProcessedTokens === "number" ? payload.totalProcessedTokens : null,
-    cachedInputTokens: null,
-    compactsAutomatically: null,
-    autoCompactThreshold: null,
+    cachedInputTokens: typeof payload.cachedInputTokens === "number" ? payload.cachedInputTokens : null,
+    compactsAutomatically: typeof payload.compactsAutomatically === "boolean" ? payload.compactsAutomatically : null,
+    autoCompactThreshold: typeof payload.autoCompactThreshold === "number" ? payload.autoCompactThreshold : null,
   };
 }
 

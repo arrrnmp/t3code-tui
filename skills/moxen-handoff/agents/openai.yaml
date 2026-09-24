@@ -1,0 +1,4 @@
+interface:
+  display_name: "Moxen handoff"
+  short_description: "Hand the current conversation off to a fresh Moxen thread"
+  default_prompt: "Use $moxen-handoff to hand this conversation off to a fresh thread in Moxen."

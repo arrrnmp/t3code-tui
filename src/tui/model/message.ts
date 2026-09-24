@@ -1,6 +1,6 @@
-import os from "node:os";
 import path from "node:path";
 
+import { appHomeDir } from "../../core/config.js";
 import type { MessageEnvelope } from "../../core/types.js";
 
 export interface ImageReference {
@@ -16,7 +16,7 @@ export interface RenderedMessage {
   images: ImageReference[];
 }
 
-const IMAGE_REFERENCE = /!?\[([^\]]*)\]\(monvex-context:\/\/v1\/image\/([^)]+)\)/g;
+const IMAGE_REFERENCE = /!?\[([^\]]*)\]\(moxen-context:\/\/v1\/image\/([^)]+)\)/g;
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -25,7 +25,7 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 }
 
 function attachmentsDir(homeDir?: string): string {
-  return path.join(homeDir ?? path.join(os.homedir(), ".monvex"), "attachments");
+  return path.join(homeDir ?? appHomeDir(), "attachments");
 }
 
 function extensionFor(mimeType: unknown): string {
@@ -44,12 +44,13 @@ function asBytes(value: unknown): number | null {
 }
 
 /**
- * Messages reference attachments as `![label](monvex-context://v1/image/<contextId>)`
+ * Messages reference attachments as `![label](moxen-context://v1/image/<contextId>)`
  * and carry a `context.records` table mapping that id to an attachment id; the
  * bytes then live under the store home as `<attachmentId><ext>`.
  *
  * Inline uploads over `thread.turn.start` persist attachments without context
- * records, so anything in `message.attachments` not already covered by a ref
+ * records (the server saves the bytes and names the file in `path`), so
+ * anything in `message.attachments` not already covered by a ref
  * renders as an image row too — otherwise TUI-sent images are invisible in
  * the transcript even though the agent received them.
  */
@@ -97,10 +98,13 @@ export function renderMessage(message: MessageEnvelope, homeDir?: string): Rende
         label: name,
         attachmentId,
         sizeBytes: asBytes(attachment.sizeBytes),
+        // The server says where it saved the bytes; older rows follow the
+        // home-folder convention.
         filePath:
-          attachmentId === null
+          asString(attachment.path) ??
+          (attachmentId === null
             ? null
-            : path.join(attachmentsDir(homeDir), `${attachmentId}${extensionFor(attachment.mimeType)}`),
+            : path.join(attachmentsDir(homeDir), `${attachmentId}${extensionFor(attachment.mimeType)}`)),
       });
     }
   }

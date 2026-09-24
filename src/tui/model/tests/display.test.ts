@@ -1,7 +1,15 @@
 import { describe, expect, it } from "vitest";
 
-import type { ProviderSummary } from "../../../cli/catalog/catalog.js";
-import { defaultEffortChoice, displayEffort, displayModelName, isEffortDescriptor, isTerminalTooSmall, prettifyModelSlug } from "../display.js";
+import type { ProviderSummary } from "../../../core/catalog/summary.js";
+import {
+  defaultEffortChoice,
+  displayEffort,
+  displayModelName,
+  isEffortDescriptor,
+  isTerminalTooSmall,
+  prettifyModelSlug,
+  turnModelSelection,
+} from "../display.js";
 
 function providers(): ProviderSummary[] {
   return [
@@ -209,5 +217,22 @@ describe("isTerminalTooSmall", () => {
     [0, 0, true],
   ])("maps %ix%i to too-small=%s", (width, height, expected) => {
     expect(isTerminalTooSmall(width, height)).toBe(expected);
+  });
+});
+
+describe("turnModelSelection", () => {
+  const current = { instanceId: "claudeAgent", model: "claude-opus-5-5" };
+  const earlier = { instanceId: "claudeAgent", model: "claude-opus-5" };
+  const thread = { modelSelection: current, turnModelSelections: { "turn-1": earlier } };
+
+  it("labels a turn with the model it ran on, not the thread's current one", () => {
+    expect(turnModelSelection(thread, "turn-1")).toEqual(earlier);
+  });
+
+  it("falls back to the thread's model for unrecorded and live turns", () => {
+    expect(turnModelSelection(thread, "turn-legacy")).toEqual(current);
+    expect(turnModelSelection(thread, null)).toEqual(current);
+    expect(turnModelSelection({ modelSelection: current }, "turn-1")).toEqual(current);
+    expect(turnModelSelection(null, "turn-1")).toBeUndefined();
   });
 });

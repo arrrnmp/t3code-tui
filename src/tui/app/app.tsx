@@ -7,6 +7,7 @@ import { applyShellFrame, emptyShellState, threadStatus, visibleThreads, type Sh
 import { Timeline } from "../features/timeline/timeline.js";
 import { DiffPanel } from "../features/diffpanel/diffpanel.js";
 import { Composer } from "../features/composer/composer.js";
+import { useSkillInventory } from "../features/composer/useSkillInventory.js";
 import { TasksPanel } from "../features/taskspanel/taskspanel.js";
 import { AttachmentStrip } from "../ui/attachmentstrip.js";
 import { PickerModal, type PickerBody } from "../features/pickers/pickermodal.js";
@@ -15,16 +16,17 @@ import { RenameModal } from "../ui/renamemodal.js";
 import { AnswerPanel } from "../features/answerpanel/answerpanel.js";
 import { dispatchErrorMessage } from "../../core/errors.js";
 import type { ModelSelection, RuntimeMode } from "../../core/types.js";
-import { compatibleRuntimeMode } from "../../cli/catalog/permissions.js";
-import { offerableModels, offerableProviders } from "../../cli/catalog/catalog.js";
+import { compatibleRuntimeMode } from "../../core/catalog/permissions.js";
+import { offerableModels, offerableProviders } from "../../core/catalog/summary.js";
 import {
   attachmentFromBytes,
   buildImageAttachments,
-  clipboardFileName,
   extractMentions,
   MAX_PENDING_ATTACHMENTS,
-} from "../model/attachments.js";
-import type { ImageAttachmentUpload } from "../model/attachments.js";
+} from "../../core/attachments.js";
+import type { ImageAttachmentUpload } from "../../core/attachments.js";
+import { clipboardFileName } from "../model/hostClipboard.js";
+import { turnModelSelection } from "../model/display.js";
 import { formatContextUsage, formatTokenCount, groupTurns } from "../model/turns.js";
 import { markModalDismissed } from "../model/modalDismiss.js";
 import { Sidebar } from "../features/sidebar/sidebar.js";
@@ -32,7 +34,7 @@ import { MonitoringBackdrop } from "../ui/backdrop.js";
 import { LoadingScreen } from "../ui/loadingscreen.js";
 import { bootLoadingStage, isBootReady } from "../model/readiness.js";
 import { HoverButton } from "../ui/hoverbutton.js";
-import { openExternal } from "../../cli/infra/platformOpen.js";
+import { openExternal } from "../../core/infra/platformOpen.js";
 import { formatDuration } from "../model/turns.js";
 import { ContextUsageCard } from "../ui/contextusagecard.js";
 import { COLOR, MARKER, pulseColor, SPINNER, SURFACE, truncate } from "../theme.js";
@@ -44,6 +46,8 @@ import {
   applyThreadFrame,
   detectUsageLimit,
   emptyThreadState,
+  latestPlan,
+  pendingUserInputRequests,
   timeline,
   resumeCompactionKey,
   shouldOfferResumeCompaction,
@@ -69,6 +73,7 @@ import { useDiffPanel } from "../features/diffpanel/useDiffPanel.js";
 import { useComposer } from "../features/composer/useComposer.js";
 import { useProviderCatalog } from "../features/pickers/useProviderCatalog.js";
 import { useThreadCreation } from "./hooks/useThreadCreation.js";
+import { useThreadExport } from "./hooks/useThreadExport.js";
 import { useThreadOps } from "./hooks/useThreadOps.js";
 import type { PickerName } from "../features/pickers/pickerTypes.js";
 import type { ClientApi } from "../../server/api.js";
@@ -298,6 +303,12 @@ export function App({
    * against anything until `createThread` sends `thread.create`.
    */
   const effectiveProjectId = creating ? (creatingProjectId ?? selected?.projectId ?? null) : (selected?.projectId ?? null);
+  /** Where the skill picker asks the provider to look: the thread's worktree, else its project. */
+  const skillDirectory =
+    (creating ? null : (selected?.worktreePath ?? null)) ??
+    shell.projects.find((project) => project.id === effectiveProjectId)?.workspaceRoot ??
+    null;
+  const skillInventory = useSkillInventory(client, effectiveModelSelection?.instanceId, skillDirectory);
 
   /** One palette copy action: missing data toasts instead of dispatching. */
   const copyPaletteText = (text: string | null, emptyMessage: string) => {
@@ -408,6 +419,39 @@ export function App({
     setThreadResync,
   });
 
+  /**
+   * Command-palette "Export thread" source data: the live plan checklist,
+   * unanswered agent questions, and context usage feed the handover file's
+   * "State to continue" section; the file lands in the thread project's
+   * workspace root (else the launch directory).
+   */
+  const exportPlan = useMemo(() => latestPlan(threadState), [threadState]);
+  const exportPending = useMemo(() => pendingUserInputRequests(threadState), [threadState]);
+  const exportProject = useMemo(() => {
+    const project = shell.projects.find((candidate) => candidate.id === selected?.projectId) ?? null;
+    if (project === null) return null;
+    return {
+      title: String(project.title ?? project.id),
+      workspaceRoot: typeof project.workspaceRoot === "string" ? project.workspaceRoot : null,
+    };
+  }, [shell.projects, selected]);
+  const { exportThread } = useThreadExport({
+    thread: selected,
+    openThreadId,
+    project: exportProject,
+    groups,
+    plan: exportPlan,
+    pending: exportPending,
+    contextUsage: threadState.contextUsage,
+    exportDir: exportProject?.workspaceRoot ?? null,
+    fallbackDir: cwd,
+    clipboard,
+    toasts,
+    paletteReturnFocus,
+    closePicker,
+    setError,
+  });
+
   useEffect(() => {
     if (openThreadId === null) return;
     selectedIdRef.current = openThreadId;
@@ -452,12 +496,8 @@ export function App({
     void client
       .dispatch({
         type: "thread.turn.start",
-        commandId: crypto.randomUUID(),
         threadId: selected.id,
-        message: { messageId: crypto.randomUUID(), role: "user", text: prompt, attachments },
-        runtimeMode: selected.runtimeMode ?? "full-access",
-        interactionMode: selected.interactionMode ?? "default",
-        createdAt: new Date().toISOString(),
+        message: { text: prompt, attachments },
       })
       .catch((cause: unknown) => setError(String(cause).slice(0, 120)));
   };
@@ -476,7 +516,7 @@ export function App({
     if (threadStatus(selected, Date.now()) === "settled") {
       const id = selected.id;
       void client
-        .dispatch({ type: "thread.unsettle", commandId: crypto.randomUUID(), threadId: id, reason: "user" as const })
+        .dispatch({ type: "thread.unsettle", threadId: id, reason: "user" as const })
         .then(() => {
           toasts.push("thread-unsettled", "info", "Thread unsettled", COPY_TOAST_MS);
           send(text);
@@ -722,7 +762,7 @@ export function App({
   // extra timer.
   useEffect(() => {
     if (setTerminalTitle === undefined) return;
-    const threadTitleText = selected?.title !== undefined && selected.title.length > 0 ? String(selected.title) : "Monvex";
+    const threadTitleText = selected?.title !== undefined && selected.title.length > 0 ? String(selected.title) : "Moxen";
     if (!sessionRunning) {
       setTerminalTitle(threadTitleText);
       return;
@@ -735,7 +775,7 @@ export function App({
   }, [setTerminalTitle, selected?.title, selected?.latestTurn, sessionRunning, now]);
 
   /**
-   * Stop the open thread's in-flight turn, mirroring `mvx threads
+   * Stop the open thread's in-flight turn, mirroring `moxen threads
    * interrupt`. Fire-and-forget: the thread subscription projects the
    * interruption once the server accepts it. Returns whether a turn was
    * running. Only the composer's stop button reaches this — escape paths
@@ -749,9 +789,7 @@ export function App({
     void client
       .dispatch({
         type: "thread.turn.interrupt",
-        commandId: crypto.randomUUID(),
         threadId: openThreadId,
-        createdAt: new Date().toISOString(),
       })
       .catch((cause: unknown) => setError(String(cause).slice(0, 120)));
     return true;
@@ -772,8 +810,8 @@ export function App({
     effort,
     permission,
     permissionChoices,
-    currentSkills,
     modelColor,
+    labelFor,
     openModelPicker,
     openEffortPicker,
     openPermissionPicker,
@@ -855,7 +893,7 @@ export function App({
    * Modal bodies: the model list across providers plus a provider shortcut
    * section, one section per effort descriptor of the current model, every
    * turn that produced file changes for the diff-turn picker, or the
-   * command palette's copy/thread/jump sections.
+   * command palette's copy/thread/export/jump sections.
    */
   const pickerBody: PickerBody = useMemo(() => {
     if (picker === null) return { kind: "list", sections: [] };
@@ -1027,6 +1065,18 @@ export function App({
                     disabled: true,
                     onPick: () => {},
                   },
+            ],
+          },
+          {
+            header: "Export",
+            rows: [
+              {
+                key: "thread:export",
+                label: "Export thread to markdown",
+                ...(entries.length === 0
+                  ? { meta: "no turns yet", disabled: true, onPick: () => {} }
+                  : { meta: `${groups.length} turn${groups.length === 1 ? "" : "s"}`, onPick: exportThread }),
+              },
             ],
           },
           ...(jumpRows.length === 0 ? [] : [{ header: "Jump to message", rows: jumpRows }]),
@@ -1420,7 +1470,8 @@ export function App({
                 onCopyClick={copyDraft}
                 onExternalEditClick={editDraftExternally}
                 editingExternally={editingExternally}
-                skills={currentSkills}
+                skills={skillInventory?.skills}
+                skillPrefix={skillInventory?.trigger}
               />
               )}
               <box style={{ flexDirection: "row", height: 1, flexShrink: 0, justifyContent: "center", marginTop: 1 }}>
@@ -1441,8 +1492,17 @@ export function App({
             groups={groups}
             title={selected === null ? "no thread" : String(selected.title ?? selected.id)}
             subtitle={`${session?.status ?? "idle"}`}
-            model={model}
-            modelColor={modelColor}
+            modelForTurn={(turnId) =>
+              labelFor(
+                turnModelSelection(
+                  {
+                    modelSelection: selected?.modelSelection,
+                    turnModelSelections: threadState.thread?.turnModelSelections ?? selected?.turnModelSelections,
+                  },
+                  turnId,
+                ),
+              )
+            }
             homeDir={homeDir}
             expandedTurn={diffPanel.expandedTurn}
             expandedWork={diffPanel.expandedWork}
@@ -1537,7 +1597,8 @@ export function App({
             onCopyClick={copyDraft}
             onExternalEditClick={editDraftExternally}
             editingExternally={editingExternally}
-            skills={currentSkills}
+            skills={skillInventory?.skills}
+            skillPrefix={skillInventory?.trigger}
             contextUsage={contextUsageDisplay}
             onContextUsageClick={() => setContextCardOpen((open) => !open)}
           />
@@ -1750,7 +1811,7 @@ export function App({
           onClose={closeQuitConfirm}
         >
           <box style={{ flexDirection: "column", flexGrow: 1 }}>
-            <text fg={COLOR.bright} selectable={false}>{"Quit mvx?"}</text>
+            <text fg={COLOR.bright} selectable={false}>{"Quit moxen?"}</text>
             <box style={{ height: 1, flexShrink: 0 }} />
             <text fg={COLOR.dim} selectable={false}>
               {selected === null

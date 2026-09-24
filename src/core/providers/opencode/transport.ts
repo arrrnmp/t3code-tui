@@ -17,6 +17,7 @@ import net from "node:net";
 import { createOpencodeClient } from "@opencode-ai/sdk/v2";
 
 import { CliError } from "../../errors.js";
+import { killProcessTree } from "../../infra/process.js";
 import {
   buildServerConfigContent,
   compareSemver,
@@ -33,6 +34,16 @@ export interface OpencodeTextPart {
   readonly type: "text";
   readonly text: string;
 }
+
+/** An image, as OpenCode's `FilePartInput`: a data URL with its type and name. */
+export interface OpencodeFilePart {
+  readonly type: "file";
+  readonly mime: string;
+  readonly filename: string;
+  readonly url: string;
+}
+
+export type OpencodePromptPart = OpencodeTextPart | OpencodeFilePart;
 
 /** Caller-assigned message id in the server's format (`msg_` + 12 hex + 14 base62). */
 export function newOpencodeMessageId(): string {
@@ -52,8 +63,28 @@ export type OpencodeSubscribedEvent = {
   readonly properties: Record<string, unknown>;
 };
 
+export type OpencodeMcpConfig =
+  | { readonly type: "local"; readonly command: readonly string[]; readonly environment?: Readonly<Record<string, string>> }
+  | { readonly type: "remote"; readonly url: string; readonly headers?: Readonly<Record<string, string>> };
+
 export interface OpencodeSessionSummary {
   readonly sessionID: string;
+}
+
+/** One model's token limits, as the server reports them (`Model.limit`). */
+export interface OpencodeModelLimit {
+  readonly context: number;
+  readonly input?: number;
+  readonly output: number;
+}
+
+/** What a context-window reading needs from the server, fetched once per connection. */
+export interface OpencodeContextSettings {
+  /** Keyed `provider/model`. */
+  readonly limits: ReadonlyMap<string, OpencodeModelLimit>;
+  /** `compaction.auto` (default on) and `compaction.reserved`, from the server's config. */
+  readonly autoCompact: boolean;
+  readonly reserved: number | null;
 }
 
 export interface OpencodeServerConnection {
@@ -62,12 +93,24 @@ export interface OpencodeServerConnection {
   readonly external: boolean;
   createSession(input: { title: string }): Promise<OpencodeSessionSummary>;
   getSession(sessionID: string): Promise<{ id: string } | null>;
+  /**
+   * `mcp.add` for this connection's directory. OpenCode (re)spawns the
+   * server on every call, so callers dedupe.
+   */
+  addMcpServer(name: string, config: OpencodeMcpConfig): Promise<void>;
   sessionMessages(sessionID: string): Promise<ReadonlyArray<{ info: Record<string, unknown>; parts: ReadonlyArray<Record<string, unknown>> }>>;
+  contextSettings(): Promise<OpencodeContextSettings>;
+  /** `command.list`: slash commands, skills (`source: "skill"`) and MCP prompts. */
+  listCommands(): Promise<ReadonlyArray<{ name: string; description: string | null; source: string | null; hints: readonly string[] }>>;
   promptAsync(input: {
     sessionID: string;
     model?: { providerID: string; modelID: string };
     messageID?: string;
-    parts: ReadonlyArray<OpencodeTextPart>;
+    /** Appended to the agent's system prompt for this prompt (`SessionPromptAsyncData.body.system`). */
+    system?: string;
+    /** A named agent (e.g. the built-in read-only `plan`). */
+    agent?: string;
+    parts: ReadonlyArray<OpencodePromptPart>;
   }): Promise<{ messageID: string }>;
   abortSession(sessionID: string): Promise<void>;
   forkSession(sessionID: string, messageID?: string): Promise<OpencodeSessionSummary>;
@@ -149,6 +192,14 @@ class LiveOpencodeServerConnection implements OpencodeServerConnection {
     return typeof id === "string" ? { id } : null;
   }
 
+  async addMcpServer(name: string, config: OpencodeMcpConfig): Promise<void> {
+    const body =
+      config.type === "local"
+        ? { type: "local" as const, command: [...config.command], ...(config.environment ? { environment: { ...config.environment } } : {}) }
+        : { type: "remote" as const, url: config.url, ...(config.headers ? { headers: { ...config.headers } } : {}) };
+    unwrap(await this.client.mcp.add({ name, config: body }), "mcp.add");
+  }
+
   async sessionMessages(sessionID: string): Promise<ReadonlyArray<{ info: Record<string, unknown>; parts: ReadonlyArray<Record<string, unknown>> }>> {
     const data = unwrap(await this.client.session.messages({ sessionID }), "session.messages");
     if (!Array.isArray(data)) return [];
@@ -167,11 +218,57 @@ class LiveOpencodeServerConnection implements OpencodeServerConnection {
     });
   }
 
+  async listCommands(): Promise<ReadonlyArray<{ name: string; description: string | null; source: string | null; hints: readonly string[] }>> {
+    const data = unwrap(await this.client.command.list(), "command.list");
+    return (Array.isArray(data) ? data : []).flatMap((entry) => {
+      const command = asRecord(entry);
+      const name = typeof command?.name === "string" ? command.name : null;
+      if (!command || !name) return [];
+      return [{
+        name,
+        description: typeof command.description === "string" ? command.description : null,
+        source: typeof command.source === "string" ? command.source : null,
+        hints: Array.isArray(command.hints) ? command.hints.filter((hint): hint is string => typeof hint === "string") : [],
+      }];
+    });
+  }
+
+  async contextSettings(): Promise<OpencodeContextSettings> {
+    const providers = asRecord(unwrap(await this.client.config.providers(), "config.providers"));
+    const limits = new Map<string, OpencodeModelLimit>();
+    for (const entry of Array.isArray(providers?.providers) ? providers.providers : []) {
+      const provider = asRecord(entry);
+      const providerId = typeof provider?.id === "string" ? provider.id : null;
+      const models = asRecord(provider?.models);
+      if (!providerId || !models) continue;
+      for (const [modelId, raw] of Object.entries(models)) {
+        const limit = asRecord(asRecord(raw)?.limit);
+        const context = typeof limit?.context === "number" ? limit.context : 0;
+        if (context <= 0) continue;
+        limits.set(`${providerId}/${modelId}`, {
+          context,
+          output: typeof limit?.output === "number" ? limit.output : 0,
+          ...(typeof limit?.input === "number" ? { input: limit.input } : {}),
+        });
+      }
+    }
+    // Config is advisory: a server that will not answer keeps upstream defaults.
+    const config = await this.client.config.get().then((result) => asRecord(result.data)).catch(() => null);
+    const compaction = asRecord(config?.compaction);
+    return {
+      limits,
+      autoCompact: compaction?.auto !== false,
+      reserved: typeof compaction?.reserved === "number" ? compaction.reserved : null,
+    };
+  }
+
   async promptAsync(input: {
     sessionID: string;
     model?: { providerID: string; modelID: string };
     messageID?: string;
-    parts: ReadonlyArray<OpencodeTextPart>;
+    system?: string;
+    agent?: string;
+    parts: ReadonlyArray<OpencodePromptPart>;
   }): Promise<{ messageID: string }> {
     // promptAsync answers 204 with an empty body ("Prompt accepted") —
     // the message id is caller-assigned, passed in and echoed back.
@@ -181,7 +278,13 @@ class LiveOpencodeServerConnection implements OpencodeServerConnection {
         sessionID: input.sessionID,
         messageID,
         ...(input.model ? { model: input.model } : {}),
-        parts: input.parts.map((part) => ({ type: "text" as const, text: part.text })),
+        ...(input.system ? { system: input.system } : {}),
+        ...(input.agent ? { agent: input.agent } : {}),
+        parts: input.parts.map((part) =>
+          part.type === "text"
+            ? { type: "text" as const, text: part.text }
+            : { type: "file" as const, mime: part.mime, filename: part.filename, url: part.url },
+        ),
       }),
       "session.promptAsync",
     );
@@ -262,7 +365,8 @@ class LiveOpencodeServerConnection implements OpencodeServerConnection {
         done();
       });
       try {
-        if (process.platform === "win32") child.kill("SIGKILL");
+        // The spawned binary may be a shim: the tree, or the server survives it.
+        if (process.platform === "win32") killProcessTree(child, "SIGKILL");
         else process.kill(-pid, "SIGTERM");
       } catch {
         clearTimeout(timer);
@@ -356,11 +460,7 @@ export class SpawnOpencodeTransport implements OpencodeTransport {
       detached: process.platform !== "win32",
     });
     const url = await waitForServerReady(child, settings.binaryPath).catch(async (cause: unknown) => {
-      try {
-        child.kill("SIGKILL");
-      } catch {
-        // Already gone.
-      }
+      killProcessTree(child, "SIGKILL");
       throw cause;
     });
     const client = createOpencodeClient({

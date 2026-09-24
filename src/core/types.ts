@@ -1,3 +1,5 @@
+import type { McpServerEntry } from "./mcp.js";
+
 export type ProjectPolicy = "create" | "existing";
 export type WorkspaceMode = "repo" | "folder";
 export type OpenMode = "auto" | "desktop" | "browser" | "none";
@@ -19,6 +21,10 @@ export interface CliConfig {
   model?: string;
   speedMode?: SpeedMode;
   thinkingEffort?: string;
+  /** MCP servers injected into every provider session (`core/mcp.ts`). */
+  mcpServers?: Record<string, McpServerEntry>;
+  /** Appended to every provider session's system prompt (`core/threads/instructions.ts`). */
+  instructions?: string;
 }
 
 export interface RuntimeState {
@@ -112,6 +118,12 @@ export interface ThreadEnvelope {
   activities?: ActivityEnvelope[];
   checkpoints?: CheckpointEnvelope[];
   proposedPlans?: ProposedPlanEnvelope[];
+  /**
+   * The model each turn ran on, by turn id — `modelSelection` above is only
+   * the thread's *current* choice. Turns recorded before per-turn models
+   * were stored are absent; read those as the thread's selection.
+   */
+  turnModelSelections?: Record<string, ModelSelection>;
   deletedAt?: string | null;
   [key: string]: unknown;
 }

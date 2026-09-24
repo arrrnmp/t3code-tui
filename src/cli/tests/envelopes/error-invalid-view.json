@@ -1,0 +1,10 @@
+{
+  "ok": false,
+  "error": {
+    "code": "INVALID_THREAD_OPTION",
+    "message": "--view must be messages, turn-items, plans, checkpoints, or transfers.",
+    "details": {
+      "view": "everything"
+    }
+  }
+}

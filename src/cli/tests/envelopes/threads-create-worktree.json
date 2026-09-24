@@ -1,0 +1,110 @@
+{
+  "ok": true,
+  "data": {
+    "runtime": {
+      "origin": "direct",
+      "stateDir": null,
+      "runtimeStatePath": null,
+      "settingsPath": null,
+      "environmentId": "direct",
+      "serverVersion": "direct",
+      "capabilities": {
+        "threadSettlement": true
+      }
+    },
+    "auth": {
+      "source": "direct",
+      "version": null
+    },
+    "workspace": {
+      "inputPath": "<root>",
+      "workspaceRoot": "<root>",
+      "mode": "repo",
+      "isGitRepository": true,
+      "branch": "main"
+    },
+    "settings": {
+      "defaultThreadEnvMode": "local",
+      "newWorktreesStartFromOrigin": true,
+      "projectDefaultThreadEnvMode": null,
+      "projectFileDefaultThreadEnvMode": null,
+      "effectiveThreadEnvMode": "worktree",
+      "threadEnvModeSource": "request"
+    },
+    "project": {
+      "id": "<id-1>",
+      "title": "work",
+      "workspaceRoot": "<root>",
+      "defaultModelSelection": null,
+      "createdAt": "<time>",
+      "updatedAt": "<time>",
+      "deletedAt": null
+    },
+    "projectCreated": true,
+    "projectCommand": {
+      "type": "project.create",
+      "commandId": "<id-2>",
+      "projectId": "<id-1>",
+      "title": "work",
+      "workspaceRoot": "<root>",
+      "createWorkspaceRootIfMissing": true,
+      "defaultModelSelection": null,
+      "createdAt": "<time>"
+    },
+    "projectDispatch": null,
+    "thread": {
+      "id": "<id-3>",
+      "title": "Isolated change",
+      "createCommand": {
+        "type": "thread.create",
+        "commandId": "<id-4>",
+        "threadId": "<id-3>",
+        "projectId": "<id-1>",
+        "title": "Isolated change",
+        "modelSelection": {
+          "instanceId": "codex",
+          "model": "gpt-5.4"
+        },
+        "runtimeMode": "full-access",
+        "interactionMode": "default",
+        "branch": "moxen/<short>",
+        "worktreePath": "<root>trees\\<id-3>",
+        "createdAt": "<time>"
+      },
+      "createDispatch": null,
+      "command": {
+        "type": "thread.turn.start",
+        "commandId": "<id-5>",
+        "threadId": "<id-3>",
+        "message": {
+          "messageId": "<id-6>",
+          "role": "user",
+          "text": "Isolated change",
+          "attachments": []
+        },
+        "modelSelection": {
+          "instanceId": "codex",
+          "model": "gpt-5.4"
+        },
+        "titleSeed": "Isolated change",
+        "runtimeMode": "full-access",
+        "interactionMode": "default",
+        "createdAt": "<time>"
+      },
+      "dispatch": null
+    },
+    "worktree": {
+      "path": "<root>trees\\<id-3>",
+      "branch": "moxen/<short>",
+      "baseBranch": "main",
+      "startFromOrigin": true
+    },
+    "opened": {
+      "mode": "none",
+      "kind": "none",
+      "url": null,
+      "exactThread": false
+    },
+    "dryRun": false
+  }
+}

@@ -14,6 +14,7 @@ import {
   readStoredAuthTypes,
   resolveModelsDevUrl,
 } from "../catalog.js";
+import { tempDir } from "../../../testing/tmp.js";
 
 const FIXTURE = {
   anthropic: {
@@ -116,7 +117,7 @@ describe("loadModelsDevCatalog", () => {
   const text = JSON.stringify(FIXTURE);
 
   function tmpCache(): string {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mvx-models-"));
+    const dir = tempDir("moxen-models-");
     return path.join(dir, "models.json");
   }
 
@@ -149,7 +150,7 @@ describe("loadModelsDevCatalog", () => {
 
   it("falls back to the snapshot when live fails", async () => {
     const loaded = await loadModelsDevCatalog({
-      cachePath: path.join(os.tmpdir(), "mvx-models-missing", "models.json"),
+      cachePath: path.join(os.tmpdir(), "moxen-models-missing", "models.json"),
       snapshotText: text,
       fetchImpl: (async () => ({ ok: false, status: 500, text: async () => "" }) as Response) as typeof fetch,
     });
@@ -159,7 +160,7 @@ describe("loadModelsDevCatalog", () => {
 
   it("reports empty when everything fails", async () => {
     const loaded = await loadModelsDevCatalog({
-      cachePath: path.join(os.tmpdir(), "mvx-models-missing", "models.json"),
+      cachePath: path.join(os.tmpdir(), "moxen-models-missing", "models.json"),
       snapshotText: "garbage",
       fetchImpl: (async () => {
         throw new Error("offline");

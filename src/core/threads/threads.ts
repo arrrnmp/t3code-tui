@@ -7,6 +7,8 @@
  * session. Provider drivers attach in Stage 2 via `completeTurn` /
  * `failTurn` / `trackRunning`. See ARCHITECTURE.md §9.
  */
+import os from "node:os";
+
 import { CliError } from "../errors.js";
 import type {
   InteractionMode,
@@ -16,7 +18,6 @@ import type {
 import { ThreadStore } from "./store.js";
 import type {
   CreateThreadInput,
-  DelegationStatus,
   ReadView,
   SendDelivery,
   SendIfBusy,
@@ -25,6 +26,7 @@ import type {
   StoredThread,
   StoredTurn,
   ThreadReadResult,
+  TurnOwner,
   ThreadStatus,
   TurnDelivery,
   TurnUsage,
@@ -38,8 +40,6 @@ const READ_VIEWS: readonly ReadView[] = [
   "transfers",
 ];
 
-const DEFAULT_DELEGATE_TIMEOUT_MS = 300_000;
-const DELEGATE_POLL_INTERVAL_MS = 100;
 
 function requireThreadId(threadId: string): string {
   const trimmed = threadId.trim();
@@ -238,6 +238,12 @@ export async function sendTurn(
   }
   const ifBusy = normalizeIfBusy(input.ifBusy);
   const delivery = normalizeDelivery(input.delivery);
+  // Saved before the lock: bytes on disk are harmless if the send is then
+  // refused, and the lock is held only for ledger writes.
+  const attachments = input.attachments?.length
+    ? await Promise.all(input.attachments.map((upload) => store.saveAttachment(upload)))
+    : [];
+  const withAttachments = attachments.length > 0 ? { attachments } : {};
 
   return await store.withThreadLock(threadId, async () => {
     const now = store.nowIso();
@@ -283,7 +289,11 @@ export async function sendTurn(
 
     const runtimeMode: RuntimeMode = input.runtimeMode ?? thread.runtimeMode;
     const interactionMode: InteractionMode = input.interactionMode ?? thread.interactionMode;
-    const modelSelection: ModelSelection | null = input.modelSelection ?? null;
+    // The model this turn actually runs on, recorded on the turn itself. An
+    // unset override used to store `null` ("whatever the thread says"),
+    // which reads back as the thread's *current* model — so switching models
+    // mid-conversation relabelled every earlier turn with the new one.
+    const modelSelection: ModelSelection = input.modelSelection ?? thread.modelSelection;
 
     if (running && (delivery === "auto" || delivery === "steer")) {
       const messageId = store.newId();
@@ -294,6 +304,7 @@ export async function sendTurn(
         role: "user",
         text: prompt,
         createdAt: now,
+        ...withAttachments,
       });
       const result: TurnDelivery = delivery === "steer" ? "steered" : "injected";
       await store.appendLedger(threadId, "activity", {
@@ -329,6 +340,7 @@ export async function sendTurn(
       id: store.newId(),
       threadId,
       status,
+      ...(status === "running" ? { owner: currentTurnOwner() } : {}),
       delivery:
         delivery === "queue" ? (status === "queued" ? "queued" : "started")
         : delivery === "restart" ? "restarted"
@@ -352,6 +364,7 @@ export async function sendTurn(
       role: "user",
       text: prompt,
       createdAt: now,
+      ...withAttachments,
     });
     await store.appendLedger(threadId, "activity", {
       id: store.newId(),
@@ -410,12 +423,84 @@ async function interruptTurnLocked(
 }
 
 /** Caller must hold the thread lock. Promotes the oldest queued turn, if any. */
+/** This process, as the owner of the turns it starts or promotes. */
+export function currentTurnOwner(): TurnOwner {
+  return { pid: process.pid, host: os.hostname() };
+}
+
+/** Whether a process exists. EPERM means it does, just not ours to signal. */
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (cause) {
+    return (cause as { code?: string } | null)?.code === "EPERM";
+  }
+}
+
+/**
+ * Whether nothing will ever settle this running turn: no run in this
+ * process holds it, and the process that owned it — on this machine —
+ * is gone (a crashed server, a killed CLI, a TUI closed mid-turn). A turn
+ * owned on another host, or recorded before owners were, is never judged:
+ * a live turn wrongly reaped would be far worse than a stuck one.
+ */
+function isOrphaned(store: ThreadStore, turn: StoredTurn): boolean {
+  if (turn.status !== "running" || store.isTracked(turn.id)) return false;
+  const owner = turn.owner;
+  if (!owner || owner.host !== os.hostname() || owner.pid === process.pid) return false;
+  return !processAlive(owner.pid);
+}
+
+/**
+ * Interrupt the thread's running turn if its owner died, and promote the
+ * next queued turn (now owned by this process). Returns the promoted turn,
+ * which the caller must run; null when there was nothing to recover.
+ */
+export async function reconcileOrphanedTurn(
+  store: ThreadStore,
+  rawThreadId: string,
+): Promise<{ interrupted: StoredTurn; promoted: StoredTurn | null } | null> {
+  const threadId = requireThreadId(rawThreadId);
+  const peek = openTurn(await store.readTurns(threadId));
+  if (!peek || !isOrphaned(store, peek)) return null;
+  return await store.withThreadLock(threadId, async () => {
+    const thread = await store.readThreadRecord(threadId);
+    const running = openTurn(await store.readTurns(threadId));
+    if (!thread || !running || !isOrphaned(store, running)) return null;
+    const now = store.nowIso();
+    const pid = running.owner?.pid;
+    const interrupted =
+      (await store.updateTurn(threadId, running.id, {
+        status: "interrupted",
+        error: `The process running this turn (pid ${pid}) exited before it finished.`,
+        updatedAt: now,
+        completedAt: now,
+      })) ?? running;
+    await store.appendLedger(threadId, "activity", {
+      id: store.newId(),
+      threadId,
+      turnId: running.id,
+      kind: "turn.orphaned",
+      summary: `Turn ${running.id} was interrupted: its process (pid ${pid}) exited mid-turn.`,
+      createdAt: now,
+    });
+    await promoteQueuedLocked(store, threadId, now);
+    const promoted = (await store.readTurns(threadId)).find(
+      (turn) => turn.status === "running" && turn.id !== running.id && !store.isTracked(turn.id),
+    ) ?? null;
+    await store.writeThreadRecord({ ...thread, updatedAt: now });
+    store.emit(threadId, "turn-interrupted");
+    return { interrupted, promoted };
+  });
+}
+
 async function promoteQueuedLocked(store: ThreadStore, threadId: string, now: string): Promise<void> {
   const turns = await store.readTurns(threadId);
   if (openTurn(turns)) return;
   const next = turns.find((turn) => turn.status === "queued");
   if (!next) return;
-  await store.updateTurn(threadId, next.id, { status: "running", updatedAt: now });
+  await store.updateTurn(threadId, next.id, { status: "running", owner: currentTurnOwner(), updatedAt: now });
   await store.appendLedger(threadId, "activity", {
     id: store.newId(),
     threadId,
@@ -719,152 +804,4 @@ export async function delegationForChild(
 ): Promise<StoredDelegation | null> {
   const rows = await store.readDelegations();
   return rows.find((row) => row.parentThreadId === parentThreadId && row.childThreadId === childThreadId) ?? null;
-}
-
-export interface DelegateTaskInput {
-  readonly task: string;
-  readonly title?: string;
-  readonly modelSelection?: ModelSelection;
-  readonly runtimeMode?: RuntimeMode;
-  readonly interactionMode?: InteractionMode;
-  readonly wait?: boolean;
-  readonly timeoutMs?: number;
-}
-
-export interface DelegateTaskResult {
-  readonly delegation: StoredDelegation;
-  readonly child: StoredThread;
-  readonly turn: StoredTurn;
-}
-
-function sleep(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
-}
-
-function delegationStatusOfTurn(turn: StoredTurn | undefined): DelegationStatus | null {
-  if (!turn) return null;
-  if (turn.status === "completed") return "completed";
-  if (turn.status === "failed") return "failed";
-  if (turn.status === "interrupted") return "interrupted";
-  return "running";
-}
-
-export async function delegateTask(
-  store: ThreadStore,
-  rawParentThreadId: string,
-  input: DelegateTaskInput,
-): Promise<DelegateTaskResult> {
-  const parentThreadId = requireThreadId(rawParentThreadId);
-  const task = input.task.trim();
-  if (!task) {
-    throw new CliError("PROMPT_REQUIRED", "A non-empty delegated task is required.", {
-      exitCode: 2,
-    });
-  }
-  const wait = input.wait ?? true;
-  const timeoutMs = input.timeoutMs ?? DEFAULT_DELEGATE_TIMEOUT_MS;
-  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
-    throw new CliError("INVALID_THREAD_OPTION", "timeoutMs must be a positive integer.", {
-      exitCode: 2,
-    });
-  }
-
-  const parent = await inspectThread(store, parentThreadId);
-  requireNotArchived(parent, "delegate work");
-  const title = input.title?.trim() || `Task: ${task.slice(0, 60)}`;
-  const child = await createThread(store, {
-    projectId: parent.projectId,
-    title,
-    modelSelection: input.modelSelection ?? parent.modelSelection,
-    ...(input.runtimeMode !== undefined ? { runtimeMode: input.runtimeMode } : {}),
-    ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
-    env: { ...parent.env },
-  });
-  const sent = await sendTurn(store, child.id, { prompt: task });
-  const now = store.nowIso();
-  const delegation: StoredDelegation = {
-    id: store.newId(),
-    parentThreadId,
-    childThreadId: child.id,
-    prompt: task,
-    status: "running",
-    createdAt: now,
-    updatedAt: now,
-  };
-  await store.appendDelegation(delegation);
-  store.emit(parentThreadId, "delegated");
-
-  if (!wait) return { delegation, child, turn: sent.turn };
-
-  const deadline = Date.now() + timeoutMs;
-  let status: DelegationStatus = "running";
-  for (;;) {
-    const turns = await store.readTurns(child.id);
-    const latest = turns[turns.length - 1];
-    const derived = delegationStatusOfTurn(latest);
-    if (derived && derived !== "running") {
-      status = derived;
-      break;
-    }
-    if (Date.now() >= deadline) {
-      status = "waitTimedOut";
-      break;
-    }
-    await sleep(Math.min(DELEGATE_POLL_INTERVAL_MS, Math.max(deadline - Date.now(), 0)));
-  }
-  const updated =
-    (await store.updateDelegation(delegation.id, { status })) ?? { ...delegation, status };
-  return { delegation: updated, child, turn: sent.turn };
-}
-
-export async function taskStatus(
-  store: ThreadStore,
-  rawDelegationId: string,
-): Promise<{ delegation: StoredDelegation; child: StoredThread }> {
-  const delegationId = rawDelegationId.trim();
-  if (!delegationId) {
-    throw new CliError("DELEGATION_ID_REQUIRED", "A non-empty delegation id is required.", {
-      exitCode: 2,
-    });
-  }
-  const delegation = (await store.readDelegations()).find((row) => row.id === delegationId);
-  if (!delegation) {
-    throw new CliError("DELEGATION_NOT_FOUND", `No delegation exists with id ${delegationId}.`, {
-      exitCode: 3,
-      details: { delegationId },
-    });
-  }
-  const child = requireStoredThread(
-    await store.readThreadRecord(delegation.childThreadId),
-    delegation.childThreadId,
-  );
-  if (delegation.status === "cancelled") return { delegation, child };
-  const turns = await store.readTurns(child.id);
-  const derived = delegationStatusOfTurn(turns[turns.length - 1]);
-  if (derived && derived !== "running" && delegation.status !== derived) {
-    const updated = await store.updateDelegation(delegation.id, { status: derived });
-    return { delegation: updated ?? { ...delegation, status: derived }, child };
-  }
-  return { delegation, child };
-}
-
-export async function taskCancel(
-  store: ThreadStore,
-  rawDelegationId: string,
-): Promise<{ delegation: StoredDelegation; child: StoredThread; interrupted: boolean }> {
-  const { delegation, child } = await taskStatus(store, rawDelegationId);
-  if (
-    delegation.status === "completed" ||
-    delegation.status === "failed" ||
-    delegation.status === "interrupted" ||
-    delegation.status === "cancelled"
-  ) {
-    return { delegation, child, interrupted: false };
-  }
-  const result = await interruptTurn(store, child.id);
-  const updated =
-    (await store.updateDelegation(delegation.id, { status: "cancelled" })) ??
-    ({ ...delegation, status: "cancelled" } as StoredDelegation);
-  store.emit(child.id, "task-cancelled");
-  return { delegation: updated, child, interrupted: result.interrupted };
 }

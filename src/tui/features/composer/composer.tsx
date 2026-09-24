@@ -8,7 +8,7 @@ import { useAnimTick } from "../../hooks/useAnimTick.js";
 import { PICK_BG, PICK_FG } from "../pickers/pickermodal.js";
 import { COLOR, pulseColor, SURFACE, truncate } from "../../theme.js";
 import { detectSkillTrigger, filterSkills, insertSkillMention, marqueeWindow, type SkillTrigger } from "../../model/skills.js";
-import type { SkillSummary } from "../../../cli/catalog/catalog.js";
+import type { SkillSummary } from "../../../core/catalog/summary.js";
 import type { ContextUsageDisplay } from "../../model/turns.js";
 
 /** Rows visible at once before the list scrolls (wheel, not the arrow keys alone). */
@@ -88,6 +88,7 @@ export function Composer({
   width,
   hideHint,
   skills,
+  skillPrefix,
   contextUsage,
   onContextUsageClick,
 }: {
@@ -140,6 +141,8 @@ export function Composer({
   hideHint?: boolean;
   /** Undefined hides `$` skill invocation entirely (no catalog loaded yet). */
   skills?: readonly SkillSummary[] | undefined;
+  /** How the provider invokes a picked skill: `$name` (Codex) or `/name`. */
+  skillPrefix?: "$" | "/" | undefined;
   /** Null/undefined hides the segment — the driver never reported usage for this thread. */
   contextUsage?: ContextUsageDisplay | null;
   onContextUsageClick?: () => void;
@@ -225,7 +228,7 @@ export function Composer({
   const insertSkill = (skill: SkillSummary) => {
     if (skillTrigger === null) return;
     const text = areaRef.current?.plainText ?? localRef.current;
-    const result = insertSkillMention(text, skillTrigger, skill.name);
+    const result = insertSkillMention(text, skillTrigger, skill.name, skillPrefix ?? "$");
     const node = areaRef.current;
     if (node !== null) {
       node.setText(result.text);

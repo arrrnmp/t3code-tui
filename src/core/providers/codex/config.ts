@@ -11,7 +11,7 @@
 import os from "node:os";
 import path from "node:path";
 
-import { expandHome } from "../../config.js";
+import { appEnv, expandHome } from "../../config.js";
 
 export type CodexAccountType = "apiKey" | "amazonBedrock" | "chatgpt" | "unknown";
 
@@ -20,6 +20,19 @@ export interface CodexSettings {
   readonly homePath: string;
   /** Raw launch args string; tokenized for `codex app-server`. */
   readonly launchArgs: string;
+}
+
+/**
+ * "Whatever Codex itself defaults to": sent as no `model` at all, so the
+ * app-server applies its own configured default. The installation default
+ * uses it rather than pinning a model slug that ages with every release.
+ */
+export const CODEX_DEFAULT_MODEL_SLUG = "codex-default";
+
+/** The model to send, or null for Codex's own default. */
+export function resolveCodexModel(model: string | null | undefined): string | null {
+  const trimmed = model?.trim() ?? "";
+  return !trimmed || trimmed === CODEX_DEFAULT_MODEL_SLUG ? null : trimmed;
 }
 
 export const DEFAULT_CODEX_SETTINGS: CodexSettings = {
@@ -78,13 +91,11 @@ export function tokenizeLaunchArgs(raw: string): string[] {
   return args;
 }
 
-const LAUNCH_ARGS_ENV = "MONVEX_CODEX_LAUNCH_ARGS";
-
 export function codexAppServerArgs(
   launchArgs = "",
   env: NodeJS.ProcessEnv = process.env,
 ): string[] {
-  const raw = env[LAUNCH_ARGS_ENV]?.trim() || launchArgs.trim();
+  const raw = appEnv("CODEX_LAUNCH_ARGS", env)?.trim() || launchArgs.trim();
   return ["app-server", ...tokenizeLaunchArgs(raw)];
 }
 

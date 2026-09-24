@@ -1,0 +1,51 @@
+{
+  "ok": true,
+  "data": {
+    "runtime": {
+      "origin": "direct",
+      "stateDir": null,
+      "runtimeStatePath": null,
+      "settingsPath": null,
+      "environmentId": "direct",
+      "serverVersion": "direct",
+      "capabilities": {
+        "threadSettlement": true
+      }
+    },
+    "auth": {
+      "source": "direct",
+      "version": null
+    },
+    "project": {
+      "id": "project-existing",
+      "title": "Existing project",
+      "workspaceRoot": "<root>",
+      "defaultModelSelection": {
+        "instanceId": "codex",
+        "model": "gpt-5.6-sol"
+      },
+      "createdAt": "<time>",
+      "updatedAt": "<time>",
+      "deletedAt": null
+    },
+    "thread": {
+      "id": "thread-existing",
+      "projectId": "project-existing",
+      "title": "Existing thread",
+      "snoozedUntil": null
+    },
+    "command": {
+      "type": "thread.unsnooze",
+      "commandId": "<id-1>",
+      "threadId": "thread-existing",
+      "reason": "user"
+    },
+    "dispatch": null,
+    "verification": {
+      "accepted": true,
+      "snoozedUntil": null,
+      "snoozedAt": "<time>",
+      "snapshotSequence": 0
+    }
+  }
+}

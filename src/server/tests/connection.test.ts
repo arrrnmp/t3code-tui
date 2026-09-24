@@ -1,16 +1,25 @@
-import { realpath } from "node:fs/promises";
+import { realpath, writeFile } from "node:fs/promises";
+import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { testHarness } from "../../cli/testing/harness.js";
+import { testHarness } from "../../core/testing/harness.js";
 import { ensureStoredProject } from "../../core/projects/projects.js";
 import { OpenCodeDriver } from "../../core/providers/opencode/driver.js";
 import { FakeOpencodeTransport } from "../../core/providers/opencode/tests/fakes.js";
+import * as Effect from "effect/Effect";
+import * as Queue from "effect/Queue";
+import * as Stream from "effect/Stream";
+
+import { normalizeConfig } from "../../core/config.js";
+import { CliError } from "../../core/errors.js";
+import type { ProviderRuntimeEvent } from "../../core/providers/spi.js";
+import type { TurnDriver, TurnOutcome } from "../../core/threads/execute.js";
 import { createThread, readThread } from "../../core/threads/threads.js";
 import { DirectConnection } from "../connection.js";
 
 function storeRoot(): string {
-  return process.env.MONVEX_STORE_ROOT!;
+  return process.env.MOXEN_STORE_ROOT!;
 }
 
 async function waitFor(label: string, check: () => Promise<boolean>, timeoutMs = 5000): Promise<void> {
@@ -21,6 +30,166 @@ async function waitFor(label: string, check: () => Promise<boolean>, timeoutMs =
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
 }
+
+/**
+ * A driver that parks a question mid-turn, the way Claude's `canUseTool`
+ * does, and only settles once it is answered or dismissed.
+ */
+class QuestionDriver implements TurnDriver {
+  private readonly sessions = new Set<string>();
+  private readonly queue = Effect.runSync(Queue.unbounded<ProviderRuntimeEvent>());
+  private parked: ((answer: Record<string, string> | null) => void) | null = null;
+  answered: Record<string, string> | null = null;
+  dismissed = false;
+
+  hasSession(threadId: string): Effect.Effect<boolean, CliError> {
+    return Effect.succeed(this.sessions.has(threadId));
+  }
+
+  startSession(input: { threadId: string }): Effect.Effect<unknown, CliError> {
+    return Effect.sync(() => {
+      this.sessions.add(input.threadId);
+      return {};
+    });
+  }
+
+  sendTurn(input: { threadId: string }): Effect.Effect<{ threadId: string; turnId: string }, CliError> {
+    return Effect.sync(() => {
+      Effect.runSync(
+        Queue.offer(this.queue, {
+          type: "user-input.request.opened",
+          provider: "claude",
+          threadId: input.threadId,
+          requestId: "req-1",
+          raw: {
+            toolName: "AskUserQuestion",
+            input: {
+              questions: [
+                {
+                  question: "Which direction?",
+                  header: "Direction",
+                  options: [{ label: "Forward" }, { label: "Sideways" }],
+                },
+              ],
+            },
+          },
+        } as ProviderRuntimeEvent),
+      );
+      return { threadId: input.threadId, turnId: "driver-turn-1" };
+    });
+  }
+
+  interruptTurn(): Effect.Effect<void, CliError> {
+    return Effect.void;
+  }
+
+  respondToUserInput(
+    _threadId: string,
+    _requestId: string,
+    answers: Record<string, string>,
+  ): Effect.Effect<void, CliError> {
+    return Effect.sync(() => {
+      this.answered = answers;
+      this.parked?.(answers);
+    });
+  }
+
+  respondToRequest(): Effect.Effect<void, CliError> {
+    return Effect.sync(() => {
+      this.dismissed = true;
+      this.parked?.(null);
+    });
+  }
+
+  async awaitTurn(): Promise<TurnOutcome> {
+    await new Promise<void>((resolve) => {
+      this.parked = () => resolve();
+    });
+    return {
+      status: "completed",
+      text: this.answered ? `Answered: ${JSON.stringify(this.answered)}` : "Dismissed",
+      usage: null,
+      error: null,
+    };
+  }
+
+  get streamEvents(): Stream.Stream<ProviderRuntimeEvent> {
+    return Stream.fromQueue(this.queue);
+  }
+}
+
+describe("DirectConnection parked questions", () => {
+  async function askingHarness() {
+    const driver = new QuestionDriver();
+    const harness = await testHarness({
+      drivers: { claude: () => driver, codex: () => driver, grok: () => driver, opencode: () => driver },
+    });
+    const connection = new DirectConnection({ storeRoot: harness.root, drivers: harness.drivers });
+    const workspaceRoot = await realpath(harness.work);
+    const ensured = await ensureStoredProject(storeRoot(), { workspaceRoot });
+    await connection.dispatch({
+      type: "thread.create",
+      commandId: "c-qc",
+      threadId: "thread-q",
+      projectId: ensured.project.id,
+      title: "Question",
+      modelSelection: { instanceId: "claudeAgent", model: "claude-opus-5" },
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: "main",
+    });
+    await connection.dispatch({
+      type: "thread.turn.start",
+      commandId: "c-q",
+      threadId: "thread-q",
+      message: { text: "plan it" },
+    });
+    // The question has to reach the ledger while the turn is still parked:
+    // the panel reads it from there, and the turn is blocked on the answer.
+    await waitFor("question row", async () => {
+      const read = await readThread(harness.store, "thread-q");
+      return read.activities.some((activity) => activity.kind === "user-input.requested");
+    });
+    return { driver, connection, harness };
+  }
+
+  it("writes a parked question to the ledger and answers it through dispatch", async () => {
+    const { driver, connection, harness } = await askingHarness();
+    const read = await readThread(harness.store, "thread-q");
+    const asked = read.activities.find((activity) => activity.kind === "user-input.requested");
+    expect((asked?.payload as { requestId?: string }).requestId).toBe("req-1");
+
+    await connection.dispatch({
+      type: "thread.user-input.respond",
+      commandId: "c-a",
+      threadId: "thread-q",
+      requestId: "req-1",
+      // The panel sends multi-select answers as arrays; the SPI takes strings.
+      answers: { "Which direction?": ["Forward", "Sideways"] },
+    });
+    expect(driver.answered).toEqual({ "Which direction?": "Forward, Sideways" });
+
+    await waitFor("turn completion", async () => {
+      const done = await readThread(harness.store, "thread-q");
+      return done.turns[0]?.status === "completed";
+    });
+  });
+
+  it("dismissing releases the turn instead of only closing the panel", async () => {
+    const { driver, connection, harness } = await askingHarness();
+    await connection.dispatch({
+      type: "thread.user-input.dismiss",
+      commandId: "c-d",
+      threadId: "thread-q",
+      requestId: "req-1",
+    });
+    expect(driver.dismissed).toBe(true);
+    await waitFor("turn completion", async () => {
+      const done = await readThread(harness.store, "thread-q");
+      return done.turns[0]?.status === "completed";
+    });
+  });
+});
 
 describe("DirectConnection dispatch", () => {
   it("creates threads and runs turns to completion", async () => {
@@ -39,20 +208,15 @@ describe("DirectConnection dispatch", () => {
         runtimeMode: "full-access",
         interactionMode: "default",
         branch: "main",
-        worktreePath: null,
-        createdAt: new Date().toISOString(),
       })) as { threadId: string };
       expect(created.threadId).toBe("thread-1");
 
-      const sent = (await connection.dispatch({
+      const sent = await connection.dispatch({
         type: "thread.turn.start",
         commandId: "c-2",
         threadId: "thread-1",
-        message: { messageId: "m-1", role: "user", text: "hi", attachments: [] },
-        runtimeMode: "full-access",
-        interactionMode: "default",
-        createdAt: new Date().toISOString(),
-      })) as { messageId: string; accepted: boolean };
+        message: { text: "hi" },
+      });
       expect(sent.accepted).toBe(true);
 
       await waitFor("turn completion", async () => {
@@ -74,13 +238,14 @@ describe("DirectConnection dispatch", () => {
         connection.dispatch({
           type: "thread.turn.start",
           threadId: "missing",
-          message: { messageId: "m", role: "user", text: "hi", attachments: [] },
+          message: { text: "hi" },
         }),
       ).rejects.toMatchObject({ code: "THREAD_NOT_FOUND" });
-      await expect(connection.dispatch({ type: "thread.frobnicate" })).rejects.toMatchObject({
-        code: "UNKNOWN_COMMAND",
-      });
-      await expect(connection.dispatch(null)).rejects.toMatchObject({ code: "UNKNOWN_COMMAND" });
+      // Untyped on purpose: this is what a transport hands over from the
+      // wire, and the runtime decoder has to reject it.
+      const untyped = connection.dispatch.bind(connection) as (command: unknown) => Promise<unknown>;
+      await expect(untyped({ type: "thread.frobnicate" })).rejects.toMatchObject({ code: "UNKNOWN_COMMAND" });
+      await expect(untyped(null)).rejects.toMatchObject({ code: "UNKNOWN_COMMAND" });
     } finally {
       await connection.close();
     }
@@ -128,9 +293,6 @@ describe("DirectConnection dispatch", () => {
         projectId: "project-2",
         title: "Two",
         workspaceRoot: "/elsewhere",
-        createWorkspaceRootIfMissing: true,
-        defaultModelSelection: null,
-        createdAt: new Date().toISOString(),
       })) as { projectId: string; created: boolean };
       expect(project.created).toBe(true);
     } finally {
@@ -219,7 +381,7 @@ describe("DirectConnection subscriptions", () => {
         await connection.dispatch({
           type: "thread.turn.start",
           threadId: "thread-stream",
-          message: { messageId: "m-1", role: "user", text: "hi", attachments: [] },
+          message: { text: "hi" },
         });
         await waitFor("prompt on the wire", async () => transport.servers[0]?.callsTo("session.promptAsync").length === 1);
         // The subscription bridge attaches on the thread poll interval;
@@ -272,7 +434,7 @@ describe("DirectConnection subscriptions", () => {
         await connection.dispatch({
           type: "thread.turn.start",
           threadId: "thread-tools",
-          message: { messageId: "m-1", role: "user", text: "run it", attachments: [] },
+          message: { text: "run it" },
         });
         await waitFor("prompt on the wire", async () => transport.servers[0]?.callsTo("session.promptAsync").length === 1);
         await new Promise((resolve) => setTimeout(resolve, 250));
@@ -304,6 +466,652 @@ describe("DirectConnection subscriptions", () => {
       } finally {
         unsubscribe();
       }
+    } finally {
+      await connection.close();
+    }
+  });
+});
+
+/** Completes every turn at once and records what the connection asked of it. */
+class RecordingDriver implements TurnDriver {
+  private readonly sessions = new Set<string>();
+  private turn = 0;
+  readonly starts: Array<{ threadId: string; resumeCursor?: string }> = [];
+  readonly sends: Array<{ threadId: string; modelSelection?: { model: string } }> = [];
+  readonly rollbacks: Array<{ threadId: string; numTurns: number }> = [];
+
+  constructor(private readonly nativeId: string) {}
+
+  rollbackThread(threadId: string, numTurns: number): Effect.Effect<unknown, CliError> {
+    return Effect.sync(() => void this.rollbacks.push({ threadId, numTurns }));
+  }
+
+  hasSession(threadId: string): Effect.Effect<boolean, CliError> {
+    return Effect.succeed(this.sessions.has(threadId));
+  }
+
+  startSession(input: { threadId: string; resumeCursor?: string }): Effect.Effect<unknown, CliError> {
+    return Effect.sync(() => {
+      this.starts.push(input);
+      this.sessions.add(input.threadId);
+      return {};
+    });
+  }
+
+  sendTurn(input: { threadId: string; modelSelection?: { model: string } }): Effect.Effect<{ threadId: string; turnId: string }, CliError> {
+    return Effect.sync(() => {
+      this.sends.push(input);
+      this.turn += 1;
+      return { threadId: input.threadId, turnId: `driver-turn-${this.turn}` };
+    });
+  }
+
+  resumeCursor(threadId: string): string | null {
+    return this.sessions.has(threadId) ? this.nativeId : null;
+  }
+
+  interruptTurn(): Effect.Effect<void, CliError> {
+    return Effect.void;
+  }
+
+  async awaitTurn(): Promise<TurnOutcome> {
+    return { status: "completed", text: "ok", usage: null, error: null };
+  }
+
+  readonly streamEvents: Stream.Stream<ProviderRuntimeEvent> = Stream.never;
+}
+
+describe("DirectConnection model and session continuity", () => {
+  async function recordingHarness(driver: RecordingDriver) {
+    const harness = await testHarness({ drivers: { codex: () => driver } });
+    const workspaceRoot = await realpath(harness.work);
+    const ensured = await ensureStoredProject(storeRoot(), { workspaceRoot });
+    return { harness, projectId: ensured.project.id };
+  }
+
+  async function runTurn(connection: DirectConnection, harness: { store: Parameters<typeof readThread>[0] }, text: string) {
+    await connection.dispatch({ type: "thread.turn.start", threadId: "thread-m", message: { text } });
+    await waitFor(`turn "${text}"`, async () => {
+      const read = await readThread(harness.store, "thread-m");
+      return read.turns.length > 0 && read.turns.every((turn) => turn.status === "completed");
+    });
+  }
+
+  it("runs each turn on the model selected when it was sent, even on a live session", async () => {
+    const driver = new RecordingDriver("native-1");
+    const { harness, projectId } = await recordingHarness(driver);
+    const connection = new DirectConnection({ storeRoot: harness.root, drivers: harness.drivers });
+    try {
+      await connection.dispatch({
+        type: "thread.create",
+        threadId: "thread-m",
+        projectId,
+        title: "Models",
+        modelSelection: { instanceId: "codex", model: "model-a" },
+      });
+      await runTurn(connection, harness, "one");
+      await connection.dispatch({
+        type: "thread.model-selection.set",
+        threadId: "thread-m",
+        modelSelection: { instanceId: "codex", model: "model-b" },
+      });
+      await runTurn(connection, harness, "two");
+
+      // One session throughout: the switch has to reach it per turn.
+      expect(driver.starts).toHaveLength(1);
+      expect(driver.sends.map((send) => send.modelSelection?.model)).toEqual(["model-a", "model-b"]);
+      const turns = await harness.store.readTurns("thread-m");
+      expect(turns.map((turn) => turn.modelSelection?.model)).toEqual(["model-a", "model-b"]);
+    } finally {
+      await connection.close();
+    }
+  });
+
+  it("hands the next process the provider session the last one ran", async () => {
+    const first = new RecordingDriver("native-1");
+    const { harness, projectId } = await recordingHarness(first);
+    const before = new DirectConnection({ storeRoot: harness.root, drivers: harness.drivers });
+    try {
+      await before.dispatch({
+        type: "thread.create",
+        threadId: "thread-m",
+        projectId,
+        title: "Resume",
+        modelSelection: { instanceId: "codex", model: "model-a" },
+      });
+      await runTurn(before, harness, "remember 7");
+      expect(first.starts[0]?.resumeCursor).toBeUndefined();
+    } finally {
+      await before.close();
+    }
+
+    // A new connection with a new driver is what reopening the TUI gets.
+    const second = new RecordingDriver("native-2");
+    const after = new DirectConnection({ storeRoot: harness.root, drivers: { codex: () => second } });
+    try {
+      await runTurn(after, harness, "what was it?");
+      expect(second.starts).toEqual([expect.objectContaining({ threadId: "thread-m", resumeCursor: "native-1" })]);
+    } finally {
+      await after.close();
+    }
+  });
+
+  it("starts sessions with the config's MCP servers, overridden by the project's moxen.json", async () => {
+    const driver = new RecordingDriver("native-1");
+    const { harness, projectId } = await recordingHarness(driver);
+    await writeFile(
+      path.join(harness.work, "moxen.json"),
+      JSON.stringify({
+        mcpServers: {
+          shared: { type: "http", url: "https://project.example/mcp" },
+          dropped: null,
+          local: { command: "node", args: ["server.js"], env: { TOKEN: "t" } },
+        },
+      }),
+    );
+    const config = normalizeConfig({
+      mcpServers: {
+        shared: { command: "global-shared" },
+        dropped: { command: "global-dropped" },
+      },
+    });
+    const connection = new DirectConnection({ storeRoot: harness.root, drivers: harness.drivers, config: async () => config });
+    try {
+      await connection.dispatch({
+        type: "thread.create",
+        threadId: "thread-m",
+        projectId,
+        title: "MCP",
+        modelSelection: { instanceId: "codex", model: "model-a" },
+      });
+      await runTurn(connection, harness, "use the tools");
+      const servers = (driver.starts[0] as unknown as { mcpServers: Array<Record<string, unknown>> }).mcpServers;
+      expect(servers.map((server) => server.name)).toEqual(["local", "moxen", "shared"]);
+      expect(servers[0]).toEqual({ name: "local", type: "stdio", command: "node", args: ["server.js"], env: { TOKEN: "t" } });
+      expect(servers[2]).toEqual({ name: "shared", type: "http", url: "https://project.example/mcp", headers: {} });
+      // moxen's own tools, bound to this thread and this store.
+      expect(servers[1]).toMatchObject({ type: "stdio", env: { MOXEN_STORE_ROOT: harness.root } });
+      expect((servers[1]!.args as string[]).slice(-2)).toEqual(["--thread", "thread-m"]);
+    } finally {
+      await connection.close();
+    }
+  });
+});
+
+/**
+ * Completes a turn only when the test releases it, so ordering around a
+ * running turn (queue, steer) is deterministic. Can also refuse to start
+ * a session.
+ */
+class GateDriver implements TurnDriver {
+  private readonly sessions = new Set<string>();
+  private readonly gates = new Map<string, () => void>();
+  private turn = 0;
+  readonly prompts: string[] = [];
+  readonly steers: string[] = [];
+  steerTurn?: (threadId: string, text: string) => Effect.Effect<void, CliError>;
+
+  constructor(private readonly options: { failStart?: boolean; steerable?: boolean } = {}) {
+    if (options.steerable) {
+      this.steerTurn = (_threadId, text) => Effect.sync(() => void this.steers.push(text));
+    }
+  }
+
+  hasSession(threadId: string): Effect.Effect<boolean, CliError> {
+    return Effect.succeed(this.sessions.has(threadId));
+  }
+
+  startSession(input: { threadId: string }): Effect.Effect<unknown, CliError> {
+    if (this.options.failStart) return Effect.fail(new CliError("SPAWN_FAILED", "no binary on PATH"));
+    return Effect.sync(() => {
+      this.sessions.add(input.threadId);
+      return {};
+    });
+  }
+
+  readonly images: Array<ReadonlyArray<{ name: string; mimeType: string; data: string }>> = [];
+
+  sendTurn(input: {
+    threadId: string;
+    prompt: string;
+    images?: ReadonlyArray<{ name: string; mimeType: string; data: string }>;
+  }): Effect.Effect<{ threadId: string; turnId: string }, CliError> {
+    return Effect.sync(() => {
+      this.prompts.push(input.prompt);
+      this.images.push(input.images ?? []);
+      this.turn += 1;
+      return { threadId: input.threadId, turnId: `gate-${this.turn}` };
+    });
+  }
+
+  interruptTurn(): Effect.Effect<void, CliError> {
+    return Effect.void;
+  }
+
+  async awaitTurn(_threadId: string, turnId: string): Promise<TurnOutcome> {
+    await new Promise<void>((resolve) => this.gates.set(turnId, resolve));
+    return { status: "completed", text: `done ${turnId}`, usage: null, error: null };
+  }
+
+  /** Let the oldest open turn finish. */
+  async release(): Promise<void> {
+    await waitFor("an open driver turn", async () => this.gates.size > 0);
+    const [turnId, resolve] = [...this.gates.entries()][0]!;
+    this.gates.delete(turnId);
+    resolve();
+  }
+
+  readonly streamEvents: Stream.Stream<ProviderRuntimeEvent> = Stream.never;
+}
+
+describe("DirectConnection capabilities (formerly CLI-only)", () => {
+  async function connected(options: { driver?: TurnDriver; config?: Record<string, unknown> } = {}) {
+    const driver = options.driver;
+    const harness = await testHarness(
+      driver ? { drivers: { claude: () => driver, codex: () => driver, grok: () => driver, opencode: () => driver } } : {},
+    );
+    const connection = new DirectConnection({
+      storeRoot: harness.root,
+      drivers: harness.drivers,
+      config: async () => ({ ...harness.config, ...options.config }),
+    });
+    return { harness, connection };
+  }
+
+  it("hands over to a new thread, resolving the project and waiting for the first turn", async () => {
+    const { harness, connection } = await connected();
+    try {
+      const preview = await connection.dispatch({ type: "thread.handover", cwd: harness.work, prompt: "Plan it", dryRun: true });
+      expect(preview.started).toBeNull();
+      expect(preview.projectCreated).toBe(true);
+      expect((await connection.query({ type: "projects.list" })).projects).toEqual([]);
+
+      const done = await connection.dispatch({ type: "thread.handover", cwd: harness.work, prompt: "Plan it", wait: true });
+      expect(done.started?.status).toBe("completed");
+      expect(done.settings.effectiveThreadEnvMode).toBe("local");
+      const read = await connection.query({ type: "thread.read", threadId: done.threadId, lastTurn: true });
+      expect(read.thread.view).toBe("messages");
+      if (read.thread.view === "messages") {
+        expect(read.thread.messages.map((message) => message.text)).toEqual(["Plan it", "Completed: Plan it"]);
+      }
+      const listed = await connection.query({ type: "threads.list", cwd: harness.work });
+      expect(listed.threads.map((thread) => thread.id)).toEqual([done.threadId]);
+      expect((await connection.query({ type: "project.resolve", cwd: harness.work })).project?.id).toBe(done.project.id);
+    } finally {
+      await connection.close();
+    }
+  });
+
+  it("provisions a worktree when the handover asks for one", async () => {
+    const { harness, connection } = await connected();
+    try {
+      const done = await connection.dispatch({
+        type: "thread.handover",
+        cwd: harness.work,
+        prompt: "Isolated work",
+        threadEnvMode: "worktree",
+        wait: true,
+      });
+      expect(done.worktree?.branch).toMatch(/^moxen\//);
+      const inspected = await connection.query({ type: "thread.inspect", threadId: done.threadId });
+      expect(inspected.thread.worktreePath).toBe(done.worktree?.path);
+    } finally {
+      await connection.close();
+    }
+  });
+
+  it("delegates a task, reports it, and treats cancelling a finished one as a no-op", async () => {
+    const { harness, connection } = await connected();
+    try {
+      const parent = await connection.dispatch({ type: "thread.handover", cwd: harness.work, prompt: "Parent", wait: true });
+      const delegated = await connection.dispatch({ type: "thread.delegate", parentThreadId: parent.threadId, task: "Sub task" });
+      expect(delegated.task).toMatchObject({ status: "completed", waitTimedOut: false, summary: "Completed: Sub task" });
+
+      const status = await connection.query({
+        type: "thread.task.status",
+        parentThreadId: parent.threadId,
+        taskId: delegated.task.taskId,
+      });
+      expect(status.task.status).toBe("completed");
+      const cancelled = await connection.dispatch({
+        type: "thread.task.cancel",
+        parentThreadId: parent.threadId,
+        taskId: delegated.task.taskId,
+      });
+      expect(cancelled).toMatchObject({ interruptRequested: false, task: { status: "completed" } });
+    } finally {
+      await connection.close();
+    }
+  });
+
+  it("refuses to run turns on an archived thread", async () => {
+    const { harness, connection } = await connected();
+    try {
+      const done = await connection.dispatch({ type: "thread.handover", cwd: harness.work, prompt: "Old", wait: true });
+      await connection.dispatch({ type: "thread.archive", threadId: done.threadId });
+      await expect(
+        connection.dispatch({ type: "thread.turn.start", threadId: done.threadId, message: { text: "again" } }),
+      ).rejects.toMatchObject({ code: "THREAD_ARCHIVED" });
+    } finally {
+      await connection.close();
+    }
+  });
+
+  it("defaults a new thread's model and modes from config, not a hardcoded model", async () => {
+    const { harness, connection } = await connected({
+      config: { provider: "claudeAgent", model: "claude-opus-5", runtimeMode: "approval-required" },
+    });
+    try {
+      const project = await connection.dispatch({ type: "project.ensure", cwd: harness.work });
+      const created = await connection.dispatch({ type: "thread.create", projectId: project.project.id });
+      const thread = await harness.store.readThreadRecord(created.threadId);
+      expect(thread?.modelSelection).toMatchObject({ instanceId: "claudeAgent", model: "claude-opus-5" });
+      expect(thread?.runtimeMode).toBe("approval-required");
+    } finally {
+      await connection.close();
+    }
+  });
+
+  it("hides a model from every picker through getConfig", async () => {
+    const { connection } = await connected();
+    try {
+      await connection.dispatch({ type: "model.visibility.set", instanceId: "claudeAgent", model: "claude-old", hidden: true });
+      const config = await connection.getConfig();
+      expect(config.settings.providerModelPreferences).toEqual({ claudeAgent: { hiddenModels: ["claude-old"] } });
+    } finally {
+      await connection.close();
+    }
+  });
+
+  it("runs a queued turn once the turn ahead of it settles", async () => {
+    const driver = new GateDriver();
+    const { harness, connection } = await connected({ driver });
+    try {
+      const first = await connection.dispatch({ type: "thread.handover", cwd: harness.work, prompt: "First" });
+      const queued = await connection.dispatch({
+        type: "thread.turn.start",
+        threadId: first.threadId,
+        message: { text: "Second" },
+        delivery: "queue",
+      });
+      expect(queued).toMatchObject({ delivery: "queued", status: "queued" });
+
+      await driver.release();
+      // Promotion used to flip it to `running` with nothing to run it.
+      await driver.release();
+      await waitFor("both turns to complete", async () => {
+        const turns = await harness.store.readTurns(first.threadId);
+        return turns.length === 2 && turns.every((turn) => turn.status === "completed");
+      });
+      expect(driver.prompts).toEqual(["First", "Second"]);
+    } finally {
+      await connection.close();
+    }
+  });
+
+  it("steers the running turn without starting a second provider run", async () => {
+    const driver = new GateDriver();
+    const { harness, connection } = await connected({ driver });
+    try {
+      const first = await connection.dispatch({ type: "thread.handover", cwd: harness.work, prompt: "Long job" });
+      await waitFor("the first run to reach the driver", async () => driver.prompts.length === 1);
+      const steered = await connection.dispatch({
+        type: "thread.turn.start",
+        threadId: first.threadId,
+        message: { text: "Also check the tests" },
+        delivery: "steer",
+      });
+      expect(steered.delivery).toBe("steered");
+      expect(steered.turnId).toBe(first.started?.turnId);
+      // Give a stray second run the time it would need to show up.
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(driver.prompts).toEqual(["Long job"]);
+      await driver.release();
+      await waitFor("the running turn to complete", async () => {
+        const turns = await harness.store.readTurns(first.threadId);
+        return turns[0]?.status === "completed";
+      });
+    } finally {
+      await connection.close();
+    }
+  });
+
+  it("fails the turn, with the reason, when its session cannot start", async () => {
+    const { harness, connection } = await connected({ driver: new GateDriver({ failStart: true }) });
+    try {
+      const done = await connection.dispatch({ type: "thread.handover", cwd: harness.work, prompt: "Go", wait: true });
+      expect(done.started?.status).toBe("failed");
+      const [turn] = await harness.store.readTurns(done.threadId);
+      expect(turn?.error).toContain("no binary on PATH");
+    } finally {
+      await connection.close();
+    }
+  });
+
+  it("rejects malformed queries at the boundary", async () => {
+    const { connection } = await connected();
+    try {
+      const untyped = connection.query.bind(connection) as (query: unknown) => Promise<unknown>;
+      await expect(untyped({ type: "threads.frobnicate" })).rejects.toMatchObject({ code: "UNKNOWN_QUERY" });
+      await expect(untyped({ type: "thread.read", threadId: "t", view: "everything" })).rejects.toMatchObject({
+        code: "INVALID_THREAD_OPTION",
+      });
+    } finally {
+      await connection.close();
+    }
+  });
+});
+
+describe("DirectConnection steering", () => {
+  async function running(driver: GateDriver) {
+    const harness = await testHarness({ drivers: { claude: () => driver, codex: () => driver, grok: () => driver, opencode: () => driver } });
+    const connection = new DirectConnection({ storeRoot: harness.root, drivers: harness.drivers, config: async () => harness.config });
+    const first = await connection.dispatch({ type: "thread.handover", cwd: harness.work, prompt: "Long job" });
+    await waitFor("the run to reach the driver", async () => driver.prompts.length === 1);
+    return { harness, connection, threadId: first.threadId };
+  }
+
+  it("hands a steer to the running provider turn", async () => {
+    const driver = new GateDriver({ steerable: true });
+    const { connection, threadId } = await running(driver);
+    try {
+      const steered = await connection.dispatch({
+        type: "thread.turn.start",
+        threadId,
+        message: { text: "Also check the tests" },
+        delivery: "steer",
+      });
+      expect(steered).toMatchObject({ delivery: "steered", steerDelivered: true });
+      expect(driver.steers).toEqual(["Also check the tests"]);
+      await driver.release();
+    } finally {
+      await connection.close();
+    }
+  });
+
+  it("only records a steer the provider cannot take, and says so", async () => {
+    const driver = new GateDriver();
+    const { connection, threadId } = await running(driver);
+    try {
+      const steered = await connection.dispatch({
+        type: "thread.turn.start",
+        threadId,
+        message: { text: "Also check the tests" },
+        delivery: "steer",
+      });
+      expect(steered).toMatchObject({ delivery: "steered", steerDelivered: false });
+      await driver.release();
+    } finally {
+      await connection.close();
+    }
+  });
+
+  it("does not open a fresh session to deliver a steer to a turn running elsewhere", async () => {
+    const driver = new GateDriver({ steerable: true });
+    const { harness, connection, threadId } = await running(driver);
+    // A second process: its own drivers, no session for this thread.
+    const elsewhereDriver = new GateDriver({ steerable: true });
+    const elsewhere = new DirectConnection({
+      storeRoot: harness.root,
+      drivers: { claude: () => elsewhereDriver, codex: () => elsewhereDriver, grok: () => elsewhereDriver, opencode: () => elsewhereDriver },
+      config: async () => harness.config,
+    });
+    try {
+      const steered = await elsewhere.dispatch({
+        type: "thread.turn.start",
+        threadId,
+        message: { text: "From the CLI" },
+        delivery: "steer",
+      });
+      expect(steered).toMatchObject({ delivery: "steered", steerDelivered: false });
+      expect(elsewhereDriver.steers).toEqual([]);
+      expect(elsewhereDriver.prompts).toEqual([]);
+      await driver.release();
+    } finally {
+      await elsewhere.close();
+      await connection.close();
+    }
+  });
+});
+
+describe("DirectConnection revert", () => {
+  async function threeTurns(driver: RecordingDriver, instanceId = "codex") {
+    const harness = await testHarness({ drivers: { codex: () => driver, grok: () => driver, claude: () => driver } });
+    const connection = new DirectConnection({ storeRoot: harness.root, drivers: harness.drivers, config: async () => harness.config });
+    const project = await connection.dispatch({ type: "project.ensure", cwd: harness.work });
+    const { threadId } = await connection.dispatch({
+      type: "thread.create",
+      projectId: project.project.id,
+      modelSelection: { instanceId, model: "m" },
+    });
+    for (const text of ["one", "two", "three"]) {
+      await connection.dispatch({ type: "thread.turn.start", threadId, message: { text }, wait: true });
+    }
+    return { harness, connection, threadId };
+  }
+
+  it("rolls the provider back by the prompts it saw, then cuts the ledger", async () => {
+    const driver = new RecordingDriver("native-1");
+    const { harness, connection, threadId } = await threeTurns(driver);
+    try {
+      const turns = await harness.store.readTurns(threadId);
+      // A steer delivered into the third turn: one more prompt the provider saw.
+      await harness.store.appendLedger(threadId, "messages", {
+        id: "steer-1",
+        threadId,
+        turnId: turns[2]!.id,
+        role: "user",
+        text: "and also",
+        createdAt: new Date().toISOString(),
+      });
+
+      const reverted = await connection.dispatch({ type: "thread.conversation.revert", threadId, turnCount: 1 });
+      expect(reverted).toMatchObject({ keptTurns: 1, removedTurns: 2, providers: ["codex"], accepted: true });
+      expect(driver.rollbacks).toEqual([{ threadId, numTurns: 3 }]);
+
+      const kept = turns[0]!.id;
+      expect((await harness.store.readTurns(threadId)).map((turn) => turn.id)).toEqual([kept]);
+      expect(new Set((await harness.store.readMessages(threadId)).map((message) => message.turnId))).toEqual(new Set([kept]));
+      expect((await harness.store.readActivities(threadId)).every((row) => row.turnId === null || row.turnId === kept)).toBe(true);
+      expect((await harness.store.readCheckpoints(threadId)).map((row) => row.turnId)).toEqual([kept]);
+
+      // The thread carries on from there.
+      await connection.dispatch({ type: "thread.turn.start", threadId, message: { text: "again" }, wait: true });
+      expect(await harness.store.readTurns(threadId)).toHaveLength(2);
+    } finally {
+      await connection.close();
+    }
+  });
+
+  it("refuses while a turn is in progress", async () => {
+    const driver = new GateDriver();
+    const harness = await testHarness({ drivers: { claude: () => driver, codex: () => driver, grok: () => driver, opencode: () => driver } });
+    const connection = new DirectConnection({ storeRoot: harness.root, drivers: harness.drivers, config: async () => harness.config });
+    try {
+      const first = await connection.dispatch({ type: "thread.handover", cwd: harness.work, prompt: "Long job" });
+      await expect(
+        connection.dispatch({ type: "thread.conversation.revert", threadId: first.threadId, turnCount: 0 }),
+      ).rejects.toMatchObject({ code: "THREAD_BUSY" });
+      await driver.release();
+    } finally {
+      await connection.close();
+    }
+  });
+
+  it("refuses up front when a provider cannot forget, changing nothing", async () => {
+    const driver = new RecordingDriver("native-g");
+    const { harness, connection, threadId } = await threeTurns(driver, "grok");
+    try {
+      await expect(connection.dispatch({ type: "thread.conversation.revert", threadId, turnCount: 1 })).rejects.toMatchObject({
+        code: "REVERT_UNSUPPORTED",
+      });
+      expect(driver.rollbacks).toEqual([]);
+      expect(await harness.store.readTurns(threadId)).toHaveLength(3);
+    } finally {
+      await connection.close();
+    }
+  });
+
+  it("just cuts the ledger when no provider remembers the turns", async () => {
+    const driver = new RecordingDriver("native-1");
+    const { harness, connection, threadId } = await threeTurns(driver);
+    await connection.close();
+    // A new process with no session, and a thread with no stored handle.
+    const record = (await harness.store.readThreadRecord(threadId))!;
+    await harness.store.writeThreadRecord({ ...record, providerSessions: {} });
+    const fresh = new RecordingDriver("native-2");
+    const later = new DirectConnection({ storeRoot: harness.root, drivers: { codex: () => fresh }, config: async () => harness.config });
+    try {
+      const reverted = await later.dispatch({ type: "thread.conversation.revert", threadId, turnCount: 2 });
+      expect(reverted).toMatchObject({ removedTurns: 1, providers: [] });
+      expect(fresh.rollbacks).toEqual([]);
+      expect(await harness.store.readTurns(threadId)).toHaveLength(2);
+    } finally {
+      await later.close();
+    }
+  });
+});
+
+describe("DirectConnection images", () => {
+  const upload = (name: string) => ({
+    type: "image" as const,
+    name,
+    mimeType: "image/png",
+    sizeBytes: 8,
+    dataUrl: "data:image/png;base64,iVBORw0KGgo=",
+  });
+
+  it("saves them with the message and sends them to the provider — queued turns included", async () => {
+    const driver = new GateDriver();
+    const harness = await testHarness({ drivers: { claude: () => driver, codex: () => driver, grok: () => driver, opencode: () => driver } });
+    const connection = new DirectConnection({ storeRoot: harness.root, drivers: harness.drivers, config: async () => harness.config });
+    try {
+      const first = await connection.dispatch({ type: "thread.handover", cwd: harness.work, prompt: "Busy" });
+      await waitFor("the first run", async () => driver.prompts.length === 1);
+      await connection.dispatch({
+        type: "thread.turn.start",
+        threadId: first.threadId,
+        message: { text: "What is in this?", attachments: [upload("shot.png")] },
+        delivery: "queue",
+      });
+
+      const [, queued] = await harness.store.readMessages(first.threadId);
+      expect(queued!.attachments).toEqual([
+        expect.objectContaining({ type: "image", name: "shot.png", mimeType: "image/png", sizeBytes: 8 }),
+      ]);
+      const saved = await (await import("node:fs/promises")).readFile(queued!.attachments![0]!.path);
+      expect(saved.toString("base64")).toBe("iVBORw0KGgo=");
+      const thread = await connection.query({ type: "thread.read", threadId: first.threadId });
+      if (thread.thread.view === "messages") {
+        expect(thread.thread.messages[1]).toMatchObject({ attachments: [{ name: "shot.png" }] });
+      }
+
+      // The queued turn runs later, from the ledger: its image comes off disk.
+      await driver.release();
+      await waitFor("the queued turn to reach the driver", async () => driver.prompts.length === 2);
+      expect(driver.prompts[1]).toBe("What is in this?");
+      expect(driver.images[1]).toEqual([{ name: "shot.png", mimeType: "image/png", data: "iVBORw0KGgo=" }]);
+      await driver.release();
     } finally {
       await connection.close();
     }

@@ -19,7 +19,7 @@ describe("renderMessage", () => {
   it("renders context image refs", () => {
     const rendered = renderMessage(
       message({
-        text: "see ![image.png](monvex-context://v1/image/image_abc) ok",
+        text: "see ![image.png](moxen-context://v1/image/image_abc) ok",
         context: {
           version: 1,
           records: [
@@ -59,7 +59,7 @@ describe("renderMessage", () => {
   it("does not duplicate attachments already covered by refs", () => {
     const rendered = renderMessage(
       message({
-        text: "![image.png](monvex-context://v1/image/image_abc)",
+        text: "![image.png](moxen-context://v1/image/image_abc)",
         context: {
           version: 1,
           records: [
@@ -80,5 +80,19 @@ describe("renderMessage", () => {
       }),
     );
     expect(rendered.images).toHaveLength(1);
+  });
+
+  it("reads a carried attachment from the path the server saved it at", () => {
+    const rendered = renderMessage({
+      id: "m",
+      role: "user",
+      text: "see",
+      turnId: null,
+      streaming: false,
+      createdAt: "c",
+      updatedAt: "c",
+      attachments: [{ type: "image", id: "a1", name: "shot.png", mimeType: "image/png", sizeBytes: 8, path: "/store/attachments/a1.png" }],
+    });
+    expect(rendered.images[0]).toMatchObject({ label: "shot.png", filePath: "/store/attachments/a1.png" });
   });
 });

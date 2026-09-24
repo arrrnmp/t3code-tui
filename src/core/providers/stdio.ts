@@ -11,6 +11,7 @@
 import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
 
 import { CliError } from "../errors.js";
+import { killProcessTree } from "../infra/process.js";
 
 export type JsonRpcId = string | number;
 
@@ -71,11 +72,7 @@ export function nodeProcessSpawner(): ProcessSpawner {
           };
         },
         kill(signal?: NodeJS.Signals): void {
-          try {
-            child.kill(signal ?? "SIGTERM");
-          } catch {
-            // Already gone.
-          }
+          killProcessTree(child, signal ?? "SIGTERM");
         },
       };
     },

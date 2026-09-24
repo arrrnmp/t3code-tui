@@ -1,6 +1,6 @@
 {
   "note": "Claude models the Agent SDK can be asked for. The SDK exposes no model-listing API, so this list is maintained by hand; slugs drift as Anthropic ships, and `updatedAt` makes staleness visible.",
-  "updatedAt": "2026-09-22",
+  "updatedAt": "2026-09-23",
   "default": "claude-fable-5-1",
   "models": [
     {
@@ -67,6 +67,62 @@
           "id": "effort",
           "label": "Reasoning",
           "default": "medium",
+          "choices": [
+            {
+              "id": "low",
+              "label": "Low"
+            },
+            {
+              "id": "medium",
+              "label": "Medium"
+            },
+            {
+              "id": "high",
+              "label": "High"
+            },
+            {
+              "id": "xhigh",
+              "label": "Extra High"
+            },
+            {
+              "id": "max",
+              "label": "Max"
+            },
+            {
+              "id": "ultracode",
+              "label": "Ultracode"
+            },
+            {
+              "id": "ultrathink",
+              "label": "Ultrathink"
+            }
+          ]
+        },
+        {
+          "id": "contextWindow",
+          "label": "Context Window",
+          "default": "1m",
+          "choices": [
+            {
+              "id": "200k",
+              "label": "200k"
+            },
+            {
+              "id": "1m",
+              "label": "1M"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "slug": "claude-opus-5-5",
+      "name": "Claude Opus 5.5",
+      "options": [
+        {
+          "id": "effort",
+          "label": "Reasoning",
+          "default": "high",
           "choices": [
             {
               "id": "low",

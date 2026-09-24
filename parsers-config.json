@@ -66,6 +66,16 @@
       }
     },
     {
+      "filetype": "powershell",
+      "aliases": ["ps1", "psm1", "pwsh"],
+      "wasm": "https://unpkg.com/tree-sitter-powershell@0.26.4/tree-sitter-powershell.wasm",
+      "queries": {
+        "highlights": [
+          "https://unpkg.com/tree-sitter-powershell@0.26.4/queries/highlights.scm"
+        ]
+      }
+    },
+    {
       "filetype": "html",
       "wasm": "https://github.com/tree-sitter/tree-sitter-html/releases/download/v0.23.2/tree-sitter-html.wasm",
       "queries": {

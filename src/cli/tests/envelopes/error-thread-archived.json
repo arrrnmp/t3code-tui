@@ -1,0 +1,11 @@
+{
+  "ok": false,
+  "error": {
+    "code": "THREAD_ARCHIVED",
+    "message": "Thread thread-existing is archived and cannot receive a new turn.",
+    "details": {
+      "threadId": "thread-existing",
+      "archivedAt": "<time>"
+    }
+  }
+}

@@ -15,6 +15,7 @@ function stubAdapter(): ProviderAdapter {
     provider: "codex",
     capabilities: { sessionModelSwitch: "unsupported" },
     startSession: () => unsupported(),
+    resumeCursor: () => null,
     sendTurn: () => unsupported(),
     interruptTurn: () => Effect.void as Effect.Effect<void, Error>,
     respondToRequest: () => Effect.void as Effect.Effect<void, Error>,

@@ -1,0 +1,95 @@
+{
+  "ok": true,
+  "data": {
+    "runtime": {
+      "origin": "direct",
+      "stateDir": null,
+      "runtimeStatePath": null,
+      "settingsPath": null,
+      "environmentId": "direct",
+      "serverVersion": "direct",
+      "capabilities": {
+        "threadSettlement": true
+      }
+    },
+    "auth": {
+      "source": "direct",
+      "version": null
+    },
+    "project": {
+      "id": "project-existing",
+      "title": "Existing project",
+      "workspaceRoot": "<root>",
+      "defaultModelSelection": {
+        "instanceId": "codex",
+        "model": "gpt-5.6-sol"
+      },
+      "createdAt": "<time>",
+      "updatedAt": "<time>",
+      "deletedAt": null
+    },
+    "parent": {
+      "id": "thread-existing",
+      "projectId": "project-existing",
+      "title": "Existing thread"
+    },
+    "child": {
+      "id": "<id-1>",
+      "projectId": "project-existing",
+      "title": "Maybe later"
+    },
+    "createCommand": {
+      "type": "thread.create",
+      "commandId": "<id-2>",
+      "threadId": "<id-1>",
+      "projectId": "project-existing",
+      "title": "Maybe later",
+      "modelSelection": {
+        "instanceId": "codex",
+        "model": "gpt-5.6-sol"
+      },
+      "runtimeMode": "full-access",
+      "interactionMode": "default",
+      "branch": "main",
+      "worktreePath": null,
+      "createdAt": "<time>"
+    },
+    "turnCommand": {
+      "type": "thread.turn.start",
+      "commandId": "<id-3>",
+      "threadId": "<id-1>",
+      "message": {
+        "messageId": "<id-4>",
+        "role": "user",
+        "text": "Maybe later",
+        "attachments": []
+      },
+      "modelSelection": {
+        "instanceId": "codex",
+        "model": "gpt-5.6-sol"
+      },
+      "titleSeed": "Maybe later",
+      "runtimeMode": "full-access",
+      "interactionMode": "default",
+      "createdAt": "<time>"
+    },
+    "task": {
+      "taskId": "<id-1>",
+      "childThreadId": "<id-1>",
+      "childRunId": null,
+      "status": "running",
+      "workState": "working",
+      "summary": null,
+      "waitTimedOut": false
+    },
+    "dispatch": null,
+    "verification": null,
+    "opened": {
+      "mode": "none",
+      "kind": "none",
+      "url": null,
+      "exactThread": false
+    },
+    "dryRun": true
+  }
+}

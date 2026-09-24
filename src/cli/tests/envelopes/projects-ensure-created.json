@@ -1,0 +1,44 @@
+{
+  "ok": true,
+  "data": {
+    "runtime": {
+      "origin": "direct",
+      "stateDir": null,
+      "runtimeStatePath": null,
+      "settingsPath": null,
+      "environmentId": "direct",
+      "serverVersion": "direct",
+      "capabilities": {
+        "threadSettlement": true
+      }
+    },
+    "workspace": {
+      "inputPath": "<root>",
+      "workspaceRoot": "<root>",
+      "mode": "repo",
+      "isGitRepository": true,
+      "branch": "main"
+    },
+    "project": {
+      "id": "<id-1>",
+      "title": "work",
+      "workspaceRoot": "<root>",
+      "defaultModelSelection": null,
+      "createdAt": "<time>",
+      "updatedAt": "<time>",
+      "deletedAt": null
+    },
+    "created": true,
+    "command": {
+      "type": "project.create",
+      "commandId": "<id-2>",
+      "projectId": "<id-1>",
+      "title": "work",
+      "workspaceRoot": "<root>",
+      "createWorkspaceRootIfMissing": true,
+      "defaultModelSelection": null,
+      "createdAt": "<time>"
+    },
+    "dispatch": null
+  }
+}

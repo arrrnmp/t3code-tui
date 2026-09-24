@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { commandExists } from "../../cli/infra/process.js";
+import { commandExists } from "../../core/infra/process.js";
 
 export interface EditorCommand {
   command: string;
@@ -72,7 +72,7 @@ export async function preferredEditorCommand(
 
 /** Writes the current draft to a temp file for the editor to open. */
 export async function createTempDraftFile(initialText: string): Promise<{ dir: string; file: string }> {
-  const dir = await mkdtemp(path.join(tmpdir(), "mvx-draft-"));
+  const dir = await mkdtemp(path.join(tmpdir(), "moxen-draft-"));
   const file = path.join(dir, "draft.md");
   await writeFile(file, initialText, "utf8");
   return { dir, file };

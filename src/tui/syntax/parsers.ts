@@ -23,6 +23,8 @@ const bundledAssetLoaders: Record<string, () => Promise<FileImportModule>> = {
   "go/tree-sitter-go.wasm": () => import("./go/tree-sitter-go.wasm" as string, { with: { type: "file" } }),
   "bash/highlights.scm": () => import("./bash/highlights.scm" as string, { with: { type: "file" } }),
   "bash/tree-sitter-bash.wasm": () => import("./bash/tree-sitter-bash.wasm" as string, { with: { type: "file" } }),
+  "powershell/highlights.scm": () => import("./powershell/highlights.scm" as string, { with: { type: "file" } }),
+  "powershell/tree-sitter-powershell.wasm": () => import("./powershell/tree-sitter-powershell.wasm" as string, { with: { type: "file" } }),
   "html/highlights.scm": () => import("./html/highlights.scm" as string, { with: { type: "file" } }),
   "html/tree-sitter-html.wasm": () => import("./html/tree-sitter-html.wasm" as string, { with: { type: "file" } }),
   "css/highlights.scm": () => import("./css/highlights.scm" as string, { with: { type: "file" } }),
@@ -120,6 +122,20 @@ const defaultParserDescriptors: readonly DefaultParserDescriptor[] = [
       ]
     },
     "wasm": "bash/tree-sitter-bash.wasm"
+  },
+  {
+    "filetype": "powershell",
+    "aliases": [
+      "ps1",
+      "psm1",
+      "pwsh"
+    ],
+    "queries": {
+      "highlights": [
+        "powershell/highlights.scm"
+      ]
+    },
+    "wasm": "powershell/tree-sitter-powershell.wasm"
   },
   {
     "filetype": "html",

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { detectSkillTrigger, filterSkills, insertSkillMention, marqueeWindow } from "../skills.js";
-import type { SkillSummary } from "../../../cli/catalog/catalog.js";
+import type { SkillSummary } from "../../../core/catalog/summary.js";
 
 function skill(overrides: Partial<SkillSummary> & { name: string }): SkillSummary {
   return {

@@ -95,7 +95,8 @@ describe("toThreadEnvelope", () => {
     expect(projected.messages?.[0]).toMatchObject({ id: "m1", streaming: false });
     expect(projected.latestUserMessageAt).toBe("2026-01-01T00:00:00.000Z");
     expect(projected.activities?.[0]).toMatchObject({ tone: "info" });
-    expect(projected.checkpoints?.[0]).toMatchObject({ turnId: "t2", checkpointTurnCount: 1, ref: "abc" });
+    // The second turn: two turns exist once it has run.
+    expect(projected.checkpoints?.[0]).toMatchObject({ turnId: "t2", checkpointTurnCount: 2, ref: "abc" });
   });
 });
 
