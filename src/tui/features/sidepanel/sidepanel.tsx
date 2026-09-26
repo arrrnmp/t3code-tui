@@ -349,8 +349,9 @@ function BarRow({ width, fraction, filledColor }: { width: number; fraction: num
   const bar = meter(width, fraction);
   return (
     <box style={{ flexDirection: "row", height: 1, flexShrink: 0 }}>
-      <text fg={filledColor}>{bar.filled}</text>
-      <text fg={FREE_COLOR}>{bar.empty}</text>
+      {/* An empty <text> still takes a cell: a full or empty bar would run one long. */}
+      {bar.filled ? <text fg={filledColor}>{bar.filled}</text> : null}
+      {bar.empty ? <text fg={FREE_COLOR}>{bar.empty}</text> : null}
     </box>
   );
 }
@@ -390,6 +391,7 @@ export function ContextTab({
   const absorber = segments.find((segment) => segment.kind === "free") ?? segments.reduce<(typeof segments)[number] | undefined>((largest, segment) => (largest === undefined || segment.cells > largest.cells ? segment : largest), undefined);
   if (absorber !== undefined && shares.reduce((total, share) => total + share.percent, 0) >= 99.5) absorber.cells = Math.max(1, absorber.cells + drift);
   const threshold = breakdown?.autoCompactThreshold ?? fallback?.autoCompactThreshold ?? null;
+  const compactsAutomatically = breakdown?.compactsAutomatically ?? fallback?.compactsAutomatically ?? null;
   const cost = breakdown?.costUsd ?? fallback?.costUsd ?? null;
   const processed = fallback?.totalProcessedTokens ?? null;
 
@@ -418,20 +420,25 @@ export function ContextTab({
           </box>
           {segments.length > 0 ? (
             <box style={{ flexDirection: "row", height: 1, flexShrink: 0, marginTop: 1 }}>
-              {segments.map((segment) => (
+              {segments.filter((segment) => segment.cells > 0).map((segment) => (
                 <text key={segment.name} fg={segment.color}>{(segment.kind === "free" ? "░" : "█").repeat(segment.cells)}</text>
               ))}
             </box>
           ) : max !== null ? (
-            <box style={{ flexDirection: "row", height: 1, flexShrink: 0, marginTop: 1 }}>
-              <text fg={COLOR.accent}>{meter(barWidth, used / max).filled}</text>
-              <text fg={FREE_COLOR}>{meter(barWidth, used / max).empty}</text>
+            <box style={{ flexShrink: 0, marginTop: 1 }}>
+              <BarRow width={barWidth} fraction={used / max} filledColor={COLOR.accent} />
             </box>
           ) : null}
           {threshold === null || max === null ? null : (
+            // Headroom is the useful number: how much more the thread can
+            // take before it compacts, not where the line sits in the window.
             <box style={{ flexDirection: "row", height: 1, flexShrink: 0 }}>
-              <text fg={COLOR.dim}>{"Auto-compact window: "}</text>
-              <text fg={COLOR.text}>{`${formatTokenCount(threshold)} (${Math.round((threshold / max) * 100)}%)`}</text>
+              <text fg={COLOR.dim}>{`${compactsAutomatically === false ? "Compaction due" : "Auto-compacts"} at ${formatTokenCount(threshold)} · `}</text>
+              {used >= threshold ? (
+                <text fg={COLOR.warn}>{"due now"}</text>
+              ) : (
+                <text fg={threshold - used < max * 0.1 ? COLOR.warn : COLOR.text}>{`${formatTokenCount(threshold - used)} to go`}</text>
+              )}
             </box>
           )}
           {processed === null ? null : (
@@ -443,7 +450,7 @@ export function ContextTab({
             <box style={{ flexDirection: "column", flexShrink: 0, marginTop: 1 }}>
               <text fg={COLOR.dim}>{breakdown?.estimated === true ? "Estimated usage by category" : "Usage by category"}</text>
               {segments.map((segment) => (
-                <box key={segment.name} style={{ flexDirection: "row", height: 1, flexShrink: 0, justifyContent: "space-between" }}>
+                <box key={segment.name} style={{ width: inner, flexDirection: "row", height: 1, flexShrink: 0, justifyContent: "space-between" }}>
                   <box style={{ flexDirection: "row", height: 1, flexShrink: 0 }}>
                     <text fg={segment.color}>{segment.kind === "free" ? "░ " : "█ "}</text>
                     <text fg={segment.kind === "used" ? COLOR.text : COLOR.dim}>{truncate(segment.name, Math.max(4, inner - 16))}</text>
@@ -456,21 +463,29 @@ export function ContextTab({
           {breakdown?.tools === undefined || breakdown.tools.length === 0 ? null : (
             <>
               <Heading text="Heaviest tools" />
-              {breakdown.tools.slice(0, 6).map((tool) => {
-                // Each tool's share against the heaviest one, as a
-                // full-width bar under its own label row — every bar spans
-                // `inner`, so they all start and end on the same columns.
-                const heaviest = breakdown.tools?.[0]?.tokens ?? tool.tokens;
-                return (
-                  <box key={tool.name} style={{ flexDirection: "column", flexShrink: 0 }}>
-                    <box style={{ flexDirection: "row", height: 1, flexShrink: 0, justifyContent: "space-between" }}>
-                      <text fg={COLOR.text}>{truncate(tool.name, Math.max(4, inner - 10))}</text>
-                      <text fg={COLOR.dim}>{formatTokenCount(tool.tokens)}</text>
+              {(() => {
+                // One row per tool: name, bar, value, in fixed columns
+                // shared by every row, so the bars start and end together
+                // without spending a second line on each. Bars are against
+                // the heaviest tool — the question is which one to trim.
+                const tools = breakdown.tools.slice(0, 6);
+                const heaviest = tools[0]?.tokens ?? 0;
+                const values = tools.map((tool) => formatTokenCount(tool.tokens));
+                const valueWidth = Math.max(...values.map((value) => value.length));
+                const nameWidth = Math.min(Math.max(...tools.map((tool) => tool.name.length)), Math.max(6, Math.floor(inner * 0.35)));
+                const barWidth = Math.max(4, inner - nameWidth - valueWidth - 2);
+                return tools.map((tool, index) => {
+                  const bar = meter(barWidth, heaviest > 0 ? tool.tokens / heaviest : 0);
+                  return (
+                    <box key={tool.name} style={{ flexDirection: "row", height: 1, flexShrink: 0 }}>
+                      <text fg={COLOR.text}>{`${truncate(tool.name, nameWidth).padEnd(nameWidth)} `}</text>
+                      {bar.filled ? <text fg={COLOR.command}>{bar.filled}</text> : null}
+                      {bar.empty ? <text fg={FREE_COLOR}>{bar.empty}</text> : null}
+                      <text fg={COLOR.dim}>{` ${values[index]!.padStart(valueWidth)}`}</text>
                     </box>
-                    <BarRow width={inner} fraction={heaviest > 0 ? tool.tokens / heaviest : 0} filledColor={COLOR.command} />
-                  </box>
-                );
-              })}
+                  );
+                });
+              })()}
             </>
           )}
         </>
@@ -489,7 +504,7 @@ export function ContextTab({
             resets === null || Number.isNaN(resets.getTime()) ? null : `↻ ${untilLabel(resets, now).replace(/^in /u, "")}`;
           return (
             <box key={window.id} style={{ flexDirection: "column", flexShrink: 0 }}>
-              <box style={{ flexDirection: "row", height: 1, flexShrink: 0, justifyContent: "space-between" }}>
+              <box style={{ width: inner, flexDirection: "row", height: 1, flexShrink: 0, justifyContent: "space-between" }}>
                 <text fg={COLOR.text}>{truncate(window.label, Math.max(4, inner - 20))}</text>
                 <box style={{ flexDirection: "row", height: 1, flexShrink: 0 }}>
                   <text fg={COLOR.dim}>{`${Math.round(window.usedPercent)}%`}</text>

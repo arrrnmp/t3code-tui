@@ -112,23 +112,16 @@ function charsOf(value: unknown): number {
   }
 }
 
-function activityToolName(activity: ActivityEnvelope): string | null {
-  const payload = (activity.payload ?? {}) as Record<string, unknown>;
+/**
+ * The tool a call row names, as the harness recorded it (`data.tool`).
+ * MCP tools drop their `mcp__server__` prefix. Never guessed from the
+ * summary: that is prose, and guessing made "This" and turn ids "tools".
+ */
+function activityToolName(payload: Record<string, unknown>): string {
   const data = (payload.data ?? {}) as Record<string, unknown>;
-  const state = (data.state ?? {}) as Record<string, unknown>;
-  const input = (state.input ?? data.input ?? {}) as Record<string, unknown>;
-  const direct =
-    typeof data.tool === "string"
-      ? data.tool
-      : typeof data.toolName === "string"
-        ? data.toolName
-        : typeof input.tool === "string"
-          ? input.tool
-          : null;
-  if (direct !== null) return direct.split(/[^a-z]+/iu).filter(Boolean).pop() ?? direct;
-  const title = typeof payload.title === "string" ? payload.title : typeof activity.summary === "string" ? activity.summary : "";
-  const match = /^([a-z][a-z0-9_-]*)/iu.exec(title.trim());
-  return match?.[1] ?? null;
+  const name = typeof data.tool === "string" ? data.tool : typeof data.toolName === "string" ? data.toolName : null;
+  if (name === null || name.length === 0) return "Other";
+  return /^mcp__[^_]+(?:_[^_]+)*__(.+)$/u.exec(name)?.[1] ?? name;
 }
 
 /**
@@ -152,18 +145,27 @@ export function estimateContextBreakdown(
     else if (message.role === "assistant") chars.assistant += charsOf(message.text);
     else chars.user += charsOf(message.text);
   }
+  // Only tool and reasoning rows are context: both carry `toolCallId`, and
+  // each call writes a row as it starts and again as it ends, so the
+  // newest row per id stands for the call. Everything else in the ledger
+  // (turn bookkeeping, notices, plans) is our own record, never sent back
+  // to the model — `turn.started` carries the prompt, which the messages
+  // already count.
+  const calls = new Map<string, Record<string, unknown>>();
   for (const activity of activities) {
+    if (activity.kind === "subagent") continue;
     const payload = (activity.payload ?? {}) as Record<string, unknown>;
+    if (typeof payload.toolCallId === "string") calls.set(payload.toolCallId, payload);
+  }
+  for (const payload of calls.values()) {
     if (payload.itemType === "reasoning") {
       chars.reasoning += charsOf(payload.text);
       continue;
     }
-    if (activity.kind === "context-window.updated" || activity.kind === "turn.plan.updated" || activity.kind === "prompt.suggestion") continue;
-    if (activity.kind === "subagent" || activity.kind === "background.tasks") continue;
-    const toolChars = charsOf(payload) + charsOf(activity.summary);
+    const toolChars = charsOf(payload);
     if (toolChars === 0) continue;
     chars.tools += toolChars;
-    const name = activityToolName(activity) ?? "tool";
+    const name = activityToolName(payload);
     perTool.set(name, (perTool.get(name) ?? 0) + toolChars);
   }
   const estimated = {

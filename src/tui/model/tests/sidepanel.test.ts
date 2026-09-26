@@ -139,13 +139,40 @@ describe("estimateContextBreakdown", () => {
       usage(),
       [],
       [
-        activity("r1", "tool.completed", { itemType: "reasoning", status: "completed", text: "z".repeat(400) }),
+        activity("r1", "reasoning", { itemType: "reasoning", toolCallId: "reasoning:1", status: "completed", text: "z".repeat(400) }),
         activity("t1", "tool.completed", { itemType: "dynamic_tool_call", toolCallId: "c1", status: "completed", data: { toolName: "Read" } }),
       ],
     )!;
     const names = breakdown.categories.map((category) => category.name);
     expect(names).toContain("Reasoning");
     expect(names).toContain("Tool calls");
+  });
+
+  it("names tools from the call rows only, counting each call once", () => {
+    const call = (id: string, status: string, output: string) =>
+      activity(id, status === "completed" ? "tool-call.completed" : "tool-call.started", {
+        itemType: "command_execution",
+        toolCallId: "c1",
+        status,
+        data: { tool: "Bash", state: { input: { command: "ls" }, output } },
+      });
+    const breakdown = estimateContextBreakdown(
+      usage({ usedTokens: 1_000_000, maxTokens: 2_000_000 }),
+      [],
+      [
+        // Ledger bookkeeping is not context: the prompt on `turn.started`
+        // and the turn id on `turn.completed` once read as tools "This"
+        // and "ce78c419-…".
+        { ...activity("s", "turn.started", { prompt: "This is the prompt" }), summary: "This is the prompt" },
+        { ...activity("e", "turn.completed", {}), summary: "ce78c419-44d0-4773-8a05-d7506a37d913" },
+        call("t1", "inProgress", ""),
+        call("t2", "completed", "x".repeat(400)),
+        activity("m", "tool-call.completed", { toolCallId: "c2", status: "completed", data: { tool: "mcp__moxen__delegate", state: { input: {} } } }),
+      ],
+    )!;
+    expect(breakdown.tools?.map((tool) => tool.name)).toEqual(["Bash", "delegate"]);
+    const single = estimateContextBreakdown(usage({ usedTokens: 1_000_000, maxTokens: 2_000_000 }), [], [call("t2", "completed", "x".repeat(400))])!;
+    expect(breakdown.tools?.[0]?.tokens).toBe(single.tools?.[0]?.tokens);
   });
 });
 

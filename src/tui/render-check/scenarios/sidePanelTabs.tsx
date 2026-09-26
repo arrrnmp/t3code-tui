@@ -62,6 +62,11 @@ export async function runSidePanelTabs(): Promise<void> {
                   { name: "Free space", tokens: 83_000, kind: "free" },
                   { name: "Autocompact buffer", tokens: 33_000, kind: "buffer" },
                 ],
+                tools: [
+                  { name: "Bash", tokens: 29_000 },
+                  { name: "Read", tokens: 12_400 },
+                  { name: "delegate", tokens: 900 },
+                ],
               }}
               fallback={null}
               live
@@ -101,8 +106,14 @@ export async function runSidePanelTabs(): Promise<void> {
   const context = setup.captureCharFrame();
   console.log("--- side panel: context tab ---");
   console.log(context);
-  for (const expected of ["Context usage", "84k / 200k", "42%", "Messages", "System prompt", "Free space", "Auto-compact window", "Plan usage", "Session", "Weekly", "91%", "↻ 2h"]) {
+  for (const expected of ["Context usage", "84k / 200k", "42%", "Messages", "System prompt", "Free space", "Auto-compacts at 167k · 83k to go", "Heaviest tools", "Plan usage", "Session", "Weekly", "91%", "↻ 2h"]) {
     if (!context.includes(expected)) fail(`context tab is missing "${expected}"`);
+  }
+  // Each tool is one row, and every bar ends on the same column.
+  const toolRows = context.split("\n").filter((row) => /│ (Bash|Read|delegate) /.test(row));
+  if (toolRows.length !== 3) fail(`heaviest tools should be one row each, found ${toolRows.length}`);
+  if (new Set(toolRows.map((row) => row.lastIndexOf("░") === -1 ? row.lastIndexOf("█") : row.lastIndexOf("░"))).size !== 1) {
+    fail("heaviest tool bars do not end on the same column");
   }
 
   // The composer footer: gauges per window, shed before the model label
