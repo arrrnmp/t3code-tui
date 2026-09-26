@@ -68,7 +68,7 @@
         "runtimeMode": "full-access",
         "interactionMode": "default",
         "branch": "moxen/<short>",
-        "worktreePath": "<root>trees\\<id-3>",
+        "worktreePath": "<root>trees/<id-3>",
         "createdAt": "<time>"
       },
       "createDispatch": null,
@@ -94,7 +94,7 @@
       "dispatch": null
     },
     "worktree": {
-      "path": "<root>trees\\<id-3>",
+      "path": "<root>trees/<id-3>",
       "branch": "moxen/<short>",
       "baseBranch": "main",
       "startFromOrigin": true

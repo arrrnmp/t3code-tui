@@ -71,6 +71,9 @@ function normalizer(roots: readonly string[]) {
   const text = (value: string): string => {
     let out = value;
     for (const root of variants) out = out.split(root).join("<root>");
+    // The rest of a rooted path uses the host's separator; pin it to `/` so
+    // one golden holds on Windows and POSIX alike.
+    if (out.includes("<root>")) out = out.replaceAll("\\", "/");
     out = out.replace(UUID, (id) => {
       const key = id.toLowerCase();
       if (!ids.has(key)) ids.set(key, `<id-${ids.size + 1}>`);
