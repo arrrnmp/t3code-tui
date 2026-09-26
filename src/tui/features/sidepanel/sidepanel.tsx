@@ -12,6 +12,11 @@ import { COLOR, SURFACE, truncate } from "../../theme.js";
 /** The text width inside the panel frame (border, padding and scrollbar taken off), for rules and bars. */
 const PanelWidth = createContext(40);
 
+/** The panel's inner text width, for tabs rendered inside `SidePanelFrame` that live outside this file. */
+export function usePanelWidth(): number {
+  return useContext(PanelWidth);
+}
+
 // Key order is the tab strip's render order (`Object.keys` below): the
 // work-in-the-thread tabs first, then the two roll-up tabs.
 export const TAB_LABEL: Record<SideTab, string> = { diff: "Diff", git: "Git", context: "Context", agents: "Agents", background: "Background" };
@@ -188,7 +193,7 @@ export function SidePanelFrame({
 }
 
 /** A section title, its short meta, and a rule to the panel's edge. */
-function Heading({ text, meta }: { text: string; meta?: string }) {
+export function Heading({ text, meta }: { text: string; meta?: string }) {
   const width = useContext(PanelWidth);
   const tail = meta === undefined ? " " : ` ${meta} `;
   const rule = Math.max(0, width - text.length - tail.length);

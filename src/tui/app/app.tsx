@@ -2026,7 +2026,6 @@ export function App({
                     error={gitPanel.error}
                     busy={gitPanel.busy}
                     selectedBranch={gitPanel.branch}
-                    width={diffPanel.diffWidth}
                     now={now}
                     onSelectBranch={gitPanel.selectBranch}
                     onRefresh={gitPanel.refresh}

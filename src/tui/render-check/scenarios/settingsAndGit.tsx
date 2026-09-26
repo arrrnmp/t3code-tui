@@ -135,6 +135,18 @@ const OVERVIEW: GitOverview = {
       subject: "Read branches and history",
       refs: [],
     },
+    // A long tail with subjects wider than the panel: the list caps behind
+    // "Show more", and truncated subjects must keep the gap after the sha
+    // and leave the ages flush right.
+    ...Array.from({ length: 14 }, (_, index) => ({
+      sha: `${index}`.padStart(40, "c"),
+      shortSha: `c${String(index).padStart(6, "0")}`,
+      author: "Aaron",
+      authorEmail: "dev@example.com",
+      date: new Date(Date.parse("2026-09-23T09:00:00.000Z") - index * 86_400_000).toISOString(),
+      subject: `Stage ${index}: a subject long enough that it cannot possibly fit beside its sha and age`,
+      refs: [],
+    })),
   ],
 };
 
@@ -186,7 +198,6 @@ async function runGit(): Promise<void> {
             error={null}
             busy={null}
             selectedBranch={null}
-            width={60}
             now={now}
             onSelectBranch={() => {}}
             onRefresh={() => {}}
@@ -222,6 +233,14 @@ async function runGit(): Promise<void> {
   ]) {
     if (!frame.includes(expected)) fail(`git tab is missing "${expected}"`);
   }
+
+  const commitRows = frame.split("\n").filter((row) => row.includes("Stage "));
+  if (commitRows.length !== 10) fail(`git tab should cap commits at 12, drew ${2 + commitRows.length}`);
+  if (!frame.includes("Show 4 more")) fail("git tab does not offer the capped commits");
+  for (const row of commitRows) {
+    if (!/c\d{6} Stage \d+: .*… +\d+d/.test(row)) fail(`truncated commit row lost its columns: ${row}`);
+  }
+  if (new Set(commitRows.map((row) => row.search(/\d+d │/))).size !== 1) fail("commit ages are not flush right");
 
   // Merge arms before it fires: one click offers the strategies, and only
   // the second actually merges. A single misclick must never merge.
@@ -261,7 +280,6 @@ async function runGit(): Promise<void> {
             error={null}
             busy={null}
             selectedBranch={null}
-            width={60}
             now={now}
             onSelectBranch={() => {}}
             onRefresh={() => {}}

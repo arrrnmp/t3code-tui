@@ -2,6 +2,7 @@ import { useState } from "react";
 
 import { useHover } from "../../hooks/useHover.js";
 import { COLOR, SURFACE, truncate } from "../../theme.js";
+import { Heading, usePanelWidth } from "../sidepanel/sidepanel.js";
 import type { ForgeDetection, ForgeRequest, GitBranch, GitCommit, GitOverview, MergeStrategy } from "../../../server/api.js";
 
 /**
@@ -82,13 +83,8 @@ function Row({
   );
 }
 
-function Heading({ label, width }: { label: string; width: number }) {
-  return (
-    <box style={{ flexDirection: "row", height: 1, flexShrink: 0, marginTop: 1 }}>
-      <text fg={COLOR.accent} selectable={false}>{truncate(label, width)}</text>
-    </box>
-  );
-}
+/** Commits drawn before "Show more", so a long history never buries the requests below it. */
+const COMMITS_SHOWN = 12;
 
 export function GitTab({
   overview,
@@ -99,7 +95,6 @@ export function GitTab({
   error,
   busy,
   selectedBranch,
-  width,
   now,
   onSelectBranch,
   onRefresh,
@@ -115,7 +110,6 @@ export function GitTab({
   error: string | null;
   busy: string | null;
   selectedBranch: string | null;
-  width: number;
   now: number;
   onSelectBranch: (branch: string | null) => void;
   onRefresh: () => void;
@@ -123,7 +117,9 @@ export function GitTab({
   onComment: (request: ForgeRequest) => void;
   onMerge: (request: ForgeRequest, strategy: MergeStrategy) => void;
 }) {
+  const width = usePanelWidth();
   const [showAllBranches, setShowAllBranches] = useState(false);
+  const [showAllCommits, setShowAllCommits] = useState(false);
   const [armedMerge, setArmedMerge] = useState<number | null>(null);
 
   if (overview === null) {
@@ -144,12 +140,24 @@ export function GitTab({
   const localBranches = overview.branches.filter((branch) => !branch.remote);
   const shown = showAllBranches ? overview.branches : localBranches.slice(0, 6);
   const hiddenCount = (showAllBranches ? 0 : overview.branches.length - shown.length);
+  const status = statusLine(overview);
+
+  // Commits are three columns — sha, subject, age — sized so they sum to
+  // the panel width exactly. Anything wider lets flex shrink a column and
+  // eat the gap after the sha; ages flush right keep the subjects ragged
+  // only on the right, where the eye expects it.
+  const commits = showAllCommits ? overview.commits : overview.commits.slice(0, COMMITS_SHOWN);
+  const hiddenCommits = overview.commits.length - commits.length;
+  const shaWidth = Math.max(0, ...commits.map((commit) => commit.shortSha.length));
+  const ages = commits.map((commit) => relative(commit.date, now));
+  const ageWidth = Math.max(0, ...ages.map((age) => age.length));
+  const subjectWidth = Math.max(4, width - shaWidth - 1 - (ageWidth > 0 ? ageWidth + 1 : 0));
 
   return (
     <box style={{ flexDirection: "column" }}>
       <Row>
-        <text fg={COLOR.bright} selectable={false}>{truncate(overview.branch ?? "(detached)", Math.max(8, width - 12))}</text>
-        <text fg={COLOR.faint} selectable={false}>{`  ${statusLine(overview)}`}</text>
+        <text fg={COLOR.bright} selectable={false}>{truncate(overview.branch ?? "(detached)", Math.max(8, width - status.length - 2))}</text>
+        <text fg={status === "clean" ? COLOR.faint : COLOR.warn} selectable={false}>{status ? `  ${status}` : ""}</text>
       </Row>
       {error === null ? null : (
         <Row>
@@ -162,16 +170,17 @@ export function GitTab({
         </Row>
       )}
 
-      <Heading label="Branches" width={width} />
+      <Heading text="Branches" meta={`${localBranches.length} local`} />
       {shown.map((branch) => {
         const track = aheadBehind(branch);
+        const nameWidth = Math.max(4, width - (track ? track.length + 1 : 0));
         const active = (selectedBranch ?? overview.branch) === branch.name;
         return (
           <Row key={branch.name} onClick={() => onSelectBranch(branch.name === overview.branch ? null : branch.name)} active={active}>
-            <text fg={branch.current ? COLOR.bright : COLOR.text} selectable={false}>
-              {truncate(`${branch.current ? "* " : "  "}${branch.name}`, Math.max(10, width - 14))}
+            <text fg={branch.current ? COLOR.bright : branch.remote ? COLOR.dim : COLOR.text} selectable={false}>
+              {truncate(`${branch.current ? "* " : "  "}${branch.name}`, nameWidth).padEnd(nameWidth)}
             </text>
-            <text fg={COLOR.faint} selectable={false}>{track ? `  ${track}` : ""}</text>
+            <text fg={track === "in sync" ? COLOR.faint : COLOR.warn} selectable={false}>{track ? ` ${track}` : ""}</text>
           </Row>
         );
       })}
@@ -183,24 +192,32 @@ export function GitTab({
         </Row>
       ) : null}
 
-      <Heading label={selectedBranch === null ? "Commits" : `Commits on ${selectedBranch}`} width={width} />
+      <Heading text="Commits" meta={truncate(selectedBranch ?? overview.branch ?? "detached", Math.max(4, width - 12))} />
       {overview.commits.length === 0 ? (
         <Row>
           <text fg={COLOR.dim} selectable={false}>{loadingGit ? "  Reading…" : "  No commits."}</text>
         </Row>
       ) : (
-        overview.commits.map((commit: GitCommit) => (
+        commits.map((commit: GitCommit, index) => (
           <Row key={commit.sha}>
-            <text fg={COLOR.faint} selectable={false}>{`${commit.shortSha} `}</text>
-            <text fg={COLOR.text} selectable={false}>
-              {truncate(commit.subject, Math.max(10, width - 14))}
-            </text>
-            <text fg={COLOR.faint} selectable={false}>{`  ${relative(commit.date, now)}`}</text>
+            <text fg={COLOR.faint} selectable={false}>{`${commit.shortSha.padEnd(shaWidth)} `}</text>
+            <text fg={COLOR.text} selectable={false}>{truncate(commit.subject, subjectWidth).padEnd(subjectWidth)}</text>
+            <text fg={COLOR.faint} selectable={false}>{ageWidth > 0 ? ` ${ages[index]!.padStart(ageWidth)}` : ""}</text>
           </Row>
         ))
       )}
+      {hiddenCommits > 0 || (showAllCommits && overview.commits.length > COMMITS_SHOWN) ? (
+        <Row onClick={() => setShowAllCommits((shownAll) => !shownAll)}>
+          <text fg={COLOR.dim} selectable={false}>
+            {showAllCommits ? "  Show fewer commits" : `  Show ${hiddenCommits} more`}
+          </text>
+        </Row>
+      ) : null}
 
-      <Heading label={forge?.kind === "gitlab" ? "Merge requests" : "Pull requests"} width={width} />
+      <Heading
+        text={forge?.kind === "gitlab" ? "Merge requests" : "Pull requests"}
+        {...(forge?.kind == null ? {} : { meta: requests.length === 0 ? "none open" : `${requests.length} open` })}
+      />
       {forge === null || forge.kind === null ? (
         <Row>
           <text fg={COLOR.dim} selectable={false}>
@@ -223,16 +240,16 @@ export function GitTab({
                     <text fg={request.state === "draft" ? COLOR.faint : COLOR.accent} selectable={false}>
                       {`#${request.number} `}
                     </text>
-                    <text fg={COLOR.text} selectable={false}>{truncate(request.title, Math.max(10, width - 18))}</text>
+                    <text fg={COLOR.text} selectable={false}>{truncate(request.title, Math.max(4, width - String(request.number).length - 2))}</text>
                   </Row>
                   <Row>
                     <text fg={COLOR.faint} selectable={false}>
                       {truncate(
                         `    ${request.author ?? "someone"} · ${request.sourceBranch ?? "?"} → ${request.targetBranch ?? "?"}`,
-                        Math.max(10, width - (checks ? checks.text.length + 3 : 0)),
-                      )}
+                        Math.max(4, width - (checks ? checks.text.length + 1 : 0)),
+                      ).padEnd(Math.max(4, width - (checks ? checks.text.length + 1 : 0)))}
                     </text>
-                    {checks === null ? null : <text fg={checks.color} selectable={false}>{`  ${checks.text}`}</text>}
+                    {checks === null ? null : <text fg={checks.color} selectable={false}>{` ${checks.text}`}</text>}
                   </Row>
                   <Row>
                     <text fg={COLOR.faint} selectable={false}>{"    "}</text>
