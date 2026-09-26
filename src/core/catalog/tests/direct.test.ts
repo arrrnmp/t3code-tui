@@ -150,17 +150,42 @@ describe("buildDirectProviders", () => {
     expect(compat?.models.every((model) => model.isHidden)).toBe(true);
   });
 
-  it("shows free models only on keyless providers", async () => {
+  it("lists a provider that is not connected as disabled, with no models to pick", async () => {
     const providers = await buildDirectProviders({
       env: { PATH: binDir(["opencode"]) },
       storeRoot: tmpStore(),
       modelsDev: async () => MODELS_DEV,
     });
     const section = providers.find((entry) => entry.instanceId === "opencode/anthropic");
-    expect(section?.enabled).toBe(true);
+    expect(section?.enabled).toBe(false);
     expect(section?.authStatus).toBeNull();
-    expect(section?.status).toBe("free models only (set ANTHROPIC_API_KEY for all 2)");
-    expect(section?.models.map((model) => model.slug)).toEqual(["anthropic/plain"]);
+    expect(section?.status).toBe("not connected (set ANTHROPIC_API_KEY or run opencode auth login)");
+    expect(section?.models).toEqual([]);
+  });
+
+  it("keeps OpenCode's own free tier without a login: its zero-cost models only", async () => {
+    const providers = await buildDirectProviders({
+      env: { PATH: binDir(["opencode"]) },
+      storeRoot: tmpStore(),
+      modelsDev: async () => ({
+        catalog: [
+          {
+            id: "opencode",
+            name: "OpenCode Zen",
+            env: ["OPENCODE_API_KEY"],
+            models: [
+              { id: "free-one", name: "Free", reasoningOptions: [], cost: { input: 0, output: 0 } },
+              { id: "paid-one", name: "Paid", reasoningOptions: [], cost: { input: 3, output: 15 } },
+            ],
+          },
+        ],
+        source: "live" as const,
+      }),
+    });
+    const zen = providers.find((entry) => entry.instanceId === "opencode/opencode");
+    expect(zen?.enabled).toBe(true);
+    expect(zen?.status).toBe("free models only (connect it for all 2)");
+    expect(zen?.models.map((model) => model.slug)).toEqual(["opencode/free-one"]);
   });
 
   it("prefixes bare source ids with their provider", async () => {

@@ -35,7 +35,7 @@ import type {
   TokenUsageDelta,
   TurnId,
 } from "../spi.js";
-import type { McpServerSpec } from "../../mcp.js";
+import { outOfProcess, type McpServerSpec } from "../../mcp.js";
 import {
   AcpClient,
   asRecord,
@@ -104,6 +104,8 @@ interface TranscriptTurn {
    * no message id, so the tool call is the only boundary we see.
    */
   textSealed: boolean;
+  /** Which message of the turn the chunks belong to; a sealed segment starts the next one. */
+  segment: number;
 }
 
 interface ParkedPermission {
@@ -446,7 +448,7 @@ export class GrokDriver implements ProviderAdapter<CliError> {
         provider: "grok",
         threadId: session.threadId,
         windows: [
-          { id: window.id, label: window.label, resetsAt: window.resetsAt, exhausted: window.exhausted },
+          { id: window.id, label: window.label, resetsAt: window.resetsAt, exhausted: window.exhausted, usedPercent: window.usedPercent },
         ],
         raw: { usedPercent: window.usedPercent },
       });
@@ -546,6 +548,7 @@ export class GrokDriver implements ProviderAdapter<CliError> {
         text: "",
         error: null,
         textSealed: false,
+        segment: 0,
       };
       session.transcript.push(turn);
       session.promptsInFlight += 1;
@@ -856,6 +859,7 @@ export class GrokDriver implements ProviderAdapter<CliError> {
           if (open.textSealed) {
             open.text = "";
             open.textSealed = false;
+            open.segment += 1;
           }
           open.text += text;
           open.items.push({ kind: "assistant", text });
@@ -866,6 +870,7 @@ export class GrokDriver implements ProviderAdapter<CliError> {
             provider: "grok",
             threadId: session.threadId,
             turnId: open?.id ?? null,
+            messageId: open ? `${open.id}:${open.segment}` : "grok-message",
             text,
           });
         }
@@ -885,7 +890,18 @@ export class GrokDriver implements ProviderAdapter<CliError> {
         session.lastToolAt = Date.now();
         if (open) {
           open.items.push({ kind: "tool", tool: title, text: title });
-          if (open.text) open.textSealed = true;
+          if (open.text && !open.textSealed) {
+            open.textSealed = true;
+            // Text before a tool call was a note on the way, not the answer.
+            this.publish({
+              type: "assistant.note",
+              provider: "grok",
+              threadId: session.threadId,
+              turnId: open.id,
+              messageId: `${open.id}:${open.segment}`,
+              text: open.text,
+            });
+          }
         }
         this.publish({
           type: "tool.execute.started",
@@ -1060,7 +1076,7 @@ export function acpMcpServers(servers: readonly McpServerSpec[], capabilities: u
   const http = mcp !== null && typeof mcp === "object" && (mcp as Record<string, unknown>)["http"] === true;
   const pairs = (values: Readonly<Record<string, string>>) =>
     Object.entries(values).map(([name, value]) => ({ name, value }));
-  return servers.flatMap((server): AcpMcpServer[] => {
+  return servers.map(outOfProcess).flatMap((server): AcpMcpServer[] => {
     if (server.type === "http") {
       return http ? [{ type: "http", name: server.name, url: server.url, headers: pairs(server.headers) }] : [];
     }

@@ -42,6 +42,21 @@ describe("claude usage", () => {
     expect(overage.blocked).toBe(false);
   });
 
+  it("reads the (internal) grace signal as a wrap-up, unless paid usage covers it or the window is rejected", () => {
+    const grace = (extra: Record<string, unknown>) =>
+      mapRateLimitEvent({ status: "allowed_warning", rateLimitType: "five_hour", resetsAt: 1_788_000_000, ...extra } as never);
+    expect(grace({ rateLimitGraceActive: true })).toMatchObject({ wrapUp: true, blocked: false });
+    expect(grace({}).wrapUp).toBe(false);
+    expect(grace({ rateLimitGraceActive: true, overageStatus: "allowed" }).wrapUp).toBe(false);
+    expect(grace({ rateLimitGraceActive: true, status: "rejected" })).toMatchObject({ wrapUp: false, blocked: true });
+  });
+
+  it("reads the event's utilization as a fraction, and a rejected window as spent", () => {
+    expect(mapRateLimitEvent({ status: "allowed_warning", rateLimitType: "five_hour", utilization: 0.83 }).windows[0]?.usedPercent).toBe(83);
+    expect(mapRateLimitEvent({ status: "allowed", rateLimitType: "seven_day" }).windows[0]?.usedPercent).toBeNull();
+    expect(mapRateLimitEvent({ status: "rejected", rateLimitType: "five_hour", utilization: 0.97 }).windows[0]?.usedPercent).toBe(100);
+  });
+
   it("describes pause durations", () => {
     const now = Date.parse("2026-09-20T12:00:00.000Z");
     expect(describePauseUntil("2026-09-20T14:30:00.000Z", now)).toBe("paused until 2h 30m");

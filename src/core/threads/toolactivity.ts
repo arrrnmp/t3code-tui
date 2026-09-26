@@ -319,7 +319,7 @@ function fromOpencode(event: ToolRuntimeEvent, raw: Record<string, unknown>): Na
 
 /** Shell tools, by the verb their (possibly namespaced) name ends in —
     Claude's `PowerShell` included, which otherwise fell to a generic card. */
-const SHELL_TOOLS: ReadonlySet<string> = new Set(["bash", "shell", "exec", "powershell", "pwsh"]);
+const SHELL_TOOLS: ReadonlySet<string> = new Set(["bash", "shell", "exec", "powershell", "pwsh", "monitor"]);
 
 /** Tool-name → renderer item type, for providers that don't name it. */
 function itemTypeForTool(tool: string): string {

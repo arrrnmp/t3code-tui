@@ -35,21 +35,57 @@ export type McpServerEntry =
       readonly headers?: Readonly<Record<string, string>>;
     };
 
-/** One resolved server, as drivers receive it. */
-export type McpServerSpec =
+/** A server a provider reaches out of process: a command it spawns, or a URL. */
+export type OutOfProcessMcpServerSpec =
   | {
       readonly name: string;
       readonly type: "stdio";
       readonly command: string;
       readonly args: readonly string[];
       readonly env: Readonly<Record<string, string>>;
+      /** Keep its tools' schemas in the prompt from the start, never deferred behind tool search. */
+      readonly alwaysLoad?: boolean;
     }
   | {
       readonly name: string;
       readonly type: "http";
       readonly url: string;
       readonly headers: Readonly<Record<string, string>>;
+      readonly alwaysLoad?: boolean;
     };
+
+/** One tool of an in-process server, described the way MCP lists it. */
+export interface InProcessMcpTool {
+  readonly name: string;
+  readonly description: string;
+  /** JSON Schema for the arguments (an object schema). */
+  readonly inputSchema: Record<string, unknown>;
+  readonly annotations?: { readonly readOnlyHint?: boolean };
+}
+
+/**
+ * A server whose tools run inside this process — moxen's own tools, served
+ * by the process that owns the provider sessions. A provider that can host
+ * tools in-process (Claude, through the Agent SDK) calls `call` directly;
+ * any other reaches the same tools through `fallback`.
+ */
+export interface InProcessMcpServerSpec {
+  readonly name: string;
+  readonly type: "in-process";
+  readonly instructions?: string;
+  readonly tools: readonly InProcessMcpTool[];
+  readonly call: (tool: string, args: Record<string, unknown>) => Promise<{ readonly text: string; readonly isError: boolean }>;
+  readonly fallback: OutOfProcessMcpServerSpec;
+  readonly alwaysLoad?: boolean;
+}
+
+/** One resolved server, as drivers receive it. */
+export type McpServerSpec = OutOfProcessMcpServerSpec | InProcessMcpServerSpec;
+
+/** The out-of-process form of a server, for a provider that cannot host one in-process. */
+export function outOfProcess(spec: McpServerSpec): OutOfProcessMcpServerSpec {
+  return spec.type === "in-process" ? spec.fallback : spec;
+}
 
 /**
  * Names become tool prefixes (`mcp__<name>__tool`) and Codex config paths

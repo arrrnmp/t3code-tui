@@ -82,10 +82,11 @@
       "checkpoints": [
         {
           "turnId": "<id-1>",
-          "status": "unavailable",
+          "status": "available",
           "checkpointTurnCount": 1,
-          "ref": null,
-          "baseRef": null
+          "ref": "<sha>",
+          "baseRef": "<sha>",
+          "files": []
         }
       ]
     }

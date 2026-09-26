@@ -111,6 +111,27 @@ describe("grok driver turns", () => {
     ]);
   });
 
+  it("publishes the text before a tool call as a note, each message under its own id", async () => {
+    const { transport, driver } = startedDriver({ models: MODELS });
+    await Effect.runPromise(driver.startSession(START));
+    const server = transport.sessions[0]!.server;
+    const eventsPromise = collectEvents(driver, 6);
+    server.promptHandler = async () => {
+      server.update("acp-session-1", { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Reading it." } });
+      server.update("acp-session-1", { sessionUpdate: "tool_call", toolCallId: "c-1", title: "Read package.json", kind: "read" });
+      server.update("acp-session-1", { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "moxen" } });
+      return { stopReason: "end_turn" };
+    };
+    const sent = await Effect.runPromise(driver.sendTurn({ threadId: "thread-1", prompt: "name?" }));
+    const outcome = await driver.awaitTurn("thread-1", sent.turnId);
+    expect(outcome.text).toBe("moxen");
+    const events = await eventsPromise;
+    const notes = events.flatMap((event) => (event.type === "assistant.note" ? [event.text] : []));
+    expect(notes).toEqual(["Reading it."]);
+    const ids = events.flatMap((event) => (event.type === "message.part.updated" ? [event.messageId] : []));
+    expect(new Set(ids).size).toBe(2);
+  });
+
   it("passes runtime instructions as session/new _meta.rules", async () => {
     const { transport, driver } = startedDriver({ models: MODELS });
     await Effect.runPromise(driver.startSession({ ...START, instructions: "Report back." }));

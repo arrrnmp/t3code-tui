@@ -13,6 +13,8 @@ export interface SidebarThread {
   /** The server flagged a pending approval or question — needs the user,
       answerable only in clients speaking protocol v2 (not this one). */
   waiting: boolean;
+  /** 0 for a top-level thread; 1 for a delegated task shown under its parent. */
+  depth: number;
 }
 
 export interface SidebarSections {
@@ -87,7 +89,7 @@ function threadTime(thread: ThreadEnvelope): number {
   return latest;
 }
 
-function toSidebarThread(thread: ThreadEnvelope, projects: Map<string, ProjectEnvelope>, now: number): SidebarThread {
+function toSidebarThread(thread: ThreadEnvelope, projects: Map<string, ProjectEnvelope>, now: number, depth = 0): SidebarThread {
   const project = projects.get(thread.projectId);
   const projectTitle = project?.title ?? "unknown project";
   const branch = typeof thread.branch === "string" && thread.branch.length > 0 ? thread.branch : null;
@@ -102,7 +104,44 @@ function toSidebarThread(thread: ThreadEnvelope, projects: Map<string, ProjectEn
     age: relativeAge(displayTimestamp(thread, status), now),
     status,
     waiting: thread.hasPendingUserInput === true || thread.hasPendingApprovals === true,
+    depth,
   };
+}
+
+/**
+ * A list with every delegated task moved right under its parent, oldest
+ * task first, each tagged with its depth. A task whose parent is not in the
+ * list (settled apart, another project, archived) stays where it was, at
+ * the top level. Nesting is one level deep: a task of a task sits beside
+ * its sibling tasks, never deeper.
+ */
+export function nestDelegated(threads: readonly ThreadEnvelope[]): Array<{ thread: ThreadEnvelope; depth: number }> {
+  const present = new Set(threads.map((thread) => thread.id));
+  const rootOf = (thread: ThreadEnvelope): string | null => {
+    let parent = typeof thread.parentThreadId === "string" && present.has(thread.parentThreadId) ? thread.parentThreadId : null;
+    const seen = new Set([thread.id]);
+    // Climb to the top-level ancestor, so the tree stays one level deep.
+    while (parent !== null && !seen.has(parent)) {
+      seen.add(parent);
+      const up = threads.find((candidate) => candidate.id === parent)?.parentThreadId;
+      if (typeof up !== "string" || !present.has(up)) break;
+      parent = up;
+    }
+    return parent;
+  };
+  const children = new Map<string, ThreadEnvelope[]>();
+  const top: ThreadEnvelope[] = [];
+  for (const thread of threads) {
+    const root = rootOf(thread);
+    if (root === null) top.push(thread);
+    else children.set(root, [...(children.get(root) ?? []), thread]);
+  }
+  return top.flatMap((thread) => [
+    { thread, depth: 0 },
+    ...[...(children.get(thread.id) ?? [])]
+      .sort((left, right) => Date.parse(left.createdAt ?? "") - Date.parse(right.createdAt ?? ""))
+      .map((child) => ({ thread: child, depth: 1 })),
+  ]);
 }
 
 /**
@@ -198,16 +237,16 @@ export function buildSidebarSections(state: ShellState, options: SidebarOptions)
           projectTitle,
           badge: projectBadge(projectTitle),
           badgeColor: badgeColor(id),
-          threads: rows.map((thread) => toSidebarThread(thread, projects, options.now)),
+          threads: nestDelegated(rows).map(({ thread, depth }) => toSidebarThread(thread, projects, options.now, depth)),
           collapsed: options.collapsedProjects?.has(id) ?? false,
         };
       });
   }
 
   return {
-    active: visible.map((thread) => toSidebarThread(thread, projects, options.now)),
-    settled: (options.settledExpanded ? visibleSettled.slice(0, options.settledLimit) : []).map((thread) =>
-      toSidebarThread(thread, projects, options.now),
+    active: nestDelegated(visible).map(({ thread, depth }) => toSidebarThread(thread, projects, options.now, depth)),
+    settled: nestDelegated(options.settledExpanded ? visibleSettled.slice(0, options.settledLimit) : []).map(({ thread, depth }) =>
+      toSidebarThread(thread, projects, options.now, depth),
     ),
     settledTotal: visibleSettled.length,
     mode,

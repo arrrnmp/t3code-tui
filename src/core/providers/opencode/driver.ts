@@ -25,6 +25,7 @@ import { plainSkill, type SkillInventory, type SkillSummary } from "../../catalo
 import type { InteractionMode, ModelSelection, RuntimeMode } from "../../types.js";
 import type {
   ApprovalRequestId,
+  ContextBreakdown,
   ContextWindowUsage,
   ProviderAdapter,
   ProviderAdapterCapabilities,
@@ -40,7 +41,8 @@ import type {
   TokenUsageDelta,
   TurnId,
 } from "../spi.js";
-import type { McpServerSpec } from "../../mcp.js";
+import { outOfProcess, type McpServerSpec } from "../../mcp.js";
+import { opencodeContextBreakdown } from "./context.js";
 import {
   isOpencodeAuthErrorText,
   normalizeOpencodeSettings,
@@ -95,6 +97,8 @@ interface OpenCodeTurn {
   readonly steerMessageIds: Set<string>;
   /** Text parts by part id, in arrival order, with the message each belongs to. */
   partTexts: Map<string, { messageId: string | null; text: string }>;
+  /** The assistant message (one per model step) that last streamed text. */
+  lastTextMessageId: string | null;
   /** Setup step to append if the server rejects this turn (see `missingCredentialHint`). */
   credentialHint: string | null;
   usage: TokenUsageDelta;
@@ -350,7 +354,7 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
       done = new Set();
       this.mcpRegistered.set(connection, done);
     }
-    for (const server of servers) {
+    for (const server of servers.map(outOfProcess)) {
       const config: OpencodeMcpConfig =
         server.type === "http"
           ? { type: "remote", url: server.url, ...(Object.keys(server.headers).length > 0 ? { headers: server.headers } : {}) }
@@ -429,6 +433,15 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
   readonly contextUsage = async (threadId: ThreadId): Promise<ContextWindowUsage | null> =>
     this.sessions.get(threadId)?.context ?? null;
 
+  /** The reading above, broken down by estimate from the session's messages. */
+  readonly contextBreakdown = async (threadId: ThreadId): Promise<ContextBreakdown | null> => {
+    const session = this.sessions.get(threadId);
+    if (!session?.context) return null;
+    const connection = await this.connectionFor(session);
+    const messages = await connection.sessionMessages(session.nativeSessionId).catch(() => []);
+    return opencodeContextBreakdown(session.context, messages);
+  };
+
   // -- session lifecycle -------------------------------------------------
 
   readonly startSession = (input: ProviderSessionStartInput): Effect.Effect<ProviderSession, CliError> =>
@@ -467,6 +480,12 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
   readonly resumeCursor = (threadId: ThreadId): string | null =>
     this.sessions.get(threadId)?.nativeSessionId ?? null;
 
+  /** A whole copy of a native session, on the server for `workingDirectory` (where it lives). */
+  readonly forkSession = async (cursor: string, workingDirectory: string): Promise<string> => {
+    const connection = await this.connectionForSession(`fork:${cursor}` as ThreadId, workingDirectory);
+    return (await connection.forkSession(cursor)).sessionID;
+  };
+
   readonly sendTurn = (input: ProviderSendTurnInput): Effect.Effect<ProviderTurnStartResult, CliError> =>
     this.attempt("OPENCODE_TURN_FAILED", `Could not send a turn on thread ${input.threadId}`, async () => {
       const session = this.requireSession(input.threadId);
@@ -495,6 +514,7 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
         text: "",
         error: null,
         partTexts: new Map(),
+        lastTextMessageId: null,
         credentialHint: null,
         usage: emptyUsage(),
       };
@@ -864,18 +884,43 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
     const kind = asString(part.type) ?? "unknown";
     if (kind === "text") {
       const text = typeof part.text === "string" ? part.text : "";
+      const messageId = asString(part.messageID) ?? "opencode-message";
+      // Parts stream as cumulative snapshots; subscribers want the delta.
+      const previous = turn.partTexts.get(partId)?.text ?? "";
+      const delta = text.startsWith(previous) ? text.slice(previous.length) : text;
       if (part.ignored !== true) {
+        // A new step speaking means the previous step's text was a note.
+        if (text && turn.lastTextMessageId !== null && turn.lastTextMessageId !== messageId) {
+          const note = [...turn.partTexts.values()]
+            .filter((entry) => entry.messageId === turn.lastTextMessageId)
+            .map((entry) => entry.text)
+            .join("");
+          if (note.trim()) {
+            this.publish({
+              type: "assistant.note",
+              provider: this.provider,
+              threadId: session.threadId,
+              turnId: turn.id,
+              messageId: turn.lastTextMessageId,
+              text: note,
+            });
+          }
+        }
+        if (text) turn.lastTextMessageId = messageId;
         turn.partTexts.set(partId, { messageId: asString(part.messageID), text });
         turn.text = answerText(turn.partTexts);
       }
-      this.publish({
-        type: "message.part.updated",
-        provider: this.provider,
-        threadId: session.threadId,
-        turnId: turn.id,
-        text,
-        raw: part,
-      });
+      if (delta) {
+        this.publish({
+          type: "message.part.updated",
+          provider: this.provider,
+          threadId: session.threadId,
+          turnId: turn.id,
+          messageId,
+          text: delta,
+          raw: part,
+        });
+      }
       return;
     }
     if (kind === "tool") {

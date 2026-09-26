@@ -64,7 +64,7 @@ async function waitForTurnStatus(
   harness: TestHarness,
   threadId: string,
   statuses: string[],
-  timeoutMs = 5000,
+  timeoutMs = 15_000,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {

@@ -116,6 +116,16 @@ export function exportToolLine(entry: TimelineEntry): string | null {
     }
     case "image":
       return `Saw image ${view.path}`;
+    case "reasoning":
+      // Reasoning summaries are the model's own scratch work, not a tool call.
+      return null;
+    case "model-switch":
+      if (view.reason === "auto") return `Switched to ${view.to}${view.from === null ? "" : ` from ${view.from}`} (automatic)`;
+      return `Switched to ${view.to}${view.from === null ? "" : ` (${view.from} flagged the request${view.category === null ? "" : `: ${view.category}`})`}`;
+    case "notice":
+      return view.notice === "permission-denied" && view.detail !== null ? `${view.title}: ${full(view.detail)}` : view.title;
+    case "usage-limit":
+      return `Usage limit reached${view.wrapUp ? ", wrapping up" : ""} · ${view.label ?? "Plan"}${view.resetsAt === null ? "" : ` · resets ${view.resetsAt}`}`;
     case "tool": {
       const detail = full(view.detail);
       const tail = view.running ? " · running" : "";

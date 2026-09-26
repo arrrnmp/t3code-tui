@@ -12,9 +12,20 @@ import { runMessageActions } from "./render-check/scenarios/messageActions.js";
 import { runTimelineAndAnswers } from "./render-check/scenarios/timelineAndAnswers.js";
 import { runWorkFoldGuards } from "./render-check/scenarios/workFoldGuards.js";
 import { runSkillsAndContext } from "./render-check/scenarios/skillsAndContext.js";
+import { runSidePanelButton } from "./render-check/scenarios/sidePanelButton.js";
 import { runActivityRows } from "./render-check/scenarios/activityRows.js";
 import { runLifecycleRows } from "./render-check/scenarios/lifecycleRows.js";
 import { runTurnModels } from "./render-check/scenarios/turnModels.js";
+import { runBackgroundWork } from "./render-check/scenarios/backgroundWork.js";
+import { runProviderInterruptions } from "./render-check/scenarios/providerInterruptions.js";
+import { runQuestionPreview } from "./render-check/scenarios/questionPreview.js";
+import { runComposerScrollbar } from "./render-check/scenarios/composerScrollbar.js";
+import { runTasksPanel } from "./render-check/scenarios/tasksPanel.js";
+import { runSidePanelTabs } from "./render-check/scenarios/sidePanelTabs.js";
+import { runNoticeBanner } from "./render-check/scenarios/noticeBanner.js";
+import { runImageTokens } from "./render-check/scenarios/imageTokens.js";
+import { runSettingsAndGit } from "./render-check/scenarios/settingsAndGit.js";
+import { runQueueAndSide } from "./render-check/scenarios/queueAndSide.js";
 import { registerSyntaxParsers } from "./syntax/register.js";
 
 /**
@@ -52,12 +63,23 @@ await runMessageActions(setup);
 await runTimelineAndAnswers(setup);
 await runWorkFoldGuards(setup);
 await runSkillsAndContext(setup);
+await runSidePanelButton(setup);
 await runActivityRows(setup);
 await runLifecycleRows(setup);
+await runBackgroundWork(setup);
+await runProviderInterruptions(setup);
 // Independent render with its own deferred client (not part of the shared
 // walkthrough above): runs last so its extra renderer cannot perturb the
 // timing-sensitive assertions of the shared scenarios.
 await runBootGate();
 await runTurnModels();
+await runQuestionPreview();
+await runComposerScrollbar();
+await runTasksPanel();
+await runSidePanelTabs();
+await runSettingsAndGit();
+await runQueueAndSide();
+await runNoticeBanner();
+await runImageTokens();
 
 process.exit(0);

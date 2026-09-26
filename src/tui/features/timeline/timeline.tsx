@@ -1,7 +1,7 @@
 import type { ReactNode, RefObject } from "react";
 import { useEffect, useMemo, useState } from "react";
 import type { ScrollBoxRenderable } from "@opentui/core";
-import { SyntaxStyle, TextAttributes } from "@opentui/core";
+import { TextAttributes } from "@opentui/core";
 
 import { useHover } from "../../hooks/useHover.js";
 import { useAnimTick } from "../../hooks/useAnimTick.js";
@@ -9,64 +9,12 @@ import { markModalDismissed } from "../../model/modalDismiss.js";
 import { describeActivity, fileRowCounts, formatMs, readRangeLabel } from "../../model/activity.js";
 import { findPatchFile, type PatchFile } from "../../model/patch.js";
 import { formatBytes, renderMessage } from "../../model/message.js";
-import type { TimelineEntry } from "../../model/thread.js";
-import { clockTime, formatDuration, proportionalTarget, segmentWork, summarizeWork, type TurnGroup } from "../../model/turns.js";
-import { CODE_SYNTAX_TOKENS, COLOR, DIFF_BG, MARKER, pulseColor, SPINNER_FRAMES, SURFACE, truncate } from "../../theme.js";
+import { isUsageContinue, taskNotifications, untilLabel, type TaskNotificationView, type TimelineEntry } from "../../model/thread.js";
+import { clockTime, formatDuration, proportionalTarget, runningThought, thoughtDuration, segmentWork, summarizeWork, type TurnGroup } from "../../model/turns.js";
+import { isWaiting, workingMs } from "../../model/waits.js";
+import { COLOR, DIFF_BG, MARKER, pulseColor, SPINNER_FRAMES, SURFACE, truncate, markdownSyntaxStyle } from "../../theme.js";
 
-/**
- * `SyntaxStyle.create()` registers no token styles, which paints every
- * markdown construct — headings, lists, bold, links, code — in the same
- * default colour. These names are the `<markdown>` renderable's fixed
- * vocabulary (marked.js token groups for inline styles, tree-sitter capture
- * groups from `@opentui/core/assets/markdown/highlights.scm` for block-level
- * ones like headings/lists/quotes); an explicit table is required per level
- * since the renderable's group-name fallback only strips to the first
- * dot-segment (`markup.heading.3` → `markup`, not `markup.heading`).
- *
- * Fenced code blocks render through a nested `CodeRenderable` that reuses
- * this same `syntaxStyle` but highlights with language-grammar groups
- * (`keyword`, `string`, `function`, ...) instead of `markup.*` ones — merge
- * in `CODE_SYNTAX_TOKENS` (the same table `diffpanel.tsx` uses for diffs) so
- * a ```js fence gets real syntax highlighting, not plain default-colour text.
- */
-const MARKDOWN_SYNTAX_TOKENS = {
-  ...CODE_SYNTAX_TOKENS,
-  default: { fg: COLOR.text },
-  conceal: { fg: COLOR.faint },
-  "markup.heading": { fg: COLOR.bright, bold: true },
-  "markup.heading.1": { fg: COLOR.accent, bold: true, underline: true },
-  "markup.heading.2": { fg: COLOR.accent, bold: true },
-  "markup.heading.3": { fg: COLOR.bright, bold: true },
-  "markup.heading.4": { fg: COLOR.text, bold: true },
-  "markup.heading.5": { fg: COLOR.dim, bold: true },
-  "markup.heading.6": { fg: COLOR.dim, italic: true },
-  "markup.strong": { fg: COLOR.bright, bold: true },
-  "markup.italic": { italic: true },
-  "markup.strikethrough": { fg: COLOR.dim, dim: true },
-  "markup.raw": { fg: COLOR.command },
-  "markup.raw.block": { fg: COLOR.command },
-  "markup.link": { fg: COLOR.dim },
-  "markup.link.label": { fg: COLOR.accent, underline: true },
-  "markup.link.url": { fg: COLOR.dim },
-  "markup.list": { fg: COLOR.accent },
-  "markup.list.checked": { fg: COLOR.added },
-  "markup.list.unchecked": { fg: COLOR.dim },
-  "markup.quote": { fg: COLOR.dim, italic: true },
-  // Shared by markdown's own decoration marks (table pipes, `hr`) *and*
-  // code's template-literal interpolation braces (`${...}`) — one group
-  // name, two contexts; `dim` reads fine as de-emphasis in both rather than
-  // vanishing against the panel background like `faint` did for `${}`.
-  "punctuation.special": { fg: COLOR.dim },
-  label: { fg: COLOR.dim },
-  "keyword.directive": { fg: COLOR.warn },
-  "string.escape": { fg: COLOR.dim },
-} as const;
-
-let cachedSyntaxStyle: SyntaxStyle | null = null;
-function syntaxStyle(): SyntaxStyle {
-  cachedSyntaxStyle ??= SyntaxStyle.fromStyles(MARKDOWN_SYNTAX_TOKENS);
-  return cachedSyntaxStyle;
-}
+const syntaxStyle = markdownSyntaxStyle;
 
 /** PowerShell rows use the vendored `powershell` grammar
     (`parsers-config.json`); everything else gets `bash`, which also covers
@@ -398,6 +346,106 @@ function ActivityRow({ entry, now, turnFiles = [], onOpenUrl }: { entry: Timelin
     );
   }
 
+  if (view.kind === "reasoning") {
+    const started = view.startedAt === null ? Number.NaN : Date.parse(view.startedAt);
+    const elapsed = view.running
+      ? Number.isNaN(started) ? null : Math.max(0, now - started)
+      : view.durationMs;
+    const title = view.running
+      ? `Thinking…${elapsed === null || elapsed < 1000 ? "" : ` ${formatDuration(elapsed)}`}`
+      : elapsed === null ? "Thought" : `Thought for ${thoughtDuration(elapsed)}`;
+    const hasText = view.text.length > 0;
+    return (
+      <ToolChip
+        rail={view.running ? COLOR.warn : COLOR.faint}
+        glyph="✻"
+        title={title}
+        time={time}
+        running={view.running}
+        {...(hasText && !view.running ? { onToggle: () => setExpanded((current) => !current), expanded } : {})}
+      >
+        {view.running && hasText ? (
+          // Streaming: the whole block in place, like the live reply — a
+          // tail window re-cut on every delta and read as jitter.
+          <text fg={COLOR.dim} attributes={TextAttributes.ITALIC} wrapMode="word">{view.text.trim()}</text>
+        ) : expanded && hasText ? (
+          <text fg={COLOR.dim} wrapMode="word">{view.text}</text>
+        ) : null}
+      </ToolChip>
+    );
+  }
+
+  if (view.kind === "model-switch") {
+    const flagged = view.from === null ? "The model" : view.from;
+    const why = view.category === null ? "" : ` (${view.category})`;
+    const detail =
+      view.reason === "auto"
+        ? `${view.from === null ? "The provider" : `${view.from} was unavailable, so the provider`} moved the thread to ${view.to} on its own.`
+        : view.scope === "local"
+          ? `${flagged} flagged a subagent's request${why}; that reply came from ${view.to}.`
+          : `${flagged} flagged this request${why}, so it re-ran on ${view.to}. The thread stays on ${view.to}.`;
+    return (
+      <ToolChip rail={COLOR.warn} glyph="↻" title={`Switched to ${view.to}`} titleBold time={time} running={false}>
+        <text fg={COLOR.dim}>{detail}</text>
+      </ToolChip>
+    );
+  }
+
+  if (view.kind === "notice") {
+    // A compaction summary is long: folded until asked for. A refusal
+    // reason is short: shown under the title.
+    const foldable = view.notice === "compacted" && view.detail !== null;
+    return (
+      <ToolChip
+        rail={view.notice === "permission-denied" ? COLOR.danger : COLOR.diff}
+        glyph={view.notice === "compacted" ? "⇣" : view.notice === "permission-denied" ? "⊘" : "•"}
+        title={view.title}
+        time={time}
+        running={false}
+        {...(foldable ? { onToggle: () => setExpanded((current) => !current), expanded } : {})}
+      >
+        {view.detail === null ? null : foldable ? (
+          expanded ? <text fg={COLOR.dim} wrapMode="word">{view.detail}</text> : null
+        ) : (
+          <text fg={COLOR.dim}>{clamp(view.detail, 2)}</text>
+        )}
+      </ToolChip>
+    );
+  }
+
+  if (view.kind === "usage-limit") {
+    // A system line, not a tool call: the provider stopped (or is wrapping
+    // up) the turn. The banner over the composer carries the actions; this
+    // is the record of when it happened and when it lifts.
+    const resets = view.resetsAt === null ? null : new Date(view.resetsAt);
+    const known = resets !== null && !Number.isNaN(resets.getTime());
+    const passed = known && resets.getTime() <= now;
+    const window = view.label === null ? "Plan" : view.label;
+    const tone = view.wrapUp ? COLOR.warn : COLOR.danger;
+    return (
+      <box style={{ flexDirection: "column", marginLeft: GUTTER, marginTop: 1, flexShrink: 0, paddingLeft: 1, paddingRight: 1 }}>
+        <box style={{ flexDirection: "row", height: 1, flexShrink: 0 }}>
+          <text fg={tone}>{"◔ "}</text>
+          <text fg={tone} attributes={TextAttributes.BOLD}>{view.wrapUp ? "Usage limit reached, wrapping up" : "Usage limit reached"}</text>
+          <text fg={COLOR.dim}>{`  ·  ${window} limit`}</text>
+          {!known ? (
+            <text fg={COLOR.faint}>{"  ·  resets when the provider allows"}</text>
+          ) : (
+            <>
+              <text fg={COLOR.dim}>{passed ? "  ·  reset at " : "  ·  resets "}</text>
+              <text fg={passed ? COLOR.dim : COLOR.warn}>{clockTime(view.resetsAt ?? "", now)}</text>
+              {passed ? null : <text fg={COLOR.faint}>{` (${untilLabel(resets, now)})`}</text>}
+            </>
+          )}
+          {time.length === 0 ? null : <text fg={COLOR.faint}>{`  ·  ${time}`}</text>}
+        </box>
+        {view.wrapUp ? (
+          <text fg={COLOR.dim} wrapMode="word">{"  Finishing the current step on a small allowance from the weekly limit, instead of stopping mid-edit."}</text>
+        ) : null}
+      </box>
+    );
+  }
+
   if (view.kind === "tool") {
     return (
       <ToolChip rail={COLOR.tool} glyph="•" title={truncate(view.tool, 48)} time={time} running={view.running}>
@@ -464,6 +512,7 @@ function SpeakerHeader({
   label,
   time,
   extra,
+  extraColor,
   color,
   background,
 }: {
@@ -472,6 +521,8 @@ function SpeakerHeader({
   /** Trailing segment after the time — the turn's total duration, for a
       finished reply's header only. */
   extra?: string | undefined;
+  /** The trailing segment's colour; faint unless it is news (a queued message). */
+  extraColor?: string | undefined;
   color: string;
   background: string;
 }) {
@@ -480,8 +531,72 @@ function SpeakerHeader({
       <text fg={color} bg={background}>{label}</text>
       <text fg={COLOR.faint} bg={background}>{time.length === 0 ? "" : `  ·  ${time}`}</text>
       {extra === undefined || extra.length === 0 ? null : (
-        <text fg={COLOR.faint} bg={background}>{`  ·  ${extra}`}</text>
+        <text fg={extraColor ?? COLOR.faint} bg={background}>{`  ·  ${extra}`}</text>
       )}
+    </box>
+  );
+}
+
+/**
+ * "Your delegated tasks settled", written into the thread by moxen: one
+ * compact block per task instead of a "you" prompt holding the raw
+ * notification text the agent reads.
+ */
+function TaskNotificationBlock({ entry, tasks, now }: { entry: TimelineEntry; tasks: readonly TaskNotificationView[]; now: number }) {
+  const header = tasks.length === 1 ? null : `${tasks.length} agents settled`;
+  return (
+    <box
+      border={["left"]}
+      borderStyle="heavy"
+      borderColor={COLOR.diff}
+      style={{ flexDirection: "column", flexGrow: 1, marginTop: 1, flexShrink: 0, paddingLeft: 2, paddingRight: 2, paddingTop: 1, paddingBottom: 1 }}
+      backgroundColor={SURFACE.panel}
+    >
+      {header === null ? null : (
+        <SpeakerHeader label={header} time={clockTime(entry.at, now)} color={COLOR.diff} background={SURFACE.panel} />
+      )}
+      {tasks.map((task, index) => {
+        const glyph = task.status === "completed" ? "✓" : task.status === "failed" ? "✗" : task.status === "interrupted" ? "■" : "●";
+        const glyphColor = task.status === "completed" ? COLOR.added : task.status === "failed" ? COLOR.danger : COLOR.warn;
+        const verb = task.status === "completed" ? "finished" : task.status === "failed" ? "failed" : task.status === "interrupted" ? "was stopped" : "is running";
+        const facts = [
+          task.durationMs === null ? null : formatDuration(Math.max(1000, task.durationMs)),
+          task.model,
+          header === null ? clockTime(entry.at, now) : null,
+        ].filter((fact): fact is string => fact !== null);
+        const footer = [
+          task.filesChanged === null || task.filesChanged === 0 ? null : `+${task.additions ?? 0} −${task.deletions ?? 0} · ${task.filesChanged} file${task.filesChanged === 1 ? "" : "s"}`,
+          task.branch === null ? null : `branch ${task.branch}`,
+        ].filter((fact): fact is string => fact !== null);
+        return (
+          <box key={task.taskId} style={{ flexDirection: "column", flexShrink: 0, marginTop: index === 0 && header === null ? 0 : 1 }} backgroundColor={SURFACE.panel}>
+            <box style={{ flexDirection: "row", height: 1, flexShrink: 0 }} backgroundColor={SURFACE.panel}>
+              <text fg={glyphColor} bg={SURFACE.panel}>{`${glyph} `}</text>
+              <text fg={COLOR.bright} bg={SURFACE.panel} attributes={TextAttributes.BOLD}>{`Agent "${truncate(task.title, 60)}" ${verb}`}</text>
+              <text fg={COLOR.faint} bg={SURFACE.panel}>{facts.length === 0 ? "" : `  ·  ${facts.join("  ·  ")}`}</text>
+            </box>
+            {task.headline === null ? null : (
+              <text fg={COLOR.text} bg={SURFACE.panel} wrapMode="word">{`  ${task.headline}`}</text>
+            )}
+            {footer.length === 0 ? null : <text fg={COLOR.dim} bg={SURFACE.panel}>{`  ${footer.join("  ·  ")}`}</text>}
+          </box>
+        );
+      })}
+    </box>
+  );
+}
+
+/**
+ * The continue moxen sent after a usage limit reset: one quiet line where a
+ * "you" prompt would be — the agent reads the full instruction, the user
+ * only needs to know why the thread picked up again.
+ */
+function ContinueNotice({ entry, now }: { entry: TimelineEntry; now: number }) {
+  return (
+    <box style={{ flexDirection: "row", height: 1, flexShrink: 0, marginTop: 1, paddingLeft: 1 }}>
+      <text fg={COLOR.warn}>{"↻ "}</text>
+      <text fg={COLOR.dim}>{"Continued after the usage limit reset"}</text>
+      <text fg={COLOR.faint}>{`  ·  ${clockTime(entry.at, now)}`}</text>
     </box>
   );
 }
@@ -528,7 +643,12 @@ function PromptBlock({
       onMouseUp={onOpenActions}
       {...handlers}
     >
-      <SpeakerHeader label="you" time={clockTime(entry.at, now)} color={hovered ? COLOR.bright : COLOR.user} background={SURFACE.user} />
+      <SpeakerHeader
+        label="you"
+        time={clockTime(entry.at, now)}
+        color={hovered ? COLOR.bright : COLOR.user}
+        background={SURFACE.user}
+      />
       <box style={{ height: 1, flexShrink: 0 }} backgroundColor={SURFACE.user} />
       <MessageBody entry={entry} homeDir={homeDir} background={SURFACE.user} />
     </box>
@@ -617,7 +737,9 @@ function WorkFold({
   const steps = group.work.length;
   if (steps === 0) return null;
   const started = Date.parse(group.startedAt);
-  const durationMs = open && !Number.isNaN(started) ? Math.max(0, now - started) : group.durationMs;
+  // The open fold's clock stops while the turn waits on the user, the same
+  // way the settled "Worked for" leaves those waits out.
+  const durationMs = open && !Number.isNaN(started) ? workingMs(group.waits, started, now) : group.durationMs;
   const foldFg = open ? pulseColor(pulseTick, COLOR.warn, COLOR.bright, 1800) : hovered ? COLOR.bright : COLOR.dim;
 
   return (
@@ -858,9 +980,11 @@ function TurnBlock({  group,
         <SpeakerHeader
           // Intermediate messages read present-tense only while the turn is
           // still live — on a finished turn they are plain past messages.
+          // Either way they keep the model's own color: dimming them grey
+          // made the last answer read as inactive the moment tools followed.
           label={open ? `${model} · working` : model}
           time={clockTime(entry.at, now)}
-          color={COLOR.dim}
+          color={modelColor ?? COLOR.agent}
           background={SURFACE.base}
         />
         <box style={{ height: 1, flexShrink: 0 }} backgroundColor={SURFACE.base} />
@@ -868,10 +992,15 @@ function TurnBlock({  group,
       </box>
     );
 
-  // A stale streaming fragment on a finished turn is its closing text;
-  // on a live turn only finished messages close.
-  const closing = group.reply ?? (!open ? group.live : null);
+  // A stale streaming fragment on a finished turn is its closing text. A
+  // live turn has no closing reply yet: its latest message stays in line
+  // with the work, where it was written, rather than pinned below it.
+  const closing = open ? null : (group.reply ?? group.live);
   const live = open ? group.live : null;
+  // A thought still running renders last; finished, it takes its place in line.
+  const thought = open ? runningThought(group) : null;
+  const inLine = open && group.reply !== null ? [...group.work, group.reply].sort((left, right) => left.at.localeCompare(right.at)) : group.work;
+  const work = thought === null ? inLine : inLine.filter((entry) => entry !== thought);
 
   // Fold rule: the Worked fold always hides the work when collapsed. Once
   // expanded, tools stay flat only until an assistant message lands after
@@ -881,7 +1010,7 @@ function TurnBlock({  group,
   // force-expanded). While open, the closing reply is stale by definition
   // (newer tools already landed after it), so it must not bound the
   // trailing tools — the newest calls stay visible until the turn ends.
-  const segments = workExpanded ? segmentWork(group.work, open ? null : closing) : [];
+  const segments = workExpanded ? segmentWork(work, open ? null : closing) : [];
 
   const renderToolRow = (entry: TimelineEntry) => (
     <box key={entry.id} style={{ flexDirection: "column", flexShrink: 0 }}>
@@ -890,10 +1019,19 @@ function TurnBlock({  group,
   );
 
   return (
-    <box style={{ flexDirection: "column", flexShrink: 0, marginBottom: 1 }}>
-      {group.prompts.map((entry) => (
-        <PromptBlock key={entry.id} entry={entry} homeDir={homeDir} now={now} onOpenActions={() => onOpenMessageActions(entry)} />
-      ))}
+    // No marginBottom: every block inside a turn (and the next turn's prompt)
+    // carries its own marginTop, and the scrollbox pads the last turn — a
+    // wrapper margin here stacked with the next prompt's into a double gap.
+    <box style={{ flexDirection: "column", flexShrink: 0 }}>
+      {group.prompts.map((entry) => {
+        if (isUsageContinue(entry.message)) return <ContinueNotice key={entry.id} entry={entry} now={now} />;
+        const tasks = taskNotifications(entry.message);
+        return tasks === null ? (
+          <PromptBlock key={entry.id} entry={entry} homeDir={homeDir} now={now} onOpenActions={() => onOpenMessageActions(entry)} />
+        ) : (
+          <TaskNotificationBlock key={entry.id} entry={entry} tasks={tasks} now={now} />
+        );
+      })}
 
       <WorkFold group={group} open={open} now={now} expanded={workExpanded} onToggle={() => onToggleWork(group.id)} />
       {segments.map((segment, index) => {
@@ -937,7 +1075,7 @@ function TurnBlock({  group,
             <SpeakerHeader
               label={`${model} · writing`}
               time={clockTime(live.at, now)}
-              color={COLOR.dim}
+              color={modelColor ?? COLOR.agent}
               background={SURFACE.base}
             />
             <MessageBody entry={live} homeDir={homeDir} background={SURFACE.base} />
@@ -958,6 +1096,8 @@ function TurnBlock({  group,
         />
       )}
 
+      {thought === null ? null : renderToolRow(thought)}
+
       {group.diff === null ? null : (
         <TurnDiffRow
           entry={group.diff}
@@ -971,7 +1111,7 @@ function TurnBlock({  group,
 
 /**
  * Live turn state for the chat pane's bottom bar: "thinking" before the model
- * has produced anything, "working" once there is visible work, with a live
+ * has produced anything or while a thought runs, "working" otherwise, with a live
  * elapsed clock. It lives in the border bar — the same look as the pane
  * chrome — instead of occupying a transcript row, so the last line of the
  * scrollback is always real content.
@@ -980,16 +1120,19 @@ function runStatus(
   group: TurnGroup | undefined,
   now: number,
   turnStartedAt: string | null,
-): { busy: boolean; elapsedMs: number } | null {
+): { busy: boolean; thinking: boolean; waiting: boolean; elapsedMs: number } | null {
   if (group === undefined) return null;
   // The server's own turn-start timestamp is the ground truth for the live
   // clock — grouped-entry timing is a fallback for when it isn't wired up
   // yet, not a second source that can silently drift from it.
   const anchor = turnStartedAt === null ? Date.parse(group.startedAt) : Date.parse(turnStartedAt);
   const started = Number.isNaN(anchor) ? Date.parse(group.startedAt) : anchor;
-  const elapsedMs = Number.isNaN(started) ? 0 : Math.max(0, now - started);
+  // Paused while the turn waits on the user: an open question or permission
+  // prompt is the user's move, not work the agent is doing.
+  const elapsedMs = Number.isNaN(started) ? 0 : workingMs(group.waits, started, now);
   const busy = group.work.length > 0 || group.reply !== null || group.live !== null;
-  return { busy, elapsedMs };
+  // A thought running now says "thinking" again, whatever came before it.
+  return { busy, thinking: runningThought(group) !== null, waiting: isWaiting(group.waits), elapsedMs };
 }
 
 /**
@@ -997,15 +1140,29 @@ function runStatus(
  * throb. The elapsed text still advances on the 1s `now` tick — only the
  * frame and glow need the fast clock. Mounted only while a turn runs.
  */
-function LiveBadge({ busy, elapsedMs }: { busy: boolean; elapsedMs: number }) {
-  const tick = useAnimTick(true, 100);
+function LiveBadge({
+  busy,
+  thinking,
+  waiting,
+  elapsedMs,
+}: {
+  busy: boolean;
+  thinking: boolean;
+  waiting: boolean;
+  elapsedMs: number;
+}) {
+  // Waiting on the user: no spinner and no throb — nothing is running, and
+  // a pulsing badge would say otherwise. The clock stays put until answered.
+  const tick = useAnimTick(!waiting, 100);
   const frame = SPINNER_FRAMES[Math.floor(tick / 100) % SPINNER_FRAMES.length] ?? "⠋";
   return (
     // A real overlay instead of `bottomTitle`: the border prop shares one
     // color with the top title, so it can't pulse independently.
     <box style={{ position: "absolute", bottom: -1, right: 2, height: 1, flexShrink: 0 }}>
-      <text fg={pulseColor(tick, COLOR.dim, COLOR.accent, 2400)} bg={SURFACE.base}>
-        {` ${frame} ${busy ? "working" : "thinking"}… ${formatDuration(elapsedMs)} `}
+      <text fg={waiting ? COLOR.warn : pulseColor(tick, COLOR.dim, COLOR.accent, 2400)} bg={SURFACE.base}>
+        {waiting
+          ? ` ◆ waiting for you · ${formatDuration(elapsedMs)} `
+          : ` ${frame} ${busy && !thinking ? "working" : "thinking"}… ${formatDuration(elapsedMs)} `}
       </text>
     </box>
   );
@@ -1021,6 +1178,7 @@ function LiveCaret() {
     </text>
   );
 }
+
 
 export function Timeline({
   groups,
@@ -1110,7 +1268,7 @@ export function Timeline({
       bottomTitleAlignment="right"
       onMouseDown={onFocus}
     >
-      {live === null ? null : <LiveBadge busy={live.busy} elapsedMs={live.elapsedMs} />}
+      {live === null ? null : <LiveBadge busy={live.busy} thinking={live.thinking} waiting={live.waiting} elapsedMs={live.elapsedMs} />}
       {atBottom ? null : (
         // Single-row square pill with 2-col padding per side — no rounded
         // border, so it reads as a flat chip rather than a modal.

@@ -17,6 +17,9 @@ import { COPY_TOAST_MS } from "../constants.js";
  * `App` — `pickerBody` reads them directly to build the message-actions and
  * command-palette rows, so only the handlers that *write* them move here.
  */
+/** A revert of the conversation alone, or of its files too. */
+export type RevertKind = "conversation" | "files";
+
 export function useThreadOps(params: {
   client: ClientApi;
   renderer: CliRenderer | null;
@@ -28,7 +31,8 @@ export function useThreadOps(params: {
   toasts: ReturnType<typeof useToasts>;
   paletteReturnFocus: "chat" | "composer" | "diff";
   deleteArmed: boolean;
-  revertArmed: boolean;
+  /** Which revert row awaits its confirming second press, if any. */
+  revertArmed: RevertKind | false;
   sessionRunningRef: { current: boolean };
   closePicker: (returnFocus?: "composer" | "chat" | "diff") => void;
   closeDiff: () => void;
@@ -36,7 +40,7 @@ export function useThreadOps(params: {
   setOpenThreadId: (id: string | null) => void;
   setDeleteArmed: (armed: boolean) => void;
   setDeleteSupported: (supported: boolean) => void;
-  setRevertArmed: (armed: boolean) => void;
+  setRevertArmed: (armed: RevertKind | false) => void;
   setMessageActionEntry: (entry: TimelineEntry | null) => void;
   setPickerFilter: (filter: string) => void;
   setPicker: (picker: PickerName) => void;
@@ -226,13 +230,20 @@ export function useThreadOps(params: {
       return;
     }
     const thread = selected;
+    // Mid-turn it waits its turn: queued behind the running one, never
+    // steered in as text (and never refused as busy).
+    const busy = sessionRunningRef.current;
     void client
       .dispatch({
         type: "thread.turn.start",
         threadId: thread.id,
         message: { text: "/compact" },
+        ...(busy ? { delivery: "queue" as const } : {}),
       })
-      .then(onDispatched)
+      .then(() => {
+        if (busy) toasts.push("compact-queued", "info", "Compaction queued: it runs once this turn ends", 3000);
+        onDispatched();
+      })
       .catch((cause: unknown) => setError(String(cause).slice(0, 120)));
   };
 
@@ -267,9 +278,9 @@ export function useThreadOps(params: {
    * subscription resync since our projector can't consume removal events.
    * Also drops the diff panel: it may show a turn that no longer exists.
    */
-  const revertMessageTurn = (entry: TimelineEntry, targetTurnCount: number) => {
-    if (!revertArmed) {
-      setRevertArmed(true);
+  const revertMessageTurn = (entry: TimelineEntry, targetTurnCount: number, kind: RevertKind = "conversation") => {
+    if (revertArmed !== kind) {
+      setRevertArmed(kind);
       return;
     }
     if (openThreadId === null) {
@@ -287,9 +298,16 @@ export function useThreadOps(params: {
         type: "thread.conversation.revert",
         threadId: id,
         turnCount: targetTurnCount,
+        ...(kind === "files" ? { restoreFiles: true } : {}),
       })
-      .then(() => {
-        toasts.push("message-reverted", "info", "Turn reverted", COPY_TOAST_MS);
+      .then((result) => {
+        const restored = "filesRestored" in result ? result.filesRestored : undefined;
+        toasts.push(
+          "message-reverted",
+          "info",
+          restored ? `Turn reverted, ${restored.files} file${restored.files === 1 ? "" : "s"} restored` : "Turn reverted",
+          COPY_TOAST_MS,
+        );
         closePicker("chat");
         closeDiff();
         setThreadState(emptyThreadState());

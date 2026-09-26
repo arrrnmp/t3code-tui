@@ -78,10 +78,13 @@ function normalizeOptions(raw: unknown): Array<Record<string, unknown>> {
     if (label === null) continue;
     const description = option === null ? null : asString(option.description);
     const value = option === null ? null : asString(option.value);
+    // Claude's AskUserQuestion: a mockup or snippet shown while the option is highlighted.
+    const preview = option === null ? null : asString(option.preview);
     options.push({
       label,
       ...(description === null ? {} : { description }),
       ...(value === null ? {} : { value }),
+      ...(preview === null ? {} : { preview }),
     });
   }
   return options;

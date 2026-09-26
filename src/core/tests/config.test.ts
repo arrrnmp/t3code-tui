@@ -16,7 +16,7 @@ describe("config", () => {
     expect(setConfigValue(DEFAULT_CONFIG, "projectPolicy", "existing").projectPolicy).toBe("existing");
     expect(setConfigValue(DEFAULT_CONFIG, "workspaceMode", "folder").workspaceMode).toBe("folder");
     expect(() => setConfigValue(DEFAULT_CONFIG, "projectPolicy", "sometimes")).toThrow(
-      "projectPolicy must be create or existing",
+      "projectPolicy must be one of: create, existing.",
     );
   });
 

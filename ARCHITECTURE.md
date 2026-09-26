@@ -69,7 +69,34 @@ sees both. A queued turn is started by the runner of the turn ahead of it.
 A steer or inject never starts a second provider run: it goes to the
 running turn when the provider can take input mid-turn (Claude, Codex,
 OpenCode) and is only recorded otherwise. A turn's answer is the provider's
-final message, never the notes it wrote between tool calls.
+final message; the notes it writes between tool calls ("Now checking X…")
+are kept too, each as its own assistant message stored as it is written
+(`assistant.note`), so the transcript folds them between the tool calls
+they narrate. Streamed text carries its message id and streams under the
+id the note is stored with, so the stored row replaces the stream in place.
+Readable thinking streams the same way (`reasoning.delta`, live only) into
+the thought's row; the thought's completed row stores the whole text.
+
+**Turns the provider starts itself.** Claude Code wakes a session with no
+prompt of ours when a background task finishes or a Monitor emits an event
+(a fresh `system init`, output, then a `result` whose `origin.kind` is
+`task-notification`). The driver reports it as `turn.started` (origin
+`background`), and a watcher that lives as long as the session stores it as
+a turn (`delivery: "background"`) and runs it like any other — without it,
+all that output was dropped. The same watcher records background tasks
+(`run_in_background` commands, Monitor watches, background subagents) as
+they start and end, and the live set, which the TUI shows in its side
+panel's Background tab; `thread.background.list` / `thread.background.stop` (CLI `threads
+background`, the palette) read and stop them. Background work lives in the
+session, so it outlasts a turn only where the session does: in a shared
+server, or a client that stays open.
+
+**Plan usage.** Subscription windows (Claude's session and weekly limits,
+Codex's, Grok's) belong to the account, not a thread. The process that owns
+the sessions merges every `rate-limits.updated` a driver reports into one
+record per provider (`core/usage/limits.ts`), persisted next to the thread
+store so a fresh process shows the last reading before its first turn.
+Clients read it through `usage.limits`, and `providers.list` fills it in.
 
 **Who owns a running turn.** A turn records the process that runs it
 (`owner`: pid and host) when it becomes `running`. If that process dies
@@ -85,9 +112,11 @@ runtime instructions (`core/threads/instructions.ts`) appended to the
 provider's own system prompt through its native channel — Claude's
 `systemPrompt.append`, Codex `developerInstructions`, OpenCode's
 per-prompt `system`, Grok's `session/new` `_meta.rules`. They say only
-what moxen knows: that the session runs in a worktree, that a thread is a
+what moxen knows: one line that the session runs in Moxen through its own
+harness (to answer truthfully if asked; it names no model, which can change
+mid-thread), that the session runs in a worktree, that a thread is a
 delegated task, and the user's `instructions` (config, then the project's
-`moxen.json`). A plain local thread with none configured gets nothing.
+`moxen.json`).
 Every top-level thread also gets the `moxen` MCP server
 (`server/mcp/`): `delegate`, `task_status`, `task_cancel`, so an agent can
 hand work to a subagent thread — any provider, in a git worktree of its
@@ -111,7 +140,11 @@ schema only (no local install). Hash-anchored edits (the `hashline`
 pattern) are a candidate for edit reliability — evaluated, not committed.
 
 **Revert** rolls back every provider that saw a dropped turn, then cuts
-the ledger; files stay as they are. Grok (ACP has no rollback) refuses the
+the ledger. Files stay as they are unless asked back too (`restoreFiles`,
+CLI `--restore-files`, the TUI's "Revert conversation and files"): then
+the worktree returns to the first dropped turn's pre-turn snapshot —
+snapshots include untracked files — and the state it replaced is pinned
+under a `revert-*` ref to undo by. Grok (ACP has no rollback) refuses the
 whole revert before anything changes.
 
 **Per-provider gaps.** Mid-turn steering is unsupported on Grok (ACP has
@@ -119,6 +152,28 @@ no such request). Plan mode maps to Claude's plan permission mode, Codex's
 untrusted approvals and OpenCode's read-only `plan` agent; Grok takes plan
 mode only at spawn (`--permission-mode plan`), so a per-turn switch is not
 applied there.
+
+**Claude's low-priority lane is out of reach.** After a 5-hour limit,
+Anthropic may keep serving a subscription on spare capacity — Claude
+Code's `/low-priority`. We cannot drive it, and the reason is
+architectural rather than a missing feature. The lane is a request
+header (`anthropic-usage-limit: slow`) answered by
+`anthropic-ratelimit-unified-slow-*` response headers; we never see the
+socket, because we drive `claude.exe` through the Agent SDK. The CLI
+keeps the state internal: its SDK rate-limit serializer forwards
+`rateLimitGraceActive` — which is exactly why the wrap-up in
+`providers/claude/usage.ts` works — but omits `lowPriorityOffer`,
+`lowPriorityRetryAfterSeconds` and `lowPriorityMaxWaitSeconds`, so the
+offer is not observable. Acceptance is the interactive REPL's rate-limit
+menu; there is no `dialogKind` for it (the CLI's only one is
+`refusal_fallback_prompt`, which we already answer), and the whole
+feature sits behind a server-side gate plus a per-account `treatment`
+arm. `/low-priority` still reaches the CLI as an ordinary slash command.
+Oh My Pi implements the lane in full because it owns the HTTP client and
+sends the subscription's own OAuth bearer itself; porting it here would
+mean replacing the CLI with our own Anthropic client, which forfeits
+everything the CLI gives us. Revisit only if the SDK starts forwarding
+the offer.
 
 **Defaults.** With neither flags, config nor project naming a model, a new
 thread runs on the first provider installed here — Claude, then Grok, then

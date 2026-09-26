@@ -100,9 +100,16 @@ export function MonitoringBackdrop({
   seedSalt = 0,
   fieldWidth,
   fieldHeight,
+  motion = "animated",
 }: {
   width: number;
   height: number;
+  /**
+   * `ui.backdrop`. "static" keeps the lattice but stops the tick, which
+   * is what a slow terminal or an SSH session wants; "off" is handled by
+   * the caller, which skips mounting this at all.
+   */
+  motion?: "animated" | "static";
   /** Placement inside the parent — absolute offsets are content-box
       relative, so inside a bordered pane left/top 0 already means "just
       inside the border", not "over it" (measured, not assumed). */
@@ -128,8 +135,8 @@ export function MonitoringBackdrop({
   fieldWidth?: number;
   fieldHeight?: number;
 }) {
-  const tick = useAnimTick(true, TICK_MS);
-  const frame = Math.floor(tick / TICK_MS);
+  const tick = useAnimTick(motion === "animated", TICK_MS);
+  const frame = motion === "animated" ? Math.floor(tick / TICK_MS) : 0;
   const grid = useMemo(() => buildMonitoringGrid(width, height, offsetX, offsetY), [width, height, offsetX, offsetY]);
   const drifters = useMemo(() => {
     if (fieldWidth === undefined || fieldHeight === undefined) {

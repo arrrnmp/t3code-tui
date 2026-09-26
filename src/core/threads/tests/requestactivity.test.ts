@@ -53,6 +53,16 @@ describe("userInputActivityRow", () => {
     });
   });
 
+  it("keeps an option's preview for the answer panel", () => {
+    const row = userInputActivityRow(
+      opened({
+        toolName: "AskUserQuestion",
+        input: { questions: [{ question: "Layout?", header: "Layout", options: [{ label: "Sidebar", preview: "## Sidebar" }, { label: "Top" }] }] },
+      }),
+    );
+    expect((row?.payload.questions as Array<{ options: unknown[] }>)[0]?.options).toEqual([{ label: "Sidebar", preview: "## Sidebar" }, { label: "Top" }]);
+  });
+
   it("finds the questions wherever a provider parked them", () => {
     const questions = [{ question: "Which?", header: "Pick", options: [{ label: "A" }] }];
     for (const raw of [

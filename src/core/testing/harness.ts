@@ -104,6 +104,11 @@ class HarnessDriver implements TurnDriver {
     return this.sessions.has(threadId) ? `harness-session-${threadId}` : null;
   }
 
+  /** A fork is a new handle naming its source, so a test can see the child resumed the copy. */
+  async forkSession(cursor: string): Promise<string> {
+    return `fork-of-${cursor}`;
+  }
+
   rollbackThread(_threadId: string, _numTurns: number): Effect.Effect<unknown, CliError> {
     return Effect.succeed({});
   }

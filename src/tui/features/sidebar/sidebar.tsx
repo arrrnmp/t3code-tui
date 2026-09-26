@@ -97,8 +97,12 @@ function ActiveCard({
   const body = width - 2;
   const { hovered, handlers } = useHover();
 
-  if (compact === true) {
+  // A delegated task sits under its parent as one indented line in every
+  // mode: the parent above already names the project.
+  const nested = row.depth > 0;
+  if (compact === true || nested) {
     const tail = `${row.age.length > 0 ? `${row.age} ` : ""}${glyph}${row.waiting ? " ?" : ""}${marked ? ` ${DRAFT_DOT}` : ""}`;
+    const lead = nested ? "  └ " : " ";
     return (
       <box
         style={{ flexDirection: "row", width, height: 1, flexShrink: 0 }}
@@ -108,8 +112,11 @@ function ActiveCard({
         {...handlers}
       >
         <text fg={showMarker ? markerFg : COLOR.faint} selectable={false}>{showMarker ? MARKER : " "}</text>
+        {nested ? <text fg={COLOR.faint} selectable={false}>{lead}</text> : null}
         <text fg={titleFg} selectable={false}>
-          {` ${truncate(row.title, Math.max(0, body - tail.length - 2))}`.padEnd(Math.max(0, body - tail.length))}
+          {`${nested ? "" : lead}${truncate(row.title, Math.max(0, body - tail.length - lead.length - 1))}`.padEnd(
+            Math.max(0, body - tail.length - (nested ? lead.length : 0)),
+          )}
         </text>
         <text fg={ageFg} selectable={false}>{row.age.length > 0 ? `${row.age} ` : ""}</text>
         <text fg={glyphColor} selectable={false}>{glyph}</text>
@@ -172,7 +179,9 @@ function SettledRow({
       <text fg={open ? COLOR.accent : COLOR.faint} selectable={false}>{open ? MARKER : " "}</text>
       <text fg={COLOR.faint} selectable={false}>{row.badge}</text>
       <text fg={marked ? COLOR.warn : COLOR.faint} selectable={false}>{marked ? DRAFT_DOT : " "}</text>
-      <text fg={open ? COLOR.text : COLOR.dim} selectable={false}>{spread(row.title, row.age, width - 4 - (row.waiting ? 1 : 0))}</text>
+      <text fg={open ? COLOR.text : COLOR.dim} selectable={false}>
+        {spread(`${row.depth > 0 ? "└ " : ""}${row.title}`, row.age, width - 4 - (row.waiting ? 1 : 0))}
+      </text>
       <text fg={waitColor} selectable={false}>{row.waiting ? WAITING_GLYPH : ""}</text>
     </box>
   );
@@ -235,6 +244,28 @@ function NewThreadButton({ onClick }: { onClick: () => void }) {
   );
 }
 
+/**
+ * A footer control: quiet until hovered, the same family as the "+" and
+ * the mode pills. `active` keeps it lit while what it opens is showing.
+ */
+function FooterButton({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
+  const { hovered, handlers } = useHover();
+  const background = hovered ? SURFACE.raised : SURFACE.panel;
+  return (
+    <box
+      style={{ flexDirection: "row", height: 1, flexShrink: 0, paddingLeft: 1, paddingRight: 1 }}
+      backgroundColor={background}
+      onMouseDown={onClick}
+      selectable={false}
+      {...handlers}
+    >
+      <text fg={hovered ? COLOR.bright : active ? COLOR.accent : COLOR.dim} bg={background} selectable={false}>
+        {label}
+      </text>
+    </box>
+  );
+}
+
 /** One row of the grouped-mode project header — its own component so the
     hover hook's call count stays fixed regardless of how many groups render. */
 function GroupHeaderRow({
@@ -281,6 +312,9 @@ export function Sidebar({
   onToggleProject,
   onCycleProject,
   onNewThread,
+  panelsOpen,
+  onTogglePanels,
+  onOpenSettings,
 }: {
   sections: SidebarSections;
   openThreadId: string | null;
@@ -305,6 +339,15 @@ export function Sidebar({
   onCycleProject: (direction: 1 | -1) => void;
   /** The only UI path to start a new thread now that `n` isn't advertised. */
   onNewThread: () => void;
+  /**
+   * The side panel's open/close control and the settings page. They live
+   * here, in the one pane that is always on screen, rather than on the
+   * chat pane's border (gone whenever a panel covers it) or buried in the
+   * command palette.
+   */
+  panelsOpen?: boolean;
+  onTogglePanels?: () => void;
+  onOpenSettings?: () => void;
 }) {
   const remaining = sections.settledTotal - sections.settled.length;
   const runningCount = sections.active.filter((row) => row.status === "running").length;
@@ -494,6 +537,20 @@ export function Sidebar({
           </scrollbox>
         ) : null}
       </box>
+      {onTogglePanels === undefined && onOpenSettings === undefined ? null : (
+        <box style={{ flexDirection: "column", flexShrink: 0, backgroundColor: SURFACE.panel, zIndex: 1 }}>
+          <box style={{ height: 1, flexShrink: 0 }} backgroundColor={SURFACE.panel}>
+            <text fg={COLOR.rule} bg={SURFACE.panel}>{` ${rule(Math.max(0, width - 4))}`}</text>
+          </box>
+          <box style={{ flexDirection: "row", height: 1, flexShrink: 0 }} backgroundColor={SURFACE.panel}>
+            {onOpenSettings === undefined ? null : <FooterButton label="⚙ settings" active={false} onClick={onOpenSettings} />}
+            <box style={{ flexGrow: 1 }} backgroundColor={SURFACE.panel} />
+            {onTogglePanels === undefined ? null : (
+              <FooterButton label={panelsOpen === true ? "◧ hide panels" : "◫ panels"} active={panelsOpen === true} onClick={onTogglePanels} />
+            )}
+          </box>
+        </box>
+      )}
     </box>
   );
 }

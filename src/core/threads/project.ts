@@ -54,7 +54,9 @@ function latestTurnOf(turns: StoredTurn[]): LatestTurnEnvelope | null {
             ? "error"
             : "completed",
     requestedAt: latest.createdAt,
-    startedAt: latest.status === "queued" ? null : latest.createdAt,
+    // A turn that waited in the queue started when it was promoted, not
+    // when it was asked for — its live clock must not count the wait.
+    startedAt: latest.status === "queued" ? null : (latest.startedAt ?? latest.createdAt),
     completedAt: latest.completedAt,
     assistantMessageId: null,
   };
@@ -83,6 +85,7 @@ export function toMessageEnvelope(message: StoredMessage): MessageEnvelope {
     createdAt: message.createdAt,
     updatedAt: message.createdAt,
     ...(message.attachments?.length ? { attachments: message.attachments } : {}),
+    ...(message.origin !== undefined ? { origin: message.origin, ...(message.notification ? { notification: message.notification } : {}) } : {}),
   };
 }
 
@@ -107,6 +110,7 @@ export function toCheckpointEnvelope(checkpoint: StoredCheckpoint, turnCount: nu
     checkpointTurnCount: turnCount,
     ref: checkpoint.ref,
     baseRef: checkpoint.baseRef,
+    ...(checkpoint.files === undefined ? {} : { files: checkpoint.files }),
   };
 }
 
@@ -115,6 +119,8 @@ export interface ProjectThreadInput {
   readonly activities?: StoredActivity[] | undefined;
   readonly checkpoints?: StoredCheckpoint[] | undefined;
   readonly plans?: ProposedPlanEnvelope[] | undefined;
+  /** The delegating thread, when this one is a delegated task. */
+  readonly parentThreadId?: string | undefined;
 }
 
 /** Ledger-local projection into the envelope thread shape. */
@@ -125,6 +131,14 @@ export function toThreadEnvelope(thread: StoredThread, turns: StoredTurn[], inpu
   // finished — 1-based, as every consumer reads it (the TUI's revert target
   // is `count - 1`; `turnDiff(threadId, count)` reads `turns[count - 1]`).
   const turnCount = new Map(turns.map((turn, index) => [turn.id, index + 1] as const));
+  const queued = turns
+    .filter((turn) => turn.status === "queued")
+    .map((turn) => ({
+      turnId: turn.id,
+      messageId: turn.messageId,
+      scheduledFor: turn.scheduledFor ?? null,
+      scheduleReason: turn.scheduleReason ?? null,
+    }));
   return {
     id: thread.id,
     projectId: thread.projectId,
@@ -157,5 +171,8 @@ export function toThreadEnvelope(thread: StoredThread, turns: StoredTurn[], inpu
     turnModelSelections: Object.fromEntries(
       turns.flatMap((turn) => (turn.modelSelection ? [[turn.id, turn.modelSelection] as const] : [])),
     ),
+    // Only when there are any, so envelopes of threads without a queue stay byte-for-byte as they were.
+    ...(queued.length > 0 ? { queuedTurns: queued } : {}),
+    ...(input.parentThreadId ? { parentThreadId: input.parentThreadId } : {}),
   };
 }

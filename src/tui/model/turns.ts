@@ -1,5 +1,6 @@
 import type { TimelineEntry } from "./thread.js";
 import { describeActivity } from "./activity.js";
+import { workingMs, type TurnWaits, type WaitSpan } from "./waits.js";
 
 export interface TurnGroup {
   id: string;
@@ -19,11 +20,14 @@ export interface TurnGroup {
   diff: TimelineEntry | null;
   /** A plan proposed for this turn, if the thread ran in plan-approval mode. */
   proposedPlan: TimelineEntry | null;
+  /** Working time: wall time from first to last entry, minus waits on the user. */
   durationMs: number;
   startedAt: string;
+  /** Where the turn stood waiting on the user (a question, a permission prompt). */
+  waits: readonly WaitSpan[];
 }
 
-function elapsed(entries: readonly TimelineEntry[]): { durationMs: number; startedAt: string } {
+function elapsed(entries: readonly TimelineEntry[], waits: readonly WaitSpan[]): { durationMs: number; startedAt: string } {
   const times = entries
     .map((entry) => Date.parse(entry.at))
     .filter((value) => !Number.isNaN(value))
@@ -31,7 +35,7 @@ function elapsed(entries: readonly TimelineEntry[]): { durationMs: number; start
   const first = times[0];
   const last = times[times.length - 1];
   if (first === undefined || last === undefined) return { durationMs: 0, startedAt: entries[0]?.at ?? "" };
-  return { durationMs: last - first, startedAt: new Date(first).toISOString() };
+  return { durationMs: workingMs(waits, first, last), startedAt: new Date(first).toISOString() };
 }
 
 /**
@@ -39,7 +43,7 @@ function elapsed(entries: readonly TimelineEntry[]): { durationMs: number; start
  * everything between them into one "worked for" row; this groups the flat
  * timeline the same way so a long turn does not bury the answer.
  */
-export function groupTurns(entries: readonly TimelineEntry[]): TurnGroup[] {
+export function groupTurns(entries: readonly TimelineEntry[], waits: TurnWaits = new Map()): TurnGroup[] {
   const groups: TurnGroup[] = [];
   let current: TurnGroup | null = null;
   // Live user prompts usually carry a null turnId — the server only assigns
@@ -62,6 +66,7 @@ export function groupTurns(entries: readonly TimelineEntry[]): TurnGroup[] {
       proposedPlan: null,
       durationMs: 0,
       startedAt: entry.at,
+      waits: [],
     };
     if (pendingPrompts.length > 0) {
       group.prompts.unshift(...pendingPrompts);
@@ -160,13 +165,22 @@ export function groupTurns(entries: readonly TimelineEntry[]): TurnGroup[] {
   }
 
   for (const group of groups) {
+    // A reply demoted into the work list when a newer one lands was pushed
+    // at the end, after tool calls that came later than it; with notes
+    // between tool calls that put each note one step late. Keep work in
+    // the timeline's own chronological order.
+    group.work = group.work
+      .map((entry, index) => ({ entry, index }))
+      .sort((left, right) => left.entry.at.localeCompare(right.entry.at) || left.index - right.index)
+      .map(({ entry }) => entry);
     const all = [
       ...group.prompts,
       ...group.work,
       ...(group.reply === null ? [] : [group.reply]),
       ...(group.live === null ? [] : [group.live]),
     ];
-    const timing = elapsed(all);
+    group.waits = group.turnId === null ? [] : (waits.get(group.turnId) ?? []);
+    const timing = elapsed(all, group.waits);
     group.durationMs = timing.durationMs;
     group.startedAt = timing.startedAt;
   }
@@ -182,6 +196,11 @@ export function formatDuration(durationMs: number): string {  const seconds = Ma
   return `${hours}h ${minutes % 60}m`;
 }
 
+/** How long a thought took: milliseconds under a second ("420ms"), `formatDuration` otherwise. */
+export function thoughtDuration(durationMs: number): string {
+  return durationMs < 1000 ? `${Math.max(1, Math.floor(durationMs))}ms` : formatDuration(durationMs);
+}
+
 /** `359_000` → `"359k"`, `1_400_000` → `"1.4m"`, `1_000_000` → `"1m"`. */
 export function formatTokenCount(value: number): string {
   if (value < 1000) return String(Math.round(value));
@@ -190,24 +209,33 @@ export function formatTokenCount(value: number): string {
   return `${Number.isInteger(millions) ? millions.toFixed(0) : millions.toFixed(1)}m`;
 }
 
+/** `0` → `"$0.00"`, `1.234` → `"$1.23"`, `0.0041` → `"$0.0041"` (small spends keep precision). */
+export function formatUsd(value: number): string {
+  return `$${value < 0.01 && value > 0 ? value.toFixed(4) : value.toFixed(2)}`;
+}
+
 export interface ContextUsageDisplay {
   /** Null when the driver never reports a ceiling (usage still shown as a raw count). */
   percent: number | null;
   usedLabel: string;
   maxLabel: string | null;
   totalProcessedLabel: string | null;
+  /** Running session cost; null when the driver reports none (non-Claude). */
+  costLabel: string | null;
 }
 
 export function formatContextUsage(usage: {
   usedTokens: number;
   maxTokens: number | null;
   totalProcessedTokens: number | null;
+  costUsd?: number | null;
 }): ContextUsageDisplay {
   return {
     percent: usage.maxTokens === null || usage.maxTokens <= 0 ? null : Math.round((usage.usedTokens / usage.maxTokens) * 100),
     usedLabel: formatTokenCount(usage.usedTokens),
     maxLabel: usage.maxTokens === null ? null : formatTokenCount(usage.maxTokens),
     totalProcessedLabel: usage.totalProcessedTokens === null ? null : formatTokenCount(usage.totalProcessedTokens),
+    costLabel: usage.costUsd === null || usage.costUsd === undefined ? null : formatUsd(usage.costUsd),
   };
 }
 
@@ -388,4 +416,31 @@ export function segmentWork(
     }
   }
   return segments;
+}
+
+/**
+ * The open turn's thought still running, if any. It renders last, so the
+ * newest thing the model is doing is always the last thing on screen.
+ */
+export function runningThought(group: TurnGroup): TimelineEntry | null {
+  for (let index = group.work.length - 1; index >= 0; index -= 1) {
+    const entry = group.work[index];
+    if (entry?.kind !== "activity" || entry.activity === null) continue;
+    const view = describeActivity(entry.activity);
+    if (view.kind === "reasoning" && view.running) return entry;
+  }
+  return null;
+}
+
+/**
+ * The end of a thought still streaming: its last `maxChars`, cut at a word
+ * and led by an ellipsis when shortened, so the live row stays a few lines
+ * tall while the reasoning runs on.
+ */
+export function thoughtTail(text: string, maxChars: number): string {
+  const trimmed = text.trim();
+  if (trimmed.length <= maxChars) return trimmed;
+  const cut = trimmed.slice(trimmed.length - maxChars);
+  const space = cut.search(/\s/u);
+  return `…${(space === -1 || space > 24 ? cut : cut.slice(space)).trimStart()}`;
 }

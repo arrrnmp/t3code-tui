@@ -164,7 +164,7 @@ describe("codex driver turns", () => {
     expect(server.requestsTo("turn/start")[0]!.params).not.toHaveProperty("model");
   });
 
-  it("keeps commentary messages out of the turn's answer", async () => {
+  it("keeps commentary out of the answer, streaming it and recording it as a note", async () => {
     const transport = new FakeCodexTransport();
     const driver = new CodexDriver({ transport });
     await Effect.runPromise(driver.startSession(START));
@@ -194,8 +194,16 @@ describe("codex driver turns", () => {
     const outcome = await outcomePromise;
     await Effect.runPromise(Fiber.interrupt(fiber));
     expect(outcome.text).toBe("All done.");
-    const streamed = events.flatMap((event) => (event.type === "message.part.updated" ? [event.text] : []));
-    expect(streamed.join("")).toBe("All done.");
+    // Commentary streams live under its own message id, and is published once,
+    // whole, as a note — but never becomes part of the answer.
+    const streamed = events.flatMap((event) => (event.type === "message.part.updated" ? [[event.messageId, event.text]] : []));
+    expect(streamed).toEqual([
+      ["m-1", "Checking the repo first."],
+      ["m-2", "All "],
+      ["m-2", "done."],
+    ]);
+    const notes = events.flatMap((event) => (event.type === "assistant.note" ? [[event.messageId, event.text]] : []));
+    expect(notes).toEqual([["m-1", "Checking the repo first."]]);
   });
 
   it("requires auth and rejects concurrent turns", async () => {

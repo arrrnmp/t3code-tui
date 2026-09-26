@@ -38,8 +38,17 @@ import type {
   WorkspaceQuery,
 } from "../core/threads/operations.js";
 import type { ModelRequest } from "../core/catalog/selection.js";
+import type { SettingView } from "../core/configschema.js";
+import type { GitBranch, GitCommit, GitOverview, GitWorktreeStatus } from "../core/git/history.js";
+import type {
+  ForgeDetection,
+  ForgeRequest,
+  ForgeRequestDetail,
+  MergeStrategy,
+} from "../core/forge/forge.js";
 import type { Diagnosis } from "../core/diagnostics/doctor.js";
-import type { ProviderSummary, SkillInventory } from "../core/catalog/summary.js";
+import type { ProviderSummary, ProviderUsageLimits, SkillInventory } from "../core/catalog/summary.js";
+import type { BackgroundTaskSummary, ContextBreakdown } from "../core/providers/spi.js";
 import type { StoredProject } from "../core/projects/projects.js";
 import type { SendDelivery, SendIfBusy, TurnDelivery, TurnStatus } from "../core/threads/types.js";
 import type { ThreadInspection, ThreadListStatus, ThreadReadView, ThreadReading } from "../core/threads/views.js";
@@ -53,6 +62,28 @@ import type {
   ThreadEnvelope,
   WorkspaceResolution,
 } from "../core/types.js";
+
+/**
+ * The git and forge vocabulary, re-exported so a client can name what
+ * these queries return without importing `core/` past the shared kernel
+ * (`src/tests/layering.test.ts`). Types only — the implementations stay
+ * behind `ClientApi`.
+ */
+export type {
+  GitBranch,
+  GitCommit,
+  GitOverview,
+  GitWorktreeStatus,
+} from "../core/git/history.js";
+export type {
+  ForgeChecks,
+  ForgeDetection,
+  ForgeKind,
+  ForgeRequest,
+  ForgeRequestDetail,
+  ForgeRequestState,
+  MergeStrategy,
+} from "../core/forge/forge.js";
 
 export interface ThreadMessageInput {
   readonly text: string;
@@ -91,7 +122,12 @@ export type CommandBody =
       readonly handoffNote?: string;
       /** Resolve once the turn settles rather than at acceptance. */
       readonly wait?: boolean;
+      /** Hold the message until this ISO instant (a scheduled send); it is queued until then. */
+      readonly scheduledFor?: string;
+      /** Why it is scheduled; `usage-reset` marks a continue after a usage limit. */
+      readonly scheduleReason?: "user" | "usage-reset";
     }
+  /** Interrupts the running turn — or, given a queued turn's id, cancels that queued message. */
   | { readonly type: "thread.turn.interrupt"; readonly threadId: string; readonly turnId?: string }
   | { readonly type: "thread.settle"; readonly threadId: string; readonly reason?: string }
   | { readonly type: "thread.unsettle"; readonly threadId: string; readonly reason?: string }
@@ -124,18 +160,65 @@ export type CommandBody =
     }
   | { readonly type: "thread.user-input.dismiss"; readonly threadId: string; readonly requestId: string }
   /** Revert the conversation so its first `turnCount` turns remain; files are left as they are. */
-  | { readonly type: "thread.conversation.revert"; readonly threadId: string; readonly turnCount: number }
+  /** `restoreFiles`: put the files back too, to before the first dropped turn. */
+  | { readonly type: "thread.conversation.revert"; readonly threadId: string; readonly turnCount: number; readonly restoreFiles?: boolean }
   /** A new thread for a prompt: project policy, local vs worktree, model from config and flags. */
   | ({ readonly type: "thread.handover"; readonly wait?: boolean } & HandoverRequest)
   /** A task run in a child thread of the same project. The task id is the child thread id. */
   | ({ readonly type: "thread.delegate" } & DelegateRequest)
   | { readonly type: "thread.task.cancel"; readonly parentThreadId: string; readonly taskId: string }
+  /** Stop one background task (a `run_in_background` command, a Monitor watch, a background subagent). */
+  | { readonly type: "thread.background.stop"; readonly threadId: string; readonly taskId: string }
   | ({ readonly type: "project.ensure" } & EnsureProjectRequest)
   | {
       readonly type: "model.visibility.set";
       readonly instanceId: string;
       readonly model: string;
       readonly hidden: boolean;
+    }
+  /**
+   * Set one config key. Goes through the server rather than a client
+   * writing the file, because a shared server reads config per operation
+   * and two clients editing the same file would clobber each other.
+   * `value` is always text — the schema's parser owns the conversion.
+   */
+  | { readonly type: "settings.set"; readonly key: string; readonly value: string }
+  /**
+   * Continue a thread in a new one: same project, model and modes, opened
+   * with a handoff written from the old thread's ledger. `scheduledFor`
+   * holds that first message until then (after a usage limit resets, say);
+   * without it the new thread starts at once.
+   */
+  | { readonly type: "thread.continue"; readonly threadId: string; readonly scheduledFor?: string }
+  /**
+   * `/btw`: a side question answered on a copy of the thread's context,
+   * with no tools, and never recorded in the thread. A command rather than
+   * a query although it changes nothing here: it spends the account's
+   * usage, so a transport must never retry it.
+   */
+  | { readonly type: "thread.side-question"; readonly threadId: string; readonly question: string }
+  /**
+   * Forge writes. These reach the network and are visible to other
+   * people the moment they land, so a client confirms with the user
+   * before dispatching one — nothing below prompts, and both CLIs are
+   * driven with their non-interactive flags.
+   */
+  | {
+      readonly type: "forge.request.create";
+      readonly threadId: string;
+      readonly title: string;
+      readonly body?: string;
+      readonly targetBranch?: string;
+      readonly sourceBranch?: string;
+      readonly draft?: boolean;
+    }
+  | { readonly type: "forge.request.comment"; readonly threadId: string; readonly number: number; readonly body: string }
+  | {
+      readonly type: "forge.request.merge";
+      readonly threadId: string;
+      readonly number: number;
+      readonly strategy?: MergeStrategy;
+      readonly deleteBranch?: boolean;
     };
 
 /**
@@ -172,8 +255,15 @@ export interface CommandResults {
   "thread.handover": Omit<Handover, "started"> & { readonly started: StartedTurnSummary | null };
   "thread.delegate": Delegation;
   "thread.task.cancel": CancelledTask;
+  "thread.background.stop": { readonly stopped: true; readonly taskId: string };
   "project.ensure": EnsuredProject;
   "model.visibility.set": { readonly hidden: boolean };
+  "settings.set": SettingsSnapshot & Accepted;
+  "thread.continue": { readonly threadId: string; readonly title: string; readonly scheduledFor: string | null } & Accepted;
+  "thread.side-question": { readonly text: string; readonly withContext: boolean; readonly provider: string };
+  "forge.request.create": { readonly url: string | null } & Accepted;
+  "forge.request.comment": Accepted;
+  "forge.request.merge": Accepted;
 }
 
 /** A started turn, minus the in-process run handle that cannot cross a wire. */
@@ -216,7 +306,56 @@ export type Query =
   /** Binaries, git, store and stored-credential presence on the machine running the sessions. */
   | { readonly type: "doctor" }
   /** Skills and slash commands one provider resolves for a working directory. */
-  | { readonly type: "skills.list"; readonly instanceId: string; readonly cwd: string };
+  | { readonly type: "skills.list"; readonly instanceId: string; readonly cwd: string }
+  /** Background work running in a thread's live session; `live: false` when no session runs here. */
+  | { readonly type: "thread.background.list"; readonly threadId: string }
+  /**
+   * What fills the thread's context window now, by category, from its live
+   * session; `live: false` when no session runs here (read the last recorded
+   * total off the thread instead).
+   */
+  | { readonly type: "thread.context"; readonly threadId: string }
+  /**
+   * The latest subscription usage windows each provider reported, keyed by
+   * driver kind (`claude`, `codex`, …): the account's limits, shared by
+   * every thread on it. Empty until a session reports.
+   */
+  | { readonly type: "usage.limits" }
+  /**
+   * A background task's output, best-effort: the driver may have no way to
+   * read it (unsupported provider, task gone, file not yet written).
+   */
+  | { readonly type: "thread.background.output"; readonly threadId: string; readonly taskId: string }
+  /**
+   * Every setting with its descriptor and current value. Descriptors ride
+   * along rather than being read from the client's own copy of the table,
+   * so a client talking to a newer server renders the settings that server
+   * actually honours.
+   */
+  | { readonly type: "settings.read" }
+  /**
+   * The Git panel's whole first paint for a thread's working directory:
+   * status, branches and one branch's commits. Keyed by thread rather
+   * than a path so a worktree thread reads its own checkout and no client
+   * has to work out where that is.
+   */
+  | {
+      readonly type: "git.overview";
+      readonly threadId: string;
+      /** Defaults to the checked-out branch. */
+      readonly branch?: string;
+      readonly limit?: number;
+    }
+  | { readonly type: "git.commit.diff"; readonly threadId: string; readonly sha: string }
+  /** Which forge this checkout belongs to, and whether its CLI is usable. */
+  | { readonly type: "forge.detect"; readonly threadId: string }
+  | {
+      readonly type: "forge.requests.list";
+      readonly threadId: string;
+      readonly state?: "open" | "closed" | "merged" | "all";
+      readonly limit?: number;
+    }
+  | { readonly type: "forge.request.view"; readonly threadId: string; readonly number: number };
 
 export type QueryType = Query["type"];
 
@@ -233,6 +372,16 @@ export interface QueryResults {
   "providers.list": { readonly providers: readonly ProviderSummary[] };
   doctor: Diagnosis;
   "skills.list": SkillInventory;
+  "thread.background.list": { readonly live: boolean; readonly tasks: readonly BackgroundTaskSummary[] };
+  "thread.context": { readonly live: boolean; readonly breakdown: ContextBreakdown | null };
+  "usage.limits": { readonly providers: Readonly<Record<string, ProviderUsageLimits>> };
+  "thread.background.output": { readonly available: boolean; readonly lines: readonly string[] };
+  "settings.read": SettingsSnapshot;
+  "git.overview": GitOverview;
+  "git.commit.diff": { readonly sha: string; readonly diff: string | null };
+  "forge.detect": ForgeDetection;
+  "forge.requests.list": { readonly requests: readonly ForgeRequest[] };
+  "forge.request.view": { readonly request: ForgeRequestDetail | null };
 }
 
 export type QueryResult<T extends QueryType = QueryType> = QueryResults[T];
@@ -266,6 +415,18 @@ export type ThreadFrame =
   | {
       readonly kind: "event";
       readonly event: { readonly type: "thread.message-sent"; readonly payload: { readonly message: MessageEnvelope } };
+    }
+  /**
+   * Live reasoning text for the running thought whose activity rows carry
+   * `toolCallId`: `text` is a delta. Never stored — the thought's completed
+   * row holds the whole text.
+   */
+  | {
+      readonly kind: "event";
+      readonly event: {
+        readonly type: "thread.reasoning-delta";
+        readonly payload: { readonly toolCallId: string; readonly turnId: string | null; readonly text: string };
+      };
     };
 
 // -- getConfig ---------------------------------------------------------------
@@ -314,6 +475,14 @@ export interface ConfigProvider {
 export interface ConfigPayload {
   readonly providers: readonly ConfigProvider[];
   readonly settings: Readonly<Record<string, unknown>>;
+}
+
+/** What both the settings query and a successful set answer with. */
+export interface SettingsSnapshot {
+  /** The config file these values came from, whether or not it exists yet. */
+  readonly path: string;
+  readonly exists: boolean;
+  readonly settings: readonly SettingView[];
 }
 
 // -- runtime decoding --------------------------------------------------------
@@ -467,6 +636,8 @@ export function decodeCommand(value: unknown): Command {
         ...optionalBoolean(record, "wakeSettled"),
         ...optionalString(record, "handoffNote"),
         ...optionalBoolean(record, "wait"),
+        ...optionalString(record, "scheduledFor"),
+        ...optionalEnum(record, "scheduleReason", ["user", "usage-reset"] as const, type),
       };
     }
     case "thread.turn.interrupt":
@@ -549,7 +720,7 @@ export function decodeCommand(value: unknown): Command {
           exitCode: 2,
         });
       }
-      return { ...meta, type, threadId: threadId(), turnCount };
+      return { ...meta, type, threadId: threadId(), turnCount, ...optionalBoolean(record, "restoreFiles") };
     }
     case "thread.handover":
       return {
@@ -579,12 +750,21 @@ export function decodeCommand(value: unknown): Command {
         ...optionalNumber(record, "timeoutMs", type),
         ...optionalBoolean(record, "dryRun"),
         ...optionalEnum(record, "isolation", ["shared", "worktree"] as const, type),
+        ...optionalBoolean(record, "notify"),
+        ...optionalBoolean(record, "fork"),
       };
     case "thread.task.cancel":
       return {
         ...meta,
         type,
         parentThreadId: requireThreadId(record.parentThreadId),
+        taskId: requireField(record.taskId, type, "taskId"),
+      };
+    case "thread.background.stop":
+      return {
+        ...meta,
+        type,
+        threadId: requireThreadId(record.threadId),
         taskId: requireField(record.taskId, type, "taskId"),
       };
     case "project.ensure":
@@ -607,6 +787,57 @@ export function decodeCommand(value: unknown): Command {
         model: requireField(record.model, type, "model"),
         hidden: record.hidden,
       };
+    case "thread.side-question":
+      return {
+        ...meta,
+        type,
+        threadId: requireThreadId(record.threadId),
+        question: requireField(record.question, type, "question"),
+      };
+    case "thread.continue":
+      return {
+        ...meta,
+        type,
+        threadId: requireThreadId(record.threadId),
+        ...optionalString(record, "scheduledFor"),
+      };
+    case "forge.request.create":
+      return {
+        ...meta,
+        type,
+        threadId: requireThreadId(record.threadId),
+        title: requireField(record.title, type, "title"),
+        ...optionalString(record, "body"),
+        ...optionalString(record, "targetBranch"),
+        ...optionalString(record, "sourceBranch"),
+        ...optionalBoolean(record, "draft"),
+      };
+    case "forge.request.comment":
+      return {
+        ...meta,
+        type,
+        threadId: requireThreadId(record.threadId),
+        number: requireNumber(record.number, type, "number"),
+        body: requireField(record.body, type, "body"),
+      };
+    case "forge.request.merge":
+      return {
+        ...meta,
+        type,
+        threadId: requireThreadId(record.threadId),
+        number: requireNumber(record.number, type, "number"),
+        ...optionalEnum(record, "strategy", ["merge", "squash", "rebase"] as const, type),
+        ...optionalBoolean(record, "deleteBranch"),
+      };
+    case "settings.set":
+      return {
+        ...meta,
+        type,
+        key: requireField(record.key, type, "key"),
+        // Every value crosses as text: the schema's parser is the one
+        // thing that decides what "false" or "120" means for a key.
+        value: typeof record.value === "string" ? record.value : String(record.value ?? ""),
+      };
     default:
       throw unknownCommand(type);
   }
@@ -622,6 +853,14 @@ function optionalString<K extends string>(record: Record<string, unknown>, key: 
 function optionalBoolean<K extends string>(record: Record<string, unknown>, key: K): { [P in K]?: boolean } {
   const value = record[key];
   return (typeof value === "boolean" ? { [key]: value } : {}) as { [P in K]?: boolean };
+}
+
+/** A required whole number — a PR number that arrived as text is refused. */
+function requireNumber(value: unknown, command: string, field: string): number {
+  if (typeof value !== "number" || !Number.isInteger(value)) {
+    throw new CliError("INVALID_THREAD_OPTION", `${command} requires ${field} as a whole number.`, { exitCode: 2 });
+  }
+  return value;
 }
 
 function optionalNumber<K extends string>(record: Record<string, unknown>, key: K, command: string): { [P in K]?: number } {
@@ -709,12 +948,44 @@ export function decodeQuery(value: unknown): Query {
       };
     case "providers.list":
     case "doctor":
+    case "usage.limits":
+    case "settings.read":
       return { type };
+    case "git.overview":
+      return {
+        type,
+        threadId: requireThreadId(record.threadId),
+        ...optionalString(record, "branch"),
+        ...optionalNumber(record, "limit", type),
+      };
+    case "git.commit.diff":
+      return { type, threadId: requireThreadId(record.threadId), sha: requireField(record.sha, type, "sha") };
+    case "forge.detect":
+      return { type, threadId: requireThreadId(record.threadId) };
+    case "forge.requests.list":
+      return {
+        type,
+        threadId: requireThreadId(record.threadId),
+        ...optionalEnum(record, "state", ["open", "closed", "merged", "all"] as const, type),
+        ...optionalNumber(record, "limit", type),
+      };
+    case "forge.request.view":
+      return { type, threadId: requireThreadId(record.threadId), number: requireNumber(record.number, type, "number") };
     case "skills.list":
       return {
         type,
         instanceId: requireField(record.instanceId, type, "instanceId"),
         cwd: requireField(record.cwd, type, "cwd"),
+      };
+    case "thread.background.list":
+      return { type, threadId: requireThreadId(record.threadId) };
+    case "thread.context":
+      return { type, threadId: requireThreadId(record.threadId) };
+    case "thread.background.output":
+      return {
+        type,
+        threadId: requireThreadId(record.threadId),
+        taskId: requireField(record.taskId, type, "taskId"),
       };
     default:
       throw new CliError("UNKNOWN_QUERY", `Unsupported query type: ${type}.`, { details: { type } });

@@ -108,11 +108,26 @@ export async function runTurnModels(): Promise<void> {
     console.log("--- per-turn model labels ---");
     console.log(frame);
     const lines = frame.split("\n");
-    const oldReply = lines.findIndex((line) => /Claude Old\s+·\s+\d\d:\d\d/.test(line));
-    const newReply = lines.findIndex((line) => /Claude Opus 5\s+·\s+\d\d:\d\d/.test(line));
+    const oldReply = lines.findIndex((line) => /Claude Old\s+·\s+(?:\w{3}, )?\d\d:\d\d/.test(line));
+    const newReply = lines.findIndex((line) => /Claude Opus 5\s+·\s+(?:\w{3}, )?\d\d:\d\d/.test(line));
     if (oldReply === -1) fail("the first turn's reply is not labelled with the model that ran it (Claude Old)");
     if (newReply === -1) fail("the second turn's reply is not labelled with the current model (Claude Opus 5)");
     if (oldReply > newReply) fail("per-turn model labels are attached to the wrong turns");
+
+    // Turns are separated by exactly one blank row, like every other block:
+    // the second prompt's heavy left border climbs up to a single gap row,
+    // then the first turn's reply border resumes.
+    const secondPrompt = lines.findIndex((line, index) => index > oldReply && line.includes("┃  you  ·"));
+    if (secondPrompt === -1) fail("the second turn's prompt is not on screen");
+    const col = lines[secondPrompt]!.indexOf("┃  you  ·");
+    let row = secondPrompt;
+    while (row > 0 && lines[row]![col] === "┃") row -= 1;
+    let gap = 0;
+    while (row > 0 && lines[row]![col] === " ") {
+      gap += 1;
+      row -= 1;
+    }
+    if (gap !== 1) fail(`consecutive turns are separated by ${gap} blank rows, expected 1`);
   } finally {
     setup.renderer.destroy();
   }

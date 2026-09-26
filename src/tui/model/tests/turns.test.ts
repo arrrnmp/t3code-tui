@@ -7,8 +7,11 @@ import {
   formatTokenCount,
   groupTurns,
   proportionalTarget,
+  runningThought,
   segmentWork,
   summarizeWork,
+  thoughtDuration,
+  thoughtTail,
 } from "../turns.js";
 import type { TimelineEntry } from "../thread.js";
 
@@ -331,7 +334,7 @@ describe("formatContextUsage", () => {
   it("derives percent and human labels from a raw usage snapshot", () => {
     expect(
       formatContextUsage({ usedTokens: 359_000, maxTokens: 1_000_000, totalProcessedTokens: 1_400_000 }),
-    ).toEqual({ percent: 36, usedLabel: "359k", maxLabel: "1m", totalProcessedLabel: "1.4m" });
+    ).toEqual({ percent: 36, usedLabel: "359k", maxLabel: "1m", totalProcessedLabel: "1.4m", costLabel: null });
   });
 
   it("omits percent when the driver reports no ceiling", () => {
@@ -340,7 +343,20 @@ describe("formatContextUsage", () => {
       usedLabel: "359k",
       maxLabel: null,
       totalProcessedLabel: null,
+      costLabel: null,
     });
+  });
+
+  it("formats a running session cost when the driver reports one (Claude only)", () => {
+    expect(
+      formatContextUsage({ usedTokens: 359_000, maxTokens: 1_000_000, totalProcessedTokens: null, costUsd: 4.2 }),
+    ).toMatchObject({ costLabel: "$4.20" });
+    expect(
+      formatContextUsage({ usedTokens: 359_000, maxTokens: 1_000_000, totalProcessedTokens: null, costUsd: 0.0041 }),
+    ).toMatchObject({ costLabel: "$0.0041" });
+    expect(
+      formatContextUsage({ usedTokens: 359_000, maxTokens: 1_000_000, totalProcessedTokens: null, costUsd: null }),
+    ).toMatchObject({ costLabel: null });
   });
 });
 
@@ -391,5 +407,35 @@ describe("proportionalTarget", () => {
 
   it("returns 0 for an empty group list", () => {
     expect(proportionalTarget(0, 0, 400, 20)).toBe(0);
+  });
+});
+
+describe("runningThought", () => {
+  const thought = (id: string, status: string) =>
+    entry({
+      id,
+      activity: { id, kind: "reasoning", summary: "", tone: "info", turnId: "turn-1", createdAt: "2026-09-16T02:00:00.000Z", payload: { itemType: "reasoning", status, text: "" } } as never,
+    });
+
+  it("finds the thought still running, not a finished one", () => {
+    const group = groupTurns([entry({ id: "p", kind: "user", text: "go" }), thought("a", "completed"), thought("b", "inProgress")])[0]!;
+    expect(runningThought(group)?.id).toBe("b");
+    const done = groupTurns([entry({ id: "p", kind: "user", text: "go" }), thought("a", "completed")])[0]!;
+    expect(runningThought(done)).toBeNull();
+  });
+});
+
+describe("thoughtDuration", () => {
+  it("reads under a second in milliseconds, longer like any duration", () => {
+    expect(thoughtDuration(420)).toBe("420ms");
+    expect(thoughtDuration(0)).toBe("1ms");
+    expect(thoughtDuration(12_400)).toBe("12s");
+  });
+});
+
+describe("thoughtTail", () => {
+  it("keeps a short thought whole and cuts a long one at a word", () => {
+    expect(thoughtTail("  short  ", 40)).toBe("short");
+    expect(thoughtTail("alpha beta gamma delta epsilon", 14)).toBe("…delta epsilon");
   });
 });

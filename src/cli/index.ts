@@ -14,6 +14,18 @@ import {
   setConfigValue,
   type ConfigKey,
 } from "../core/config.js";
+import { describeSettings } from "../core/configschema.js";
+import type { MergeStrategy } from "../server/api.js";
+import {
+  commentOnForgeRequest,
+  createForgeRequest,
+  forgeStatus,
+  gitStatus,
+  listForgeRequests,
+  mergeForgeRequest,
+  viewForgeRequest,
+} from "./git/git.js";
+import { cliClient } from "./infra/client.js";
 import { redactMcpServers } from "../core/mcp.js";
 import { doctor } from "./doctor.js";
 import { preferDirectClient } from "./infra/client.js";
@@ -47,6 +59,8 @@ import {
   inspectThread,
   interruptThread,
   listQuestions,
+  listBackgroundTasks,
+  stopBackgroundTask,
   listThreads,
   readThread,
   renameThread,
@@ -176,6 +190,8 @@ interface ThreadSendCommandOptions extends PromptOptions {
   dryRun?: boolean;
   /** Commander stores `--no-wait` as `wait: false` — there is no `noWait` key. */
   wait?: boolean;
+  /** Hold the message until then (`--at`). */
+  at?: string;
 }
 
 interface ThreadListCommandOptions extends WorkspaceCommandOptions {
@@ -236,7 +252,22 @@ function addSendOptions(command: Command): Command {
     )
     .option("--handoff-note <text>", "Provider-switch note recorded with the send (CLI-side metadata; V1 sends no context-transfer row).")
     .option("--dry-run", "Build the turn command without dispatching it.")
-    .option("--no-wait", "Return at turn acceptance without waiting for the provider run to settle.");
+    .option("--no-wait", "Return at turn acceptance without waiting for the provider run to settle.")
+    .option("--at <time>", "Schedule the message: an ISO date-time, or HH:MM (today, or tomorrow once that has passed). It queues until then.");
+}
+
+/** `--at`: an ISO date-time as given, or a bare HH:MM as the next time the clock reads it. */
+function scheduledTime(raw: string, now: Date = new Date()): string {
+  const clock = /^(\d{1,2}):(\d{2})$/.exec(raw.trim());
+  if (clock) {
+    const at = new Date(now);
+    at.setHours(Number(clock[1]), Number(clock[2]), 0, 0);
+    if (at.getTime() <= now.getTime()) at.setDate(at.getDate() + 1);
+    return at.toISOString();
+  }
+  const parsed = Date.parse(raw.trim());
+  if (!Number.isFinite(parsed)) throw new CliError("INVALID_THREAD_OPTION", "--at takes an ISO date-time or HH:MM.", { exitCode: 2 });
+  return new Date(parsed).toISOString();
 }
 
 interface WorkspaceCommandOptions {
@@ -327,7 +358,7 @@ program
     action(async () => {
       const context = await commandContext();
       const { runTui } = await import("../tui/index.js");
-      await runTui(context.config);
+      await runTui(context.config, context.configPath);
     }),
   );
 
@@ -411,6 +442,154 @@ configCommand
       const next = setConfigValue(context.config, key as ConfigKey, value);
       await saveConfig(context.configPath, next);
       writeSuccess({ path: context.configPath, config: displayConfig(next) }, context, `Saved ${key}=${value}.`);
+    }),
+  );
+
+configCommand
+  .command("list")
+  .description("Every setting, with its current value and what it accepts.")
+  .action(() =>
+    action(async () => {
+      const context = await commandContext();
+      // Straight off the schema table, so this listing and the TUI
+      // settings page can never describe a key differently.
+      const settings = describeSettings(context.config).map((view) => ({
+        key: view.descriptor.key,
+        section: view.descriptor.section,
+        label: view.descriptor.label,
+        description: view.descriptor.description,
+        type: view.descriptor.kind.type,
+        ...(view.descriptor.kind.type === "enum"
+          ? { choices: view.descriptor.kind.choices.map((choice) => choice.value) }
+          : {}),
+        value: view.value ?? null,
+        explicit: view.explicit,
+        ...(view.descriptor.restartRequired === true ? { restartRequired: true } : {}),
+      }));
+      writeSuccess(
+        { path: context.configPath, exists: context.configExists, settings },
+        context,
+        settings
+          .map((setting) => `${setting.key.padEnd(34)} ${String(setting.value ?? "—")}`)
+          .join("\n"),
+      );
+    }),
+  );
+
+const git = program.command("git").description("Read this thread's checkout, and its pull or merge requests.");
+git
+  .command("status")
+  .requiredOption("--thread <id>", "Thread whose checkout to read.")
+  .option("--branch <name>", "Read history for this branch instead of the checked-out one.")
+  .option("--limit <count>", "How many commits to read.", (value: string) => Number.parseInt(value, 10))
+  .action((options: { thread: string; branch?: string; limit?: number }) =>
+    action(async () => {
+      const context = await commandContext();
+      const result = await gitStatus(context.config, {
+        threadId: options.thread,
+        ...(options.branch !== undefined ? { branch: options.branch } : {}),
+        ...(options.limit !== undefined ? { limit: options.limit } : {}),
+      });
+      writeSuccess(result, context);
+    }),
+  );
+
+const forge = program.command("pr").description("Pull requests (GitHub) or merge requests (GitLab), via gh or glab.");
+forge
+  .command("status")
+  .requiredOption("--thread <id>", "Thread whose remote to inspect.")
+  .action((options: { thread: string }) =>
+    action(async () => {
+      const context = await commandContext();
+      writeSuccess(await forgeStatus(context.config, options.thread), context);
+    }),
+  );
+forge
+  .command("list")
+  .requiredOption("--thread <id>", "Thread whose remote to read.")
+  .option("--state <state>", "open, closed, merged or all.")
+  .option("--limit <count>", "How many to read.", (value: string) => Number.parseInt(value, 10))
+  .action((options: { thread: string; state?: "open" | "closed" | "merged" | "all"; limit?: number }) =>
+    action(async () => {
+      const context = await commandContext();
+      const result = await listForgeRequests(context.config, {
+        threadId: options.thread,
+        ...(options.state !== undefined ? { state: options.state } : {}),
+        ...(options.limit !== undefined ? { limit: options.limit } : {}),
+      });
+      writeSuccess(result, context);
+    }),
+  );
+forge
+  .command("view")
+  .requiredOption("--thread <id>", "Thread whose remote to read.")
+  .argument("<number>")
+  .action((number: string, options: { thread: string }) =>
+    action(async () => {
+      const context = await commandContext();
+      writeSuccess(
+        await viewForgeRequest(context.config, { threadId: options.thread, number: Number.parseInt(number, 10) }),
+        context,
+      );
+    }),
+  );
+forge
+  .command("create")
+  .description("Open a request. This publishes to the remote.")
+  .requiredOption("--thread <id>", "Thread whose checkout to open it from.")
+  .requiredOption("--title <title>")
+  .option("--body <text>")
+  .option("--base <branch>", "Branch to merge into.")
+  .option("--head <branch>", "Branch to merge from.")
+  .option("--draft")
+  .action((options: { thread: string; title: string; body?: string; base?: string; head?: string; draft?: boolean }) =>
+    action(async () => {
+      const context = await commandContext();
+      const result = await createForgeRequest(context.config, {
+        threadId: options.thread,
+        title: options.title,
+        ...(options.body !== undefined ? { body: options.body } : {}),
+        ...(options.base !== undefined ? { targetBranch: options.base } : {}),
+        ...(options.head !== undefined ? { sourceBranch: options.head } : {}),
+        ...(options.draft !== undefined ? { draft: options.draft } : {}),
+      });
+      writeSuccess(result, context, result.url ?? "Opened.");
+    }),
+  );
+forge
+  .command("comment")
+  .description("Post a comment. This publishes to the remote.")
+  .requiredOption("--thread <id>")
+  .requiredOption("--body <text>")
+  .argument("<number>")
+  .action((number: string, options: { thread: string; body: string }) =>
+    action(async () => {
+      const context = await commandContext();
+      const result = await commentOnForgeRequest(context.config, {
+        threadId: options.thread,
+        number: Number.parseInt(number, 10),
+        body: options.body,
+      });
+      writeSuccess(result, context, `Commented on #${result.number}.`);
+    }),
+  );
+forge
+  .command("merge")
+  .description("Merge a request. This changes the remote's default branch history.")
+  .requiredOption("--thread <id>")
+  .option("--strategy <strategy>", "merge, squash or rebase.")
+  .option("--delete-branch", "Delete the source branch afterwards.")
+  .argument("<number>")
+  .action((number: string, options: { thread: string; strategy?: MergeStrategy; deleteBranch?: boolean }) =>
+    action(async () => {
+      const context = await commandContext();
+      const result = await mergeForgeRequest(context.config, {
+        threadId: options.thread,
+        number: Number.parseInt(number, 10),
+        ...(options.strategy !== undefined ? { strategy: options.strategy } : {}),
+        ...(options.deleteBranch !== undefined ? { deleteBranch: options.deleteBranch } : {}),
+      });
+      writeSuccess(result, context, `Merged #${result.number} (${result.strategy}).`);
     }),
   );
 
@@ -508,6 +687,45 @@ threads
           `Latest turn: ${latestTurn ? `${latestTurn.state} (${latestTurn.turnId})` : "none"}`,
           `Updated: ${result.thread.updatedAt ?? "unknown"}`,
         ].join("\n"),
+      );
+    }),
+  );
+
+threads
+  .command("btw")
+  .description("Ask a side question on a copy of the thread's context: no tools, and never recorded in the thread. Runs alongside a turn in progress.")
+  .requiredOption("--thread <thread-id>", "The thread whose context to ask from.")
+  .argument("<question...>")
+  .action((question: string[], options: { thread: string }) =>
+    action(async () => {
+      const context = await commandContext();
+      const client = await cliClient(context.config);
+      const answer = await client.dispatch({ type: "thread.side-question", threadId: options.thread, question: question.join(" ") });
+      writeSuccess({ thread: options.thread, ...answer }, context, answer.text);
+    }),
+  );
+
+threads
+  .command("continue")
+  .description("Continue a thread in a new one: same project, model and checkout, opened with a handoff written from the old thread.")
+  .requiredOption("--thread <thread-id>", "The thread to continue.")
+  .option("--at <time>", "Hold the handoff until then (e.g. just after a usage limit resets): an ISO date-time, or HH:MM.")
+  .action((options: { thread: string; at?: string }) =>
+    action(async () => {
+      const context = await commandContext();
+      const client = await cliClient(context.config);
+      const result = await client.dispatch({
+        type: "thread.continue",
+        threadId: options.thread,
+        ...(options.at ? { scheduledFor: scheduledTime(options.at) } : {}),
+      });
+      const { accepted: _accepted, ...envelope } = result;
+      writeSuccess(
+        { from: options.thread, ...envelope },
+        context,
+        envelope.scheduledFor === null
+          ? `Continued in ${envelope.threadId} ("${envelope.title}").`
+          : `Continues in ${envelope.threadId} ("${envelope.title}") at ${envelope.scheduledFor}.`,
       );
     }),
   );
@@ -651,6 +869,7 @@ addSendOptions(threads.command("send"))
         ...(options.wakeSettled ? { wakeSettled: true } : {}),
         ...(options.delivery ? { delivery: options.delivery } : {}),
         ...(options.handoffNote ? { handoffNote: options.handoffNote } : {}),
+        ...(options.at ? { scheduledFor: scheduledTime(options.at) } : {}),
         ...(!context.json && !options.stdin ? { confirmSettled: confirmSettledThread } : {}),
         ...(options.dryRun ? { dryRun: true } : {}),
         ...(options.wait === false ? { noWait: true } : {}),
@@ -692,6 +911,33 @@ threads
         result,
         context,
         `Marked thread ${result.thread.id} active.`,
+      );
+    }),
+  );
+
+threads
+  .command("background")
+  .description("List the background work in a thread's live session, or stop one task.")
+  .requiredOption("--thread <thread-id>", "Exact thread id.")
+  .option("--stop <task-id>", "Stop this background task instead of listing.")
+  .action((options: { thread: string; stop?: string }) =>
+    action(async () => {
+      const context = await commandContext();
+      if (options.stop) {
+        const stopped = await stopBackgroundTask(context.config, options.thread, options.stop);
+        writeSuccess(stopped, context, `Stopped background task ${stopped.taskId}.`);
+        return;
+      }
+      const result = await listBackgroundTasks(context.config, options.thread);
+      const lines = result.tasks.map((task) => `${task.taskId}\t${task.taskType ?? "-"}\t${task.description}`);
+      writeSuccess(
+        result,
+        context,
+        !result.live
+          ? `No live session for thread ${result.threadId} here.`
+          : lines.length > 0
+            ? lines.join("\n")
+            : "No background tasks running.",
       );
     }),
   );
@@ -753,13 +999,16 @@ threads
 
 threads
   .command("revert")
-  .description("Revert the conversation to its first N turns. Files are left as they are.")
+  .description("Revert the conversation to its first N turns. Files are left as they are unless --restore-files.")
   .requiredOption("--thread <thread-id>", "Exact thread id.")
   .requiredOption("--keep <turns>", "How many turns to keep (0 clears the conversation).")
-  .action((options: { thread: string; keep: string }) =>
+  .option("--restore-files", "Also put the files back to how they were before the first dropped turn (untracked ones included).")
+  .action((options: { thread: string; keep: string; restoreFiles?: boolean }) =>
     action(async () => {
       const context = await commandContext();
-      const result = await revertConversation(context.config, options.thread, options.keep);
+      const result = await revertConversation(context.config, options.thread, options.keep, {
+        ...(options.restoreFiles === true ? { restoreFiles: true } : {}),
+      });
       writeSuccess(
         result,
         context,

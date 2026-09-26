@@ -175,7 +175,7 @@ async function seeded(options: Parameters<typeof testHarness>[0] = {}) {
 }
 
 async function turnSettled(harness: TestHarness, threadId: string): Promise<void> {
-  const deadline = Date.now() + 5000;
+  const deadline = Date.now() + 15_000;
   for (;;) {
     const turns = await harness.store.readTurns(threadId);
     if (turns.length > 0 && turns.every((turn) => turn.status !== "running" && turn.status !== "queued")) return;

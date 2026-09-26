@@ -116,6 +116,48 @@ export interface NoteView {
   tone: string;
 }
 
+/** A stretch of the model's reasoning: its readable summary and how long it took. */
+export interface ReasoningView {
+  kind: "reasoning";
+  /** The summary; empty when the provider showed none. */
+  text: string;
+  startedAt: string | null;
+  durationMs: number | null;
+  running: boolean;
+}
+
+/** The provider moved the thread to another model on its own (a flagged request re-run). */
+export interface ModelSwitchView {
+  kind: "model-switch";
+  from: string | null;
+  to: string;
+  /** Why it was flagged, in words ("biology"); null when the provider did not say. */
+  category: string | null;
+  /** `local`: only a subagent's or side question's reply moved — the thread did not. */
+  scope: "session" | "local";
+  /** `refusal-fallback`: a flagged request re-ran; `auto`: any other switch the provider made itself. */
+  reason: "refusal-fallback" | "auto";
+}
+
+/** Something the provider did to the session: compacted it, or refused a tool call in auto mode. */
+export interface NoticeView {
+  kind: "notice";
+  notice: "compacted" | "permission-denied" | "other";
+  title: string;
+  /** The compaction summary, or why the call was refused. */
+  detail: string | null;
+}
+
+/** A plan usage limit stopped the turn, or (`wrapUp`) was met with a small allowance to finish on. */
+export interface UsageLimitView {
+  kind: "usage-limit";
+  /** The window that ran out ("Session", "Weekly"). */
+  label: string | null;
+  resetsAt: string | null;
+  /** The turn carries on to a stopping point, on an allowance drawn from the weekly limit. */
+  wrapUp: boolean;
+}
+
 export type ActivityView =
   | CommandView
   | FileChangeView
@@ -129,10 +171,23 @@ export type ActivityView =
   | WebView
   | ImageView
   | ToolView
-  | NoteView;
+  | NoteView
+  | ModelSwitchView
+  | UsageLimitView
+  | ReasoningView
+  | NoticeView;
+
+/**
+ * Checklist-bookkeeping tools: OpenCode's `todowrite`/`todoread`, Claude's
+ * `TodoWrite` and its `TaskCreate`/`TaskUpdate`/`TaskList`/`TaskGet`
+ * successors. The checklist they maintain already renders as the tasks
+ * panel (fed by `turn.plan.updated`), so each call maps to a `todos` view,
+ * which `isPlanActivity` keeps out of the transcript.
+ */
+const CHECKLIST_TOOLS: ReadonlySet<string> = new Set(["todowrite", "todoread", "todo", "taskcreate", "taskupdate", "tasklist", "taskget"]);
 
 /** Tool verbs rendered as a `$ <shell>` command card. */
-const SHELL_TOOLS: ReadonlySet<string> = new Set(["bash", "shell", "exec", "powershell", "pwsh"]);
+const SHELL_TOOLS: ReadonlySet<string> = new Set(["bash", "shell", "exec", "powershell", "pwsh", "monitor"]);
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -148,12 +203,53 @@ function asNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+/**
+ * Where the open thread's files live (its worktree, then its project) and
+ * the user's home: display paths are made relative to them. Set by the app
+ * as the open thread changes; empty until then.
+ */
+let pathRoots: { roots: string[]; home: string | null } = { roots: [], home: null };
+
+export function setPathRoots(roots: ReadonlyArray<string | null | undefined>, home: string | null): void {
+  const clean = roots.flatMap((root) => (typeof root === "string" && root.length > 0 ? [slashes(root).replace(/\/+$/u, "")] : []));
+  pathRoots = { roots: clean, home: home === null ? null : slashes(home).replace(/\/+$/u, "") };
+}
+
+function slashes(value: string): string {
+  return value.replace(/\\/g, "/");
+}
+
+/** Past this many characters a path outside the project keeps its head and tail: "~/.claude/…/memory/notes.md". */
+const LONG_PATH = 48;
+
+function collapseMiddle(path: string): string {
+  if (path.length <= LONG_PATH) return path;
+  const parts = path.split("/");
+  if (parts.length <= 4) return path;
+  return [...parts.slice(0, 2), "…", ...parts.slice(-2)].join("/");
+}
+
+/**
+ * A file path as a row shows it: relative inside the thread's worktree or
+ * project, "~/…" under home, absolute elsewhere — so a file outside the
+ * project never reads as one inside it. Relative inputs stay as they are.
+ */
 function shortenPath(value: string): string {
-  const normalized = value.replace(/\\/g, "/");
-  const marker = normalized.lastIndexOf("/src/");
-  if (marker !== -1) return normalized.slice(marker + 1);
-  const parts = normalized.split("/");
-  return parts.slice(-2).join("/");
+  const normalized = slashes(value);
+  if (!/^([a-z]:)?\//iu.test(normalized)) return normalized;
+  const lower = normalized.toLowerCase();
+  for (const root of pathRoots.roots) {
+    if (lower.startsWith(`${root.toLowerCase()}/`)) return normalized.slice(root.length + 1);
+  }
+  const home = pathRoots.home;
+  if (home !== null && lower.startsWith(`${home.toLowerCase()}/`)) return collapseMiddle(`~${normalized.slice(home.length)}`);
+  if (pathRoots.roots.length === 0) {
+    // No thread context (tests, early frames): the old best guess.
+    const marker = normalized.lastIndexOf("/src/");
+    if (marker !== -1) return normalized.slice(marker + 1);
+    return normalized.split("/").slice(-2).join("/");
+  }
+  return collapseMiddle(normalized);
 }
 
 function shortInputPath(input: Record<string, unknown>): string | null {
@@ -407,6 +503,10 @@ function toolSearchView(input: Record<string, unknown>, running: boolean): Activ
       .split(",")
       .map((name) => name.trim())
       .filter((name) => name.length > 0);
+    // Loading only the checklist tools is as much bookkeeping as calling them.
+    if (names.length > 0 && names.every((name) => CHECKLIST_TOOLS.has(name.toLowerCase()))) {
+      return { kind: "todos", title: "Loaded checklist tools", items: [], running };
+    }
     if (names.length > 0) {
       return { kind: "tool", tool: running ? "Loading tools" : "Loaded tools", detail: names.join(", "), running };
     }
@@ -451,6 +551,34 @@ export function describeActivity(activity: ActivityEnvelope): ActivityView {
   const running = isRunning(payload);
   const tool = asString(data.tool) ?? asString(data.toolName) ?? null;
   const title = asString(payload.title) ?? asString(activity.summary) ?? activity.kind;
+
+  if (activity.kind === "model.changed") {
+    const to = asString(payload.toLabel) ?? asString(payload.to) ?? "another model";
+    return {
+      kind: "model-switch",
+      from: asString(payload.fromLabel) ?? asString(payload.from),
+      to,
+      category: refusalCategory(payload.category),
+      scope: payload.scope === "local" ? "local" : "session",
+      reason: payload.reason === "auto" ? "auto" : "refusal-fallback",
+    };
+  }
+  if (activity.kind === "notice") {
+    const notice = payload.notice === "compacted" || payload.notice === "permission-denied" ? payload.notice : "other";
+    return { kind: "notice", notice, title: asString(activity.summary) ?? "Notice", detail: asString(payload.detail) };
+  }
+  if (activity.kind === "usage.limit" || activity.kind === "usage.wrap-up") {
+    return { kind: "usage-limit", label: asString(payload.label), resetsAt: asString(payload.resetsAt), wrapUp: activity.kind === "usage.wrap-up" };
+  }
+  if (payload.itemType === "reasoning") {
+    return {
+      kind: "reasoning",
+      text: typeof payload.text === "string" ? payload.text.trim() : "",
+      startedAt: asString(payload.startedAt),
+      durationMs: asNumber(payload.durationMs),
+      running,
+    };
+  }
 
   const itemType = payload.itemType;
   if (itemType === "command_execution") {
@@ -584,9 +712,8 @@ export function describeActivity(activity: ActivityEnvelope): ActivityView {
         running,
       };
     }
-    if (short === "todowrite" || short === "todo") {
-      const raw = input.todos;
-      return { kind: "todos", title, items: decodeTodos(raw), running };
+    if (CHECKLIST_TOOLS.has(short)) {
+      return { kind: "todos", title, items: decodeTodos(input.todos), running };
     }
     // OpenCode's own web tools (`webfetch`/`websearch`/`mcp-websearch`) and
     // Claude's `WebFetch`/`WebSearch` normally arrive under the dedicated
@@ -740,7 +867,7 @@ export function describeActivity(activity: ActivityEnvelope): ActivityView {
       taskType: asString(payload.taskType),
       model: asString(payload.model),
       status: asString(payload.status) ?? activity.kind,
-      running: activity.kind === "task.started",
+      running: activity.kind === "task.started" || activity.kind === "background.started",
     };
   }
 
@@ -761,6 +888,14 @@ export function describeActivity(activity: ActivityEnvelope): ActivityView {
   }
 
   return { kind: "note", text: String(activity.summary), tone: String(activity.tone ?? "info") };
+}
+
+/** "bio" → "biology": the classifier categories a flagged request carries, in words. */
+function refusalCategory(raw: unknown): string | null {
+  const category = asString(raw)?.toLowerCase() ?? null;
+  if (category === "bio") return "biology";
+  if (category === "cyber") return "cybersecurity";
+  return category;
 }
 
 function decodeTodos(raw: unknown): TodoItem[] {

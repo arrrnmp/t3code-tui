@@ -39,8 +39,15 @@ export function serverMode(env: NodeJS.ProcessEnv = process.env): ServerMode {
 export interface OpenClientOptions {
   readonly mode?: ServerMode;
   readonly endpoint?: string;
-  /** In-process only: the config the connection resolves defaults from. */
+  /**
+   * In-process only: a fixed config, for one-shot callers (the CLI) and
+   * tests. A long-lived client must pass `configPath` instead — a fixed
+   * object is frozen at launch, so edits made while it runs (the settings
+   * page) would never be seen and each write would clobber the last.
+   */
   readonly config?: CliConfig;
+  /** In-process only: the file to re-read per operation. */
+  readonly configPath?: string;
   /** In-process only: driver factories (tests). */
   readonly drivers?: TurnDriverFactories;
 }
@@ -53,6 +60,7 @@ export async function openClient(options: OpenClientOptions = {}): Promise<Clien
   const direct = (): ClientConnection =>
     new DirectConnection({
       ...(options.config ? { config: async () => options.config! } : {}),
+      ...(options.configPath ? { configPath: options.configPath } : {}),
       ...(options.drivers ? { drivers: options.drivers } : {}),
     });
   if (mode === "direct") return direct();

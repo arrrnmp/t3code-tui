@@ -45,12 +45,12 @@ describe("skills.list", () => {
 });
 
 describe("session setup", () => {
-  it("sends no instructions to a plain local thread", async () => {
+  it("tells a plain local thread only that it runs through Moxen, and to research", async () => {
     const { harness, connection, startOf } = await connected();
     try {
       const done = await connection.dispatch({ type: "thread.handover", cwd: harness.work, prompt: "Hi", wait: true, threadEnvMode: "local" });
-      expect(startOf(done.threadId)).toBeDefined();
-      expect(startOf(done.threadId)).not.toHaveProperty("instructions");
+      const instructions = startOf(done.threadId)?.instructions ?? "";
+      expect(instructions).toMatch(/^In case you're asked: you are running in Moxen, .* No need to mention this otherwise\.\n\nWhen the work depends on [^\n]*$/);
     } finally {
       await connection.close();
     }
@@ -61,7 +61,7 @@ describe("session setup", () => {
     try {
       await writeFile(path.join(harness.work, "moxen.json"), JSON.stringify({ instructions: "Project rule." }));
       const done = await connection.dispatch({ type: "thread.handover", cwd: harness.work, prompt: "Hi", wait: true, threadEnvMode: "local" });
-      expect(startOf(done.threadId)?.instructions).toBe("Config rule.\n\nProject rule.");
+      expect(startOf(done.threadId)?.instructions).toMatch(/not a detour from it\.\n\nConfig rule\.\n\nProject rule\.$/);
     } finally {
       await connection.close();
     }

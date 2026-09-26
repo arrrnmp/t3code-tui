@@ -37,7 +37,7 @@ async function connected(endpoint: string): Promise<RemoteConnection> {
   return connection;
 }
 
-async function waitFor(label: string, check: () => boolean | Promise<boolean>, timeoutMs = 5000): Promise<void> {
+async function waitFor(label: string, check: () => boolean | Promise<boolean>, timeoutMs = 15_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!(await check())) {
     if (Date.now() > deadline) throw new Error(`timed out waiting for ${label}`);

@@ -1,15 +1,20 @@
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { RefObject } from "react";
 import type { KeyEvent, ScrollBoxRenderable, TextareaRenderable } from "@opentui/core";
-import { TextAttributes } from "@opentui/core";
+import { useRenderer } from "@opentui/react";
+import { SyntaxStyle, TextAttributes, bg, fg, italic, t } from "@opentui/core";
 
 import { useHover } from "../../hooks/useHover.js";
 import { useAnimTick } from "../../hooks/useAnimTick.js";
 import { PICK_BG, PICK_FG } from "../pickers/pickermodal.js";
 import { COLOR, pulseColor, SURFACE, truncate } from "../../theme.js";
+import { thumbGeometry } from "../../model/scrollbar.js";
 import { detectSkillTrigger, filterSkills, insertSkillMention, marqueeWindow, type SkillTrigger } from "../../model/skills.js";
 import type { SkillSummary } from "../../../core/catalog/summary.js";
 import type { ContextUsageDisplay } from "../../model/turns.js";
+import type { PlanUsageGauge } from "../../model/sidepanel.js";
+import { nextImageLabel, pairImageTokens } from "../../model/imagetokens.js";
 
 /** Rows visible at once before the list scrolls (wheel, not the arrow keys alone). */
 const SKILL_POPUP_ROWS = 6;
@@ -37,10 +42,107 @@ function HoverText({
   );
 }
 
+/**
+ * The provider's guess at the next prompt, as the empty draft's placeholder:
+ * the text itself in italics, then a key chip saying how to take it — one
+ * line, cut short rather than wrapped under the chip.
+ */
+function suggestionPlaceholder(suggestion: string, width: number) {
+  const room = Math.max(12, width - 22);
+  const text = truncate(suggestion.replace(/\s+/gu, " ").trim(), room);
+  return t`${fg(COLOR.dim)(italic(text))}   ${bg(SURFACE.border)(fg(COLOR.bright)(" tab "))}${fg(COLOR.faint)(" to use it")}`;
+}
+
+/** The account's plan usage in the footer: one short gauge per window, coloured as it fills. */
+function usageColor(percent: number): string {
+  return percent >= 90 ? COLOR.danger : percent >= 70 ? COLOR.warn : COLOR.dim;
+}
+
+function PlanUsageSegment({ gauges, onClick }: { gauges: readonly PlanUsageGauge[]; onClick: () => void }) {
+  const { hovered, handlers } = useHover();
+  return (
+    <box style={{ flexDirection: "row", height: 1, flexShrink: 0 }} backgroundColor={SURFACE.raised} onMouseDown={onClick} selectable={false} {...handlers}>
+      {gauges.map((gauge, index) => (
+        <box key={gauge.short} style={{ flexDirection: "row", height: 1, flexShrink: 0 }} backgroundColor={SURFACE.raised}>
+          <text fg={hovered ? COLOR.text : COLOR.faint} bg={SURFACE.raised} selectable={false}>{`${index === 0 ? "" : " "}${gauge.short} `}</text>
+          <text fg={hovered ? COLOR.bright : usageColor(gauge.percent)} bg={SURFACE.raised} selectable={false}>{`${Math.round(gauge.percent)}%`}</text>
+        </box>
+      ))}
+    </box>
+  );
+}
+
+/** How an `[Image N]` token reads in the draft: a filled chip, one unit to the cursor and to backspace. */
+let tokenStyle: SyntaxStyle | null = null;
+function imageTokenStyle(): SyntaxStyle {
+  tokenStyle ??= SyntaxStyle.fromStyles({ "extmark.image": { fg: PICK_FG, bg: PICK_BG, bold: true } });
+  return tokenStyle;
+}
+
+/** The "⋯ more" control's width, its separator included. */
+const MORE_WIDTH = 11;
+
 /** OpenCode caps its prompt at ~10 rows before the box scrolls internally. */
 const MAX_COMPOSER_LINES = 10;
 /** Resting height so the composer reads as an input card, not a status line. */
 const MIN_COMPOSER_LINES = 3;
+
+/**
+ * The textarea scrolls internally past `MAX_COMPOSER_LINES` with no native
+ * bar (a `<scrollbox>` cannot wrap a textarea), so the composer draws its
+ * own 1-column strip at the card's right edge: faint track, accent thumb,
+ * blank while the draft fits.
+ *
+ * The textarea wraps and scrolls while it renders — after React has already
+ * drawn this strip — so reading its rows during React's render always lags
+ * one frame (and a wheel scroll or a programmatic `setText` fires no React
+ * event at all). A post-frame check re-renders the strip whenever the rows or
+ * offset it last drew no longer match the textarea's.
+ */
+function ComposerScrollbar({ areaRef }: { areaRef: RefObject<TextareaRenderable | null> }) {
+  const renderer = useRenderer();
+  const [, bump] = useState(0);
+  const drawn = useRef("");
+  useEffect(() => {
+    const check = (): void => {
+      const node = areaRef.current;
+      const seen = node === null ? "" : `${node.lineInfo.lineStartCols.length}:${node.scrollY}`;
+      if (seen !== drawn.current) bump((tick) => tick + 1);
+    };
+    renderer.addPostProcessFn(check);
+    return () => renderer.removePostProcessFn(check);
+  }, [renderer, areaRef]);
+  const area = areaRef.current;
+  // The column is always reserved (blank while the draft fits): the draft's
+  // wrap width must not change as the thumb comes and goes, or a draft right
+  // at the cap would re-wrap under/over it and flip the strip every frame.
+  const blank = <box style={{ width: 1, flexShrink: 0 }} selectable={false} />;
+  if (area === null) {
+    drawn.current = "";
+    return blank;
+  }
+  drawn.current = `${area.lineInfo.lineStartCols.length}:${area.scrollY}`;
+  // Total VISUAL rows come from lineInfo, not virtualLineCount (which caps
+  // at the viewport height) or lineCount (which ignores word wrap).
+  const total = area.lineInfo.lineStartCols.length;
+  const viewRows = Math.min(MAX_COMPOSER_LINES, Math.max(MIN_COMPOSER_LINES, total));
+  // Breathing box + footer box below the textarea inside the card.
+  const trackLen = viewRows + 2;
+  const thumb = thumbGeometry(total, viewRows, area.scrollY, trackLen);
+  if (thumb === null) return blank;
+  return (
+    <box style={{ width: 1, flexShrink: 0 }} selectable={false}>
+      {Array.from({ length: trackLen }, (_, row) => {
+        const onThumb = row >= thumb.start && row < thumb.start + thumb.size;
+        return (
+          <text key={row} fg={onThumb ? COLOR.accent : COLOR.faint} bg={COLOR.faint} selectable={false}>
+            {onThumb ? "█" : " "}
+          </text>
+        );
+      })}
+    </box>
+  );
+}
 
 /**
  * Enter sends; several chords insert a newline because terminals disagree on
@@ -91,6 +193,14 @@ export function Composer({
   skillPrefix,
   contextUsage,
   onContextUsageClick,
+  backgroundSummary,
+  onBackgroundClick,
+  planUsage,
+  onPlanUsageClick,
+  onQueue,
+  attachments,
+  onAttachmentRemoved,
+  suggestion,
 }: {
   draft: string;
   /**
@@ -146,8 +256,42 @@ export function Composer({
   /** Null/undefined hides the segment — the driver never reported usage for this thread. */
   contextUsage?: ContextUsageDisplay | null;
   onContextUsageClick?: () => void;
+  /** e.g. "2 shell, 1 monitor"; null/undefined hides the segment. */
+  backgroundSummary?: string | null;
+  onBackgroundClick?: () => void;
+  /** The provider's plan usage windows; null/undefined/empty hides the segment. */
+  planUsage?: readonly PlanUsageGauge[] | null;
+  onPlanUsageClick?: () => void;
+  /** Tab while a turn runs: queue the draft to run once the turn ends (Enter steers it instead). */
+  onQueue?: () => void;
+  /**
+   * The pending images, by name, in order. Each shows in the draft as an
+   * `[Image N]` token where it was pasted; deleting the token detaches it.
+   */
+  attachments?: readonly string[];
+  onAttachmentRemoved?: (name: string) => void;
+  /** The provider's guess at the next prompt: shown in an empty draft, Tab takes it. */
+  suggestion?: string | null;
 }) {
   const areaRef = useRef<TextareaRenderable | null>(null);
+  /** Each pending image's token in the draft: its extmark and label, by attachment name. */
+  const tokens = useRef(new Map<string, { id: number; label: string }>());
+  const tokenType = useRef<number | null>(null);
+  const markToken = (node: TextareaRenderable, name: string, label: string, start: number) => {
+    tokenType.current ??= node.extmarks.registerType("image-token");
+    const styleId = imageTokenStyle().getStyleId("extmark.image");
+    const id = node.extmarks.create({
+      start,
+      end: start + label.length,
+      virtual: true,
+      typeId: tokenType.current,
+      ...(styleId === null ? {} : { styleId }),
+    });
+    tokens.current.set(name, { id, label });
+  };
+  const attachmentKey = (attachments ?? []).join("\n");
+  /** The "⋯ more" menu of footer controls a narrow composer cannot fit. */
+  const [moreOpen, setMoreOpen] = useState(false);
   const localRef = useRef(draft);
   const external = editingExternally === true;
   // No height estimate here: the textarea shrink-wraps its content, so the
@@ -157,15 +301,15 @@ export function Composer({
     submitVerb === "creates"
       ? "enter creates · esc cancels"
       : running
-        ? "enter sends · ctrl+j newline · esc unfocus"
+        ? "enter steers · tab queues · ctrl+j newline · esc unfocus"
         : "enter sends · shift+enter newline · esc unfocus";
   const midHint =
     submitVerb === "creates"
       ? fullHint
       : running
-        ? "enter sends · ctrl+j newline"
+        ? "enter steers · tab queues"
         : "enter sends · shift+enter newline";
-  const shortHint = submitVerb === "creates" ? "enter creates" : "enter sends";
+  const shortHint = submitVerb === "creates" ? "enter creates" : running ? "enter steers" : "enter sends";
   const hint =
     external
       ? "editing in external editor…"
@@ -183,10 +327,36 @@ export function Composer({
     if (node === null) return;
     localRef.current = draft;
     node.setText(draft);
+    // A restored draft reads "[Image 1]" as plain text: give each pending
+    // image its token back (the rest are placed at the next attach pass).
+    node.extmarks.clear();
+    tokens.current.clear();
+    for (const span of pairImageTokens(draft, attachments ?? []).paired) markToken(node, span.name, span.label, span.start);
     // `draft` is read at the moment `resetKey` changes, not tracked as its
     // own dependency — see the `resetKey` doc comment above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resetKey]);
+
+  // A newly pending image gets its token at the cursor; one no longer
+  // pending (sent, or removed elsewhere) lets go of its token.
+  useEffect(() => {
+    const node = areaRef.current;
+    if (node === null) return;
+    const names = attachments ?? [];
+    for (const [name, token] of [...tokens.current]) {
+      if (names.includes(name)) continue;
+      node.extmarks.delete(token.id);
+      tokens.current.delete(name);
+    }
+    for (const name of names) {
+      if (tokens.current.has(name)) continue;
+      const label = nextImageLabel([...tokens.current.values()].map((token) => token.label));
+      const start = node.cursorOffset;
+      node.insertText(`${label} `);
+      markToken(node, name, label, start);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [attachmentKey]);
 
   const [skillTrigger, setSkillTrigger] = useState<SkillTrigger | null>(null);
   const [skillIndex, setSkillIndex] = useState(0);
@@ -239,11 +409,25 @@ export function Composer({
     setSkillTrigger(null);
   };
 
+  // Only an empty draft offers the suggestion — the same moment the textarea
+  // shows its placeholder, which is where the suggestion appears. Anything
+  // typed, even a space, is the user's own.
+  const offeredSuggestion = suggestion !== undefined && suggestion !== null && draft.length === 0 && !external ? suggestion : null;
+
   const handleContentChange = () => {
     if (external) return;
     const text = areaRef.current?.plainText ?? "";
     localRef.current = text;
     onInput(text);
+    // A token deleted (backspace takes it whole) detaches its image.
+    const node = areaRef.current;
+    if (node !== null) {
+      for (const [name, token] of [...tokens.current]) {
+        if (node.extmarks.get(token.id) !== null) continue;
+        tokens.current.delete(name);
+        onAttachmentRemoved?.(name);
+      }
+    }
     if (skills === undefined) return;
     const cursor = areaRef.current?.cursorOffset ?? text.length;
     setSkillTrigger(detectSkillTrigger(text, cursor));
@@ -251,17 +435,22 @@ export function Composer({
     setSkillIndex(0);
   };
 
-  const footerSegments: Array<{ key: string; node: ReactNode }> = [];
+  // Each segment carries its width and a drop rank: a narrow composer (a
+  // side panel open) sheds the highest ranks first rather than letting the
+  // right-hand group run over the model label.
+  const candidates: Array<{ key: string; node: ReactNode; width: number; drop: number }> = [];
   if (contextUsage !== undefined && contextUsage !== null) {
-    footerSegments.push({
+    const text =
+      contextUsage.percent === null
+        ? contextUsage.usedLabel
+        : `${contextUsage.percent}% · ${contextUsage.usedLabel}${contextUsage.maxLabel === null ? "" : `/${contextUsage.maxLabel}`}`;
+    candidates.push({
       key: "context",
+      width: text.length,
+      drop: 2,
       node: (
         <HoverText
-          text={
-            contextUsage.percent === null
-              ? contextUsage.usedLabel
-              : `${contextUsage.percent}% · ${contextUsage.usedLabel}${contextUsage.maxLabel === null ? "" : `/${contextUsage.maxLabel}`}`
-          }
+          text={text}
           color={COLOR.dim}
           hoverColor={COLOR.bright}
           onClick={onContextUsageClick ?? (() => undefined)}
@@ -269,24 +458,91 @@ export function Composer({
       ),
     });
   }
+  if (planUsage !== undefined && planUsage !== null && planUsage.length > 0) {
+    candidates.push({
+      key: "plan",
+      width: planUsage.reduce((total, gauge, index) => total + gauge.short.length + String(Math.round(gauge.percent)).length + 2 + (index === 0 ? 0 : 1), 0),
+      drop: 3,
+      node: <PlanUsageSegment gauges={planUsage} onClick={onPlanUsageClick ?? (() => undefined)} />,
+    });
+  }
+  if (backgroundSummary !== undefined && backgroundSummary !== null) {
+    candidates.push({
+      key: "background",
+      width: backgroundSummary.length,
+      drop: 1,
+      node: (
+        <HoverText
+          text={backgroundSummary}
+          color={COLOR.dim}
+          hoverColor={COLOR.bright}
+          onClick={onBackgroundClick ?? (() => undefined)}
+        />
+      ),
+    });
+  }
   if (onCopyClick !== undefined) {
-    footerSegments.push({
+    candidates.push({
       key: "copy",
+      width: 6,
+      drop: 5,
       node: <HoverText text="⧉ copy" color={COLOR.dim} hoverColor={COLOR.bright} onClick={onCopyClick} />,
     });
   }
   if (onExternalEditClick !== undefined) {
-    footerSegments.push({
+    candidates.push({
       key: "external",
+      width: 10,
+      drop: 4,
       node: <HoverText text="✎ external" color={COLOR.dim} hoverColor={COLOR.bright} onClick={onExternalEditClick} />,
     });
   }
   if (running && onStopClick !== undefined) {
-    footerSegments.push({
+    candidates.push({
       key: "stop",
+      width: 6,
+      drop: 0,
       node: <HoverText text="■ stop" color={COLOR.danger} hoverColor={COLOR.bright} onClick={onStopClick} />,
     });
   }
+  // Card chrome: border 1, left padding 2, the draft column's right padding
+  // 1 and the scrollbar strip 1. The model group keeps two columns of air.
+  const footerRoom = width - 5;
+  const leftWidth =
+    model.length +
+    (effort === null || effort === undefined || effort.length === 0 ? 0 : effort.length + 3) +
+    (permission === null || permission === undefined || permission.length === 0 ? 0 : permission.length + 3) +
+    2;
+  const usedBy = (segments: typeof candidates) => segments.reduce((total, segment, index) => total + segment.width + (index === 0 ? 0 : 5), 0);
+  const fit = (room: number) => {
+    const kept = [...candidates];
+    while (kept.length > 0 && leftWidth + usedBy(kept) > room) {
+      const victim = kept.reduce((worst, segment) => (segment.drop > worst.drop ? segment : worst));
+      if (victim.drop === 0) break;
+      kept.splice(kept.indexOf(victim), 1);
+    }
+    return kept;
+  };
+  // Whatever does not fit goes behind a "⋯ more" control (which takes room
+  // of its own); the menu lists only the hidden segments, never the ones
+  // still visible in the footer (showing both is what duplicated `stop`).
+  const everything = fit(footerRoom);
+  const kept = everything.length === candidates.length ? everything : fit(footerRoom - MORE_WIDTH);
+  const keptKeys = new Set(kept.map((segment) => segment.key));
+  const overflow = candidates.filter((segment) => !keptKeys.has(segment.key));
+  const hidden = overflow.length > 0;
+  const menuShown = moreOpen && hidden && skillTrigger === null;
+  const footerSegments = hidden
+    ? [
+        ...kept,
+        {
+          key: "more",
+          width: MORE_WIDTH - 5,
+          drop: 0,
+          node: <HoverText text={menuShown ? "▾ more" : "⋯ more"} color={COLOR.dim} hoverColor={COLOR.bright} onClick={() => setMoreOpen((open) => !open)} />,
+        },
+      ]
+    : kept;
 
   // Focused border breathes sky→deeper-sky while a turn runs — subtle glow,
   // static otherwise. Gated internally so idle composers never re-render.
@@ -295,7 +551,35 @@ export function Composer({
     running && focused ? pulseColor(borderTick, SURFACE.borderFocus, "#0ea5e9", 2400) : focused ? SURFACE.borderFocus : SURFACE.border;
 
   return (
-    <box style={{ width, flexDirection: "column", flexShrink: 0, marginTop: flushTop === true ? 0 : 1 }}>
+    // Stacked above its siblings (tasks panel, banners, attachment strip):
+    // the popovers it floats over them (skills list, context card) are its
+    // own children, and a child's zIndex only orders it among its siblings.
+    <box style={{ width, flexDirection: "column", flexShrink: 0, marginTop: flushTop === true ? 0 : 1, zIndex: 20 }}>
+      {!menuShown ? null : (
+        // The overflow only, stacked just above the footer row and over the
+        // draft, right-aligned under the "more" control that opened it: a
+        // real card (full rounded frame) rather than a bare left-border
+        // strip, so it reads as a menu instead of stray text. Compact —
+        // one row per segment, no header or gaps — so it fits above the
+        // footer even in short frames.
+        <box
+          style={{ position: "absolute", right: 1, bottom: 3, flexDirection: "column", zIndex: 24, paddingLeft: 2, paddingRight: 2 }}
+          borderStyle="rounded"
+          borderColor={SURFACE.borderFocus}
+          backgroundColor={SURFACE.raised}
+        >
+          {overflow.map((segment) => (
+            <box
+              key={segment.key}
+              style={{ flexDirection: "row", height: 1, flexShrink: 0, justifyContent: "flex-start" }}
+              backgroundColor={SURFACE.raised}
+              onMouseDown={() => setMoreOpen(false)}
+            >
+              {segment.node}
+            </box>
+          ))}
+        </box>
+      )}
       {skillTrigger === null ? null : (
         // Floats just above the composer's own top edge (negative `top`
         // relative to this outer box) — Minecraft/slash-picker style, live
@@ -381,8 +665,9 @@ export function Composer({
         style={{
           flexDirection: "column",
           backgroundColor: SURFACE.raised,
+          // No right padding here: the draft's column keeps its own, and the
+          // scrollbar strip sits flush against the card's right edge.
           paddingLeft: 2,
-          paddingRight: 2,
           paddingTop: 1,
           paddingBottom: 1,
         }}
@@ -415,17 +700,22 @@ export function Composer({
             </text>
           </box>
         ) : (
-          <>
+          // The scrollbar strip spans the whole card at its right edge (like the
+          // timeline bar at the pane edge): content keeps its own right inset
+          // inside the column, the strip sits flush outside it.
+          <box style={{ flexDirection: "row", flexGrow: 1 }} backgroundColor={SURFACE.raised}>
+            <box style={{ flexDirection: "column", flexGrow: 1, paddingRight: 1 }}>
         <textarea
           ref={areaRef}
           focused={focused && !external}
-          placeholder={placeholder}
+          placeholder={offeredSuggestion === null ? placeholder : suggestionPlaceholder(offeredSuggestion, width)}
           textColor={COLOR.text}
           backgroundColor={SURFACE.raised}
           focusedBackgroundColor={SURFACE.raised}
           focusedTextColor={COLOR.bright}
           placeholderColor={COLOR.faint}
           wrapMode="word"
+          syntaxStyle={imageTokenStyle()}
           keyBindings={COMPOSER_KEY_BINDINGS}
           style={{ minHeight: MIN_COMPOSER_LINES, maxHeight: MAX_COMPOSER_LINES, backgroundColor: SURFACE.raised }}
           onContentChange={handleContentChange}
@@ -458,7 +748,26 @@ export function Composer({
               }
             }
             if (key.name === "escape") {
+              if (moreOpen) {
+                setMoreOpen(false);
+                return;
+              }
               onEscape();
+              return;
+            }
+            // Tab while a turn runs queues the draft behind it.
+            if (key.name === "tab" && key.shift !== true && running && onQueue !== undefined && (areaRef.current?.plainText ?? "").trim().length > 0) {
+              key.preventDefault();
+              onQueue();
+              return;
+            }
+            // Tab takes the suggestion into the (empty) draft, to send or edit.
+            if (key.name === "tab" && key.shift !== true && offeredSuggestion !== null) {
+              key.preventDefault();
+              areaRef.current?.setText(offeredSuggestion);
+              if (areaRef.current) areaRef.current.cursorOffset = offeredSuggestion.length;
+              localRef.current = offeredSuggestion;
+              onInput(offeredSuggestion);
               return;
             }
             // Alt+E opens the draft externally. `meta` is Alt; ctrl+E stays
@@ -523,7 +832,9 @@ export function Composer({
             </box>
           )}
         </box>
-          </>
+            </box>
+            <ComposerScrollbar areaRef={areaRef} />
+          </box>
         )}
       </box>
       {hideHint === true || external ? null : (

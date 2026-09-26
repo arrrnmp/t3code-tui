@@ -63,6 +63,7 @@ function group(overrides: Partial<TurnGroup> & { id: string }): TurnGroup {
     diff: null,
     proposedPlan: null,
     durationMs: 60_000,
+    waits: [],
     startedAt: "2026-09-16T02:00:00.000Z",
     ...overrides,
   };
@@ -233,14 +234,14 @@ describe("formatThreadExport", () => {
               id: "q-1",
               header: "Direction",
               question: "Which way?",
-              options: [{ label: "Forward", description: "keep going", value: null }],
+              options: [{ label: "Forward", description: "keep going", value: null, preview: null }],
               multiSelect: false,
               allowCustomAnswer: true,
             },
           ],
         },
       ],
-      contextUsage: { usedTokens: 10_000, maxTokens: 200_000, totalProcessedTokens: null, cachedInputTokens: null, compactsAutomatically: null, autoCompactThreshold: null },
+      contextUsage: { usedTokens: 10_000, maxTokens: 200_000, totalProcessedTokens: null, cachedInputTokens: null, compactsAutomatically: null, autoCompactThreshold: null, costUsd: null },
       exportedAt: "2026-09-16T03:00:00.000Z",
     });
     expect(markdown).toContain(longReply);

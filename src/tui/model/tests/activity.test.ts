@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
-import { describeActivity, fileRowCounts, formatMs, readRangeLabel } from "../activity.js";
+import { describeActivity, fileRowCounts, formatMs, readRangeLabel, setPathRoots } from "../activity.js";
 import type { ActivityEnvelope } from "../../../core/types.js";
 
 function activity(kind: string, payload: Record<string, unknown>): ActivityEnvelope {
@@ -717,7 +717,7 @@ describe("describeActivity", () => {
         data: { tool: "apply_patch", files: [{ path: "src/tui/app.tsx" }] },
       }),
     );
-    expect(patch).toMatchObject({ kind: "file", verb: "Update", path: "tui/app.tsx" });
+    expect(patch).toMatchObject({ kind: "file", verb: "Update", path: "src/tui/app.tsx" });
   });
 
   it("resolves Claude's snake_case file_path for provider-native Read and Write", () => {
@@ -775,7 +775,7 @@ describe("describeActivity", () => {
         data: {},
       }),
     );
-    expect(read).toMatchObject({ kind: "read", path: "tui/timeline.tsx" });
+    expect(read).toMatchObject({ kind: "read", path: "src/tui/timeline.tsx" });
 
     // No usable title: fall back to the absolute `<path>` tag.
     const untitled = describeActivity(
@@ -802,7 +802,7 @@ describe("describeActivity", () => {
         data: { input: { filePath: "C:/repo/src/tui/model/activity.ts", offset: 100, limit: 20 } },
       }),
     );
-    expect(ranged).toMatchObject({ kind: "read", path: "model/activity.ts", startLine: 100, endLine: 119 });
+    expect(ranged).toMatchObject({ kind: "read", path: "src/tui/model/activity.ts", startLine: 100, endLine: 119 });
 
     // Directory listings get their own header instead of an entries dump.
     const dir = describeActivity(
@@ -856,5 +856,29 @@ describe("formatMs", () => {
   it("formats seconds and minutes", () => {
     expect(formatMs(5500)).toBe("5.5s");
     expect(formatMs(125_000)).toBe("2m 5s");
+  });
+});
+
+describe("display paths", () => {
+  const read = (filePath: string) =>
+    describeActivity(
+      activity("tool.completed", {
+        itemType: "dynamic_tool_call",
+        toolCallId: "t",
+        status: "completed",
+        title: "Tool call",
+        data: { toolName: "Read", input: { file_path: filePath } },
+      }),
+    );
+  afterEach(() => setPathRoots([], null));
+
+  it("reads relative inside the thread's checkout, ~/ under home, never as a project file when it is not", () => {
+    setPathRoots([String.raw`C:\Users\me\code\moxen`], String.raw`C:\Users\me`);
+    expect(read(String.raw`C:\Users\me\code\moxen\src\app.tsx`)).toMatchObject({ path: "src/app.tsx" });
+    expect(read(String.raw`C:\Users\me\.claude\notes.md`)).toMatchObject({ path: "~/.claude/notes.md" });
+    expect(read(String.raw`C:\Users\me\.claude\projects\C--Users-me-code-moxen\memory\research-docs-first.md`)).toMatchObject({
+      path: "~/.claude/…/memory/research-docs-first.md",
+    });
+    expect(read(String.raw`D:\elsewhere\x.txt`)).toMatchObject({ path: "D:/elsewhere/x.txt" });
   });
 });

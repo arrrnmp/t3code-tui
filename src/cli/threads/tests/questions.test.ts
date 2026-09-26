@@ -26,6 +26,8 @@ class AskingDriver implements TurnDriver {
   private readonly sessions = new Set<string>();
   private readonly queue = Effect.runSync(Queue.unbounded<ProviderRuntimeEvent>());
   private release: (() => void) | null = null;
+  /** Answered before the runner began awaiting: a real driver keeps that, and so must this. */
+  private settled = false;
   answered: Record<string, string> | null = null;
   declined = false;
 
@@ -66,6 +68,7 @@ class AskingDriver implements TurnDriver {
   respondToUserInput(_threadId: string, _requestId: string, answers: Record<string, string>): Effect.Effect<void, CliError> {
     return Effect.sync(() => {
       this.answered = answers;
+      this.settled = true;
       this.release?.();
     });
   }
@@ -73,14 +76,17 @@ class AskingDriver implements TurnDriver {
   respondToRequest(): Effect.Effect<void, CliError> {
     return Effect.sync(() => {
       this.declined = true;
+      this.settled = true;
       this.release?.();
     });
   }
 
   async awaitTurn(): Promise<TurnOutcome> {
-    await new Promise<void>((resolve) => {
-      this.release = resolve;
-    });
+    if (!this.settled) {
+      await new Promise<void>((resolve) => {
+        this.release = resolve;
+      });
+    }
     return { status: "completed", text: "ok", usage: null, error: null };
   }
 
@@ -97,7 +103,8 @@ afterEach(async () => {
 });
 
 async function waitFor(label: string, check: () => Promise<boolean>): Promise<void> {
-  const deadline = Date.now() + 5000;
+  // Polls until the condition holds; the ceiling only matters under a loaded suite.
+  const deadline = Date.now() + 15_000;
   while (!(await check())) {
     if (Date.now() > deadline) throw new Error(`timed out waiting for ${label}`);
     await new Promise((resolve) => setTimeout(resolve, 20));

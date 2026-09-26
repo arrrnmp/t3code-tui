@@ -4,17 +4,21 @@
  * restore the pre-turn tree.
  *
  * Mechanics (all best-effort, never load-bearing for the turn itself):
- * - Capture with `git stash create <message>`: builds a commit object
- *   from tracked worktree+index state without touching either. Untracked
- *   files are not captured (documented gap — `git stash -u` would touch
- *   the worktree). Returns null outside git repos or when there is
- *   nothing to capture.
+ * - Capture through a throwaway copy of the index (`add --all`,
+ *   `write-tree`, `commit-tree`): a commit object holding the worktree as
+ *   it is, untracked files included (ignored ones not), with neither the
+ *   worktree nor the user's index touched. Null outside git repos.
  * - Each capture is pinned under `refs/moxen/checkpoints/<thread>/<turn>`
  *   so GC can prune per thread without touching user refs.
- * - Diff = `git diff <pre> <post>`; rollback = `git checkout <pre> -- .`
- *   (tracked files only, same untracked caveat).
+ * - Diff = `git diff <pre> <post>`; restore (`restoreWorktreeTo`) puts the
+ *   worktree back to a capture — deleting files created since — after
+ *   capturing the state it replaces, so a restore can itself be undone.
  */
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { copyFile, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
 import { APP_NAME } from "../config.js";
 
@@ -31,9 +35,9 @@ function sanitizeRefComponent(value: string): string {
 
 const GIT_TIMEOUT_MS = 30_000;
 
-async function runGit(cwd: string, args: ReadonlyArray<string>): Promise<{ stdout: string }> {
+async function runGit(cwd: string, args: ReadonlyArray<string>, env?: NodeJS.ProcessEnv): Promise<{ stdout: string }> {
   return await new Promise((resolve, reject) => {
-    const child = spawn("git", [...args], { cwd, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn("git", [...args], { cwd, stdio: ["ignore", "pipe", "pipe"], ...(env ? { env } : {}) });
     let stdout = "";
     let stderr = "";
     const timer = setTimeout(() => {
@@ -67,19 +71,46 @@ async function isGitRepository(cwd: string): Promise<boolean> {
   }
 }
 
+/** Checkpoints are moxen's own objects: they never need the user's git identity configured. */
+const CHECKPOINT_IDENTITY = {
+  GIT_AUTHOR_NAME: "moxen",
+  GIT_AUTHOR_EMAIL: "moxen@localhost",
+  GIT_COMMITTER_NAME: "moxen",
+  GIT_COMMITTER_EMAIL: "moxen@localhost",
+};
+
 /**
- * Capture tracked worktree+index state as an unreferenced commit object.
- * Returns the sha, or null when there is nothing to capture / no repo.
- * Never throws — callers treat null as "checkpoint unavailable".
+ * Capture the worktree as it is — tracked changes *and* untracked files
+ * (ignored ones excepted) — as an unreferenced commit object on top of HEAD.
+ * It goes through a throwaway copy of the index, so neither the worktree
+ * nor the user's own index (their staged changes) is touched; copying the
+ * real index keeps git's stat cache, so only changed files are hashed.
+ * Returns the sha, or null outside a git repo. Never throws — callers treat
+ * null as "checkpoint unavailable".
  */
 export async function captureWorktree(cwd: string, message: string): Promise<string | null> {
+  const scratch = path.join(os.tmpdir(), `moxen-index-${randomUUID()}`);
   try {
     if (!(await isGitRepository(cwd))) return null;
-    const { stdout } = await runGit(cwd, ["stash", "create", message]);
-    const sha = stdout.trim().split(/\s+/)[0] ?? "";
+    const head = await runGit(cwd, ["rev-parse", "--verify", "--quiet", "HEAD"]).then(
+      ({ stdout }) => stdout.trim() || null,
+      () => null,
+    );
+    const realIndex = path.resolve(cwd, (await runGit(cwd, ["rev-parse", "--git-path", "index"])).stdout.trim());
+    const env = { ...process.env, ...CHECKPOINT_IDENTITY, GIT_INDEX_FILE: scratch };
+    const copied = await copyFile(realIndex, scratch).then(
+      () => true,
+      () => false,
+    );
+    if (!copied && head !== null) await runGit(cwd, ["read-tree", head], env);
+    await runGit(cwd, ["add", "--all"], env);
+    const tree = (await runGit(cwd, ["write-tree"], env)).stdout.trim();
+    const sha = (await runGit(cwd, ["commit-tree", tree, ...(head !== null ? ["-p", head] : []), "-m", message], env)).stdout.trim();
     return /^[0-9a-f]{40}$/.test(sha) ? sha : null;
   } catch {
     return null;
+  } finally {
+    await rm(scratch, { force: true }).catch(() => undefined);
   }
 }
 
@@ -130,8 +161,9 @@ export async function diffCheckpointStat(
       .flatMap((line) => {
         const [added, deleted, ...rest] = line.split("\t");
         const filePath = rest.join("\t");
-        const additions = Number(added);
-        const deletions = Number(deleted);
+        // A binary file reads "-\t-": it changed, with no line counts.
+        const additions = added === "-" ? 0 : Number(added);
+        const deletions = deleted === "-" ? 0 : Number(deleted);
         if (!filePath || !Number.isFinite(additions) || !Number.isFinite(deletions)) return [];
         return [{ path: filePath, additions, deletions }];
       });
@@ -146,11 +178,45 @@ export async function diffCheckpointStat(
  * two-step). Returns false instead of throwing on failure.
  */
 export async function restoreWorktree(cwd: string, sha: string): Promise<boolean> {
+  return (await restoreWorktreeTo(cwd, sha)) !== null;
+}
+
+export interface WorktreeRestore {
+  /** Files the restore wrote back, recreated or deleted. */
+  readonly files: number;
+  /** A capture of the worktree as it was just before, to undo the restore by. */
+  readonly before: string;
+}
+
+/**
+ * Put the whole worktree back the way `sha` (a `captureWorktree` capture)
+ * recorded it: files changed or deleted since come back, files created since
+ * — untracked ones included — go. Ignored files are never touched, and
+ * neither is the user's index. The state just before is captured first and
+ * returned, so nothing this does is beyond undoing. Null when it could not
+ * run (no repo, unreadable capture); throws nothing.
+ */
+export async function restoreWorktreeTo(cwd: string, sha: string): Promise<WorktreeRestore | null> {
   try {
-    await runGit(cwd, ["checkout", sha, "--", "."]);
-    return true;
+    const before = await captureWorktree(cwd, `moxen: before restoring ${sha.slice(0, 12)}`);
+    if (before === null) return null;
+    const root = (await runGit(cwd, ["rev-parse", "--show-toplevel"])).stdout.trim();
+    const changed = (await runGit(root, ["diff", "--name-status", "--no-renames", sha, before])).stdout
+      .split("\n")
+      .map((line) => line.split("\t"))
+      .filter((parts): parts is [string, string] => parts.length >= 2 && parts[0]!.length > 0);
+    // Created since the capture: gone once restored.
+    for (const [status, file] of changed) {
+      if (status === "A") await rm(path.join(root, file), { force: true });
+    }
+    // Everything the capture holds, written back without touching the index.
+    const restorable = changed.filter(([status]) => status !== "A").map(([, file]) => file);
+    for (let index = 0; index < restorable.length; index += 100) {
+      await runGit(root, ["restore", `--source=${sha}`, "--worktree", "--", ...restorable.slice(index, index + 100)]);
+    }
+    return { files: changed.length, before };
   } catch {
-    return false;
+    return null;
   }
 }
 

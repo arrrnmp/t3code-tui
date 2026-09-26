@@ -1,3 +1,4 @@
+import os from "node:os";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CliRenderer, ScrollBoxRenderable } from "@opentui/core";
 import { TextAttributes } from "@opentui/core";
@@ -9,13 +10,17 @@ import { DiffPanel } from "../features/diffpanel/diffpanel.js";
 import { Composer } from "../features/composer/composer.js";
 import { useSkillInventory } from "../features/composer/useSkillInventory.js";
 import { TasksPanel } from "../features/taskspanel/taskspanel.js";
-import { AttachmentStrip } from "../ui/attachmentstrip.js";
+import { BackgroundTasksModal } from "../features/taskspanel/backgroundtasksmodal.js";
+import { SettingsModal } from "../features/settings/settingsmodal.js";
+import { GitTab } from "../features/gitpanel/gitpanel.js";
+import { useGitPanel } from "../features/gitpanel/useGitPanel.js";
+import { uiFromSnapshot, useSettings } from "../features/settings/useSettings.js";
 import { PickerModal, type PickerBody } from "../features/pickers/pickermodal.js";
 import { ModalShell } from "../ui/modalshell.js";
 import { RenameModal } from "../ui/renamemodal.js";
 import { AnswerPanel } from "../features/answerpanel/answerpanel.js";
 import { dispatchErrorMessage } from "../../core/errors.js";
-import type { ModelSelection, RuntimeMode } from "../../core/types.js";
+import type { ModelSelection, RuntimeMode, UiConfig } from "../../core/types.js";
 import { compatibleRuntimeMode } from "../../core/catalog/permissions.js";
 import { offerableModels, offerableProviders } from "../../core/catalog/summary.js";
 import {
@@ -28,7 +33,9 @@ import type { ImageAttachmentUpload } from "../../core/attachments.js";
 import { clipboardFileName } from "../model/hostClipboard.js";
 import { turnModelSelection } from "../model/display.js";
 import { formatContextUsage, formatTokenCount, groupTurns } from "../model/turns.js";
+import { waitSpans } from "../model/waits.js";
 import { markModalDismissed } from "../model/modalDismiss.js";
+import { setPathRoots } from "../model/activity.js";
 import { Sidebar } from "../features/sidebar/sidebar.js";
 import { MonitoringBackdrop } from "../ui/backdrop.js";
 import { LoadingScreen } from "../ui/loadingscreen.js";
@@ -36,21 +43,25 @@ import { bootLoadingStage, isBootReady } from "../model/readiness.js";
 import { HoverButton } from "../ui/hoverbutton.js";
 import { openExternal } from "../../core/infra/platformOpen.js";
 import { formatDuration } from "../model/turns.js";
-import { ContextUsageCard } from "../ui/contextusagecard.js";
 import { COLOR, MARKER, pulseColor, SPINNER, SURFACE, truncate } from "../theme.js";
 import { useToasts, type ToastTone } from "../hooks/useToasts.js";
 import { useClipboard } from "../hooks/useClipboard.js";
+import { useTerminalNotify } from "../hooks/useTerminalNotify.js";
 import { readPastedImage, type TerminalClipboardDeps } from "../model/terminalClipboard.js";
 import { useHover } from "../hooks/useHover.js";
 import {
   applyThreadFrame,
-  detectUsageLimit,
+  backgroundSummaryLabel,
+  backgroundTaskTitle,
   emptyThreadState,
   latestPlan,
   pendingUserInputRequests,
+  promptSuggestion,
   timeline,
+  untilLabel,
   resumeCompactionKey,
   shouldOfferResumeCompaction,
+  type BackgroundTaskRow,
   type ThreadState,
   type TimelineEntry,
 } from "../model/thread.js";
@@ -67,14 +78,25 @@ import {
 import { clock, scrollPane } from "./utils.js";
 import { useTasksPanel } from "../features/taskspanel/useTasksPanel.js";
 import { useQuitConfirm } from "./hooks/useQuitConfirm.js";
+import { useUsageLimitBanner } from "./hooks/useUsageLimitBanner.js";
+import { useNoticePager } from "./hooks/useNoticePager.js";
+import { NoticeBanner, Pager, type Notice } from "../ui/noticebanner.js";
+import { QueuedPanel } from "../features/queuedpanel/queuedpanel.js";
+import { SideQuestionModal } from "../features/btw/sidequestionmodal.js";
+import { parseSideQuestion, useSideQuestion } from "../features/btw/useSideQuestion.js";
+import { useQueuedPanel } from "../features/queuedpanel/useQueuedPanel.js";
+import { useThreadNotifications } from "./hooks/useThreadNotifications.js";
 import { useAnswerFlow } from "../features/answerpanel/useAnswerFlow.js";
 import { useSidebar } from "../features/sidebar/useSidebar.js";
 import { useDiffPanel } from "../features/diffpanel/useDiffPanel.js";
+import { ActionText, AgentsTab, BackgroundTab, ContextTab, DiffEmptyTab, SidePanelFrame, SideTabBar, TAB_LABEL as SIDE_TAB_LABEL } from "../features/sidepanel/sidepanel.js";
+import { useContextBreakdown, usePlanUsage, useSidePanel } from "../features/sidepanel/useSidePanel.js";
+import { agentThreads, effectiveContextBreakdown, nativeSubagents, planUsageGauges, type SideTab } from "../model/sidepanel.js";
 import { useComposer } from "../features/composer/useComposer.js";
 import { useProviderCatalog } from "../features/pickers/useProviderCatalog.js";
 import { useThreadCreation } from "./hooks/useThreadCreation.js";
 import { useThreadExport } from "./hooks/useThreadExport.js";
-import { useThreadOps } from "./hooks/useThreadOps.js";
+import { useThreadOps, type RevertKind } from "./hooks/useThreadOps.js";
 import type { PickerName } from "../features/pickers/pickerTypes.js";
 import type { ClientApi } from "../../server/api.js";
 
@@ -86,6 +108,7 @@ export function App({
   cwd,
   launchView,
   setTerminalTitle,
+  ui: launchUi,
 }: {
   client: ClientApi;
   onQuit: () => void;
@@ -99,11 +122,17 @@ export function App({
   launchView?: "create" | "thread";
   /** Wired to the renderer's own terminal-title API; omitted in tests. */
   setTerminalTitle?: (title: string) => void;
+  /**
+   * Presentation settings (`ui.*`), read once at launch. These change how
+   * the app draws rather than what it does, so unlike the rest of the
+   * config they are not re-read per operation — a restart applies them.
+   */
+  ui?: UiConfig;
 }) {
   const { width, height } = useTerminalDimensions();
   const [shell, setShell] = useState<ShellState>(emptyShellState);
   const [threadState, setThreadState] = useState<ThreadState>(emptyThreadState);
-  const { plan, tasksVisibleNow, toggleTasksVisible } = useTasksPanel(threadState);
+  const { plan, background, tasksVisibleNow, toggleTasksVisible } = useTasksPanel(threadState);
   const [focus, setFocus] = useState<"chat" | "composer" | "diff">("chat");
   const toasts = useToasts();
   /** Kept as the one call every existing error path already used; now routes
@@ -153,6 +182,11 @@ export function App({
     registerCtrlCPress,
   } = useQuitConfirm(setFocus);
   const [picker, setPicker] = useState<PickerName>(null);
+  // Reads on open and writes through the server; see `useSettings`. The
+  // snapshot outlives the page, so once it exists the app draws from it:
+  // a `ui.*` edit applies on the spot instead of after a restart.
+  const settings = useSettings(client, picker === "settings");
+  const ui = uiFromSnapshot(settings.snapshot) ?? launchUi;
   const [pickerFilter, setPickerFilter] = useState("");
   /** Where esc/backdrop returns focus after the command palette closes. */
   const [paletteReturnFocus, setPaletteReturnFocus] = useState<"chat" | "composer" | "diff">("chat");
@@ -167,7 +201,7 @@ export function App({
   /** The user turn the message-actions modal acts on (a PromptBlock click). */
   const [messageActionEntry, setMessageActionEntry] = useState<TimelineEntry | null>(null);
   /** Revert two-step confirm inside the message-actions modal. */
-  const [revertArmed, setRevertArmed] = useState(false);
+  const [revertArmed, setRevertArmed] = useState<RevertKind | false>(false);
   /** Bumped to tear down and re-establish the thread subscription for a
       fresh snapshot (our projector can't consume removal events). */
   const [threadResync, setThreadResync] = useState(0);
@@ -185,7 +219,6 @@ export function App({
     toggleAnswerOption,
     dismissAnswerRequest,
   } = useAnswerFlow(client, threadState, threadStateRef, openThreadId, picker, toasts, setError);
-  const [contextCardOpen, setContextCardOpen] = useState(false);
   /** Dismissal key of the last-dismissed resume-compaction banner — a new
       context snapshot reopens it even if an earlier one was dismissed. */
   const [dismissedResumeKey, setDismissedResumeKey] = useState<string | null>(null);
@@ -272,6 +305,12 @@ export function App({
   const selected = useMemo(
     () => shell.threads.find((thread) => thread.id === openThreadId) ?? null,
     [shell.threads, openThreadId],
+  );
+  // Rows show paths relative to where this thread's files live. Set during
+  // render (it is idempotent) so the first frame of a thread already has it.
+  setPathRoots(
+    [selected?.worktreePath, shell.projects.find((project) => project.id === selected?.projectId)?.workspaceRoot],
+    homeDir ?? os.homedir(),
   );
   /**
    * Boot gate: the app chrome stays hidden behind `<LoadingScreen>` until the
@@ -362,7 +401,10 @@ export function App({
   const entries = useMemo(() => timeline(threadState), [threadState]);
   /** Turn groups own the scroll math: the diff-turn picker resolves a picked
       turn to a group index and jumps the chat pane to it. */
-  const groups = useMemo(() => groupTurns(entries), [entries]);
+  // Waits on the user (questions, permission prompts) come off the raw
+  // activities: their closing rows are bookkeeping the transcript hides.
+  const turnWaits = useMemo(() => waitSpans(threadState.activities), [threadState.activities]);
+  const groups = useMemo(() => groupTurns(entries, turnWaits), [entries, turnWaits]);
   const diffPanel = useDiffPanel({
     client,
     width,
@@ -378,6 +420,8 @@ export function App({
     setFocus,
     setError,
   });
+  /** The right-hand panel: the Diff tab follows the diff panel, the others open here. */
+  const sidePanel = useSidePanel(diffPanel.expandedTurn !== null);
   const {
     deleteThread,
     toggleSettleThread,
@@ -427,6 +471,16 @@ export function App({
    */
   const exportPlan = useMemo(() => latestPlan(threadState), [threadState]);
   const exportPending = useMemo(() => pendingUserInputRequests(threadState), [threadState]);
+  const suggestedPrompt = useMemo(() => promptSuggestion(threadState), [threadState]);
+  const notify = useTerminalNotify(renderer);
+  useThreadNotifications({
+    threads: shell.threads,
+    openThreadId,
+    openThreadTitle: selected?.title ?? null,
+    pendingQuestions: exportPending.length,
+    pushToast: toasts.push,
+    notify,
+  });
   const exportProject = useMemo(() => {
     const project = shell.projects.find((candidate) => candidate.id === selected?.projectId) ?? null;
     if (project === null) return null;
@@ -491,13 +545,22 @@ export function App({
     setTimeout(() => diffPanel.scrollTimelineToTurn(turnCount), 60);
   };
 
-  const dispatchTurn = (prompt: string, attachments: ImageAttachmentUpload[]) => {
+  /**
+   * While a turn runs, a message either steers it (lands at its next step —
+   * Claude's `next` priority) or queues behind it (runs once it ends — its
+   * `later`). Idle, it simply starts a turn.
+   */
+  const dispatchTurn = (prompt: string, attachments: ImageAttachmentUpload[], busyDelivery: "steer" | "queue") => {
     if (selected === null) return;
     void client
       .dispatch({
         type: "thread.turn.start",
         threadId: selected.id,
         message: { text: prompt, attachments },
+        ...(sessionRunningRef.current ? { delivery: busyDelivery } : {}),
+      })
+      .then(() => {
+        if (sessionRunningRef.current && busyDelivery === "queue") toasts.push("queued", "info", "Queued: sent once this turn fully finishes (see Queued, above)", COPY_TOAST_MS);
       })
       .catch((cause: unknown) => setError(String(cause).slice(0, 120)));
   };
@@ -507,9 +570,22 @@ export function App({
    * with anything pasted off the clipboard. The draft stays put when a file
    * cannot be read so the prompt is never eaten by a failed attach.
    */
-  const send = (text: string) => {
+  const send = (text: string, busyDelivery: "steer" | "queue" = "steer") => {
     const trimmed = text.trim();
     if (trimmed.length === 0 || selected === null) return;
+    // `/btw` never reaches the thread: it is answered on a copy of the
+    // context, so it must not wake a settled thread or queue behind a turn.
+    const side = parseSideQuestion(trimmed);
+    if (side !== null) {
+      if (side.length === 0) {
+        if (!sideQuestion.reopen()) toasts.push("btw", "info", "Usage: /btw <question> — asks without adding to the thread", COPY_TOAST_MS);
+      } else if (sideQuestion.ask(side)) {
+        resetDraft(selected.id);
+      } else {
+        toasts.push("btw", "warn", "A side question is still being answered", COPY_TOAST_MS);
+      }
+      return;
+    }
     // A settled thread wakes on send: unsettle first so the turn lands on a
     // live thread instead of dispatching into a finished one. The toast says
     // what happened; a rejection surfaces as an error and the draft is kept.
@@ -519,7 +595,7 @@ export function App({
         .dispatch({ type: "thread.unsettle", threadId: id, reason: "user" as const })
         .then(() => {
           toasts.push("thread-unsettled", "info", "Thread unsettled", COPY_TOAST_MS);
-          send(text);
+          send(text, busyDelivery);
         })
         .catch((cause: unknown) => setError(String(cause).slice(0, 120)));
       return;
@@ -528,7 +604,7 @@ export function App({
     const parsed = extractMentions(trimmed);
     if (parsed.paths.length === 0 && pending.length === 0) {
       resetDraft(sourceId);
-      dispatchTurn(trimmed, []);
+      dispatchTurn(trimmed, [], busyDelivery);
       return;
     }
     void buildImageAttachments(parsed.paths, cwd ?? process.cwd()).then((built) => {
@@ -538,7 +614,7 @@ export function App({
       }
       resetDraft(sourceId);
       writePending(sourceId, []);
-      dispatchTurn(parsed.text, [...pending, ...built.attachments]);
+      dispatchTurn(parsed.text, [...pending, ...built.attachments], busyDelivery);
     });
   };
 
@@ -550,6 +626,9 @@ export function App({
    * that crosses SSH), then the host OS clipboard, then a session-aware
    * error. See `model/terminalClipboard.ts` for the protocol details.
    */
+  /** An image's token was deleted from the draft: it no longer goes with the message. */
+  const detachImage = (name: string) => setPending((current) => current.filter((attachment) => attachment.name !== name));
+
   const pasteImage = () => {
     setFocus("composer");
     const withRenderer = renderer as unknown as {
@@ -626,6 +705,11 @@ export function App({
     if (picker !== null) {
       return;
     }
+    // The same for the modals opened outside the picker (a side answer,
+    // a forge prompt): they own their keys while they are up.
+    if (sideQuestion.open || forgePrompt !== null) {
+      return;
+    }
     // The inline answer panel owns its keys exactly like a modal does.
     if (answerVisible) {
       return;
@@ -693,15 +777,14 @@ export function App({
       return;
     }
     if (focus === "diff") {
-      // Escape always closes the diff, even mid-turn: it must never stop the
-      // thread as a side effect. Stopping a turn is UI-only now (the
+      // Escape always closes the side panel, even mid-turn: it must never
+      // stop the thread as a side effect. Stopping a turn is UI-only now (the
       // composer's stop button), never a key.
       if (key.name === "escape") {
-        diffPanel.closeDiff();
-        setFocus("chat");
+        closeSidePanel();
         return;
       }
-      scrollPane(diffScrollRef.current, key.name);
+      scrollPane(sidePanel.tab === "diff" && diffPanel.expandedTurn !== null ? diffScrollRef.current : sidePanel.scrollRef.current, key.name);
       return;
     }
     // Escape in the chat pane is a no-op: it must never kill a running turn.
@@ -737,21 +820,25 @@ export function App({
     scrollPane(chatScrollRef.current, key.name);
   });
 
-  const usageLimit = useMemo(() => detectUsageLimit(threadState), [threadState]);
-  useEffect(() => {
-    if (usageLimit === null) {
-      toasts.dismiss("usage");
-      return;
-    }
-    toasts.push(
-      "usage",
-      "danger",
-      `blocked - ${usageLimit.rateLimitType ?? "quota"} resets ${
-        usageLimit.resetsAt === null ? "unknown" : clock(usageLimit.resetsAt.toISOString())
-      }`,
-    );
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [usageLimit]);
+  // Stopped by a plan usage limit: a banner over the composer says when it
+  // resets and offers (or shows) the continue for then.
+  const usageBanner = useUsageLimitBanner({ client, threadState, openThreadId, now, setError, openThread: setOpenThreadId });
+  const queued = useQueuedPanel({ client, threadState, threadId: openThreadId, setError });
+  const sideQuestion = useSideQuestion(client, openThreadId);
+  // Tasks and Queued share the slot over the composer and page like the
+  // notices below them, rather than stacking and eating the chat's rows.
+  // Queued comes first: the pager resets to the first pane whenever the set
+  // changes, so queueing a message shows it rather than staying on Tasks.
+  const dockPanes = [
+    ...(queued.items.length > 0 ? (["queued"] as const) : []),
+    ...(tasksVisibleNow && plan !== null ? (["tasks"] as const) : []),
+  ];
+  const dockPager = useNoticePager(dockPanes);
+  const dockPane = dockPanes[Math.min(dockPager.index, dockPanes.length - 1)] ?? null;
+  const dockPagerControl =
+    dockPanes.length > 1 ? (
+      <Pager position={dockPanes.indexOf(dockPane!)} count={dockPanes.length} onPage={dockPager.setIndex} />
+    ) : undefined;
   const session = threadState.session;
   const sessionRunning = session?.status === "running" || session?.status === "starting";
   sessionRunningRef.current = sessionRunning;
@@ -793,6 +880,16 @@ export function App({
       })
       .catch((cause: unknown) => setError(String(cause).slice(0, 120)));
     return true;
+  };
+
+  /** Stops one background task; shared by the command palette and the background-tasks browser. */
+  const stopBackgroundTask = (task: BackgroundTaskRow): void => {
+    const threadId = selected?.id;
+    if (!threadId) return;
+    void client
+      .dispatch({ type: "thread.background.stop", threadId, taskId: task.taskId })
+      .then(() => toasts.push("background-stop", "info", `Stopped: ${backgroundTaskTitle(task)}`, COPY_TOAST_MS))
+      .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)));
   };
 
   /** Opens the command palette, remembering where esc should return focus. */
@@ -843,20 +940,118 @@ export function App({
   }, [sessionRunning]);
   const contextUsageDisplay = threadState.contextUsage === null ? null : formatContextUsage(threadState.contextUsage);
 
+  // -- side panel (Diff / Agents / Context / Background) --------------------
+  const sidePanelOpen = sidePanel.tab !== null && !creating;
+  const turnKey = `${selected?.latestTurn?.turnId ?? ""}:${selected?.latestTurn?.state ?? ""}`;
+  const currentProvider = providers?.find((candidate) => candidate.instanceId === effectiveModelSelection?.instanceId) ?? null;
+  const planUsage = usePlanUsage(
+    client,
+    turnKey,
+    ui?.usageRefreshSeconds === undefined ? undefined : ui.usageRefreshSeconds * 1000,
+  );
+  const threadUsageLimits = currentProvider === null ? null : (planUsage[currentProvider.driver] ?? currentProvider.usageLimits);
+  const planGauges = planUsageGauges(threadUsageLimits);
+  const contextBreakdown = useContextBreakdown(
+    client,
+    openThreadId,
+    sidePanelOpen && sidePanel.tab === "context",
+    turnKey,
+    ui?.contextRefreshSeconds === undefined ? undefined : ui.contextRefreshSeconds * 1000,
+  );
+  // A total-only reading (Claude's summary without categories, or no live
+  // session) still shows what fills the window: the transcript estimate.
+  const effectiveBreakdown = useMemo(
+    () => effectiveContextBreakdown(contextBreakdown.breakdown, threadState.contextUsage, threadState.messages, threadState.activities),
+    [contextBreakdown.breakdown, threadState.contextUsage, threadState.messages, threadState.activities],
+  );
+  const contextLive = contextBreakdown.live && (contextBreakdown.breakdown?.categories.length ?? 0) > 0;
+  const agentRows = useMemo(() => agentThreads(shell.threads, openThreadId, now), [shell.threads, openThreadId, now]);
+  const subagentRows = useMemo(() => nativeSubagents(threadState.activities), [threadState.activities]);
+  const diffTurns = threadState.checkpoints.filter((row) => row.files.length > 0);
+  const runningAgents = agentRows.filter((agent) => agent.status === "running").length + subagentRows.filter((agent) => agent.running).length;
+  const sideBadges: Partial<Record<SideTab, string | null>> = {
+    diff: diffTurns.length > 0 ? String(diffTurns.length) : null,
+    agents: runningAgents > 0 ? String(runningAgents) : agentRows.length + subagentRows.length > 0 ? String(agentRows.length + subagentRows.length) : null,
+    context: contextUsageDisplay?.percent == null ? null : `${contextUsageDisplay.percent}%`,
+    background: background.length > 0 ? String(background.length) : null,
+  };
+  /**
+   * One tab at a time: leaving Diff closes the open diff (so a later diff-row
+   * click opens rather than toggles a hidden one), and the Diff tab with
+   * nothing open shows the latest turn that changed files. Also remembers
+   * the tab for the timeline's reopen button (which is how the Agents tab —
+   * the only one with no other opener — gets opened).
+   */
+  const [lastSideTab, setLastSideTab] = useState<SideTab>(ui?.defaultSidePanel ?? "context");
+  const showSideTab = (tab: SideTab) => {
+    markModalDismissed();
+    setLastSideTab(tab);
+    if (tab === "diff") {
+      if (diffPanel.expandedTurn === null) {
+        const latest = diffTurns.reduce((max, row) => Math.max(max, row.checkpointTurnCount), -1);
+        if (latest >= 0) {
+          diffPanel.openDiff(latest);
+          return;
+        }
+      }
+      sidePanel.open("diff");
+      setFocus("diff");
+      return;
+    }
+    if (diffPanel.expandedTurn !== null) diffPanel.closeDiff();
+    sidePanel.open(tab);
+    setFocus("diff");
+  };
+  const closeSidePanel = () => {
+    markModalDismissed();
+    if (diffPanel.expandedTurn !== null) diffPanel.closeDiff();
+    sidePanel.close();
+    setFocus("chat");
+  };
+  const toggleSideTab = (tab: SideTab) => {
+    if (sidePanelOpen && sidePanel.tab === tab) closeSidePanel();
+    else showSideTab(tab);
+  };
+  const openThreadFromPanel = (threadId: string) => {
+    setCreating(false);
+    setPicker(null);
+    setPickerFilter("");
+    setOpenThreadId(threadId);
+  };
+  const submitNudge = (text: string) => {
+    const target = sidePanel.nudgeTarget;
+    const trimmed = text.trim();
+    setPicker(null);
+    sidePanel.setNudgeTarget(null);
+    if (target === null || trimmed.length === 0) return;
+    // A running agent takes the nudge at its next step; an idle one starts a turn on it.
+    const running = agentRows.some((agent) => agent.threadId === target.threadId && agent.status === "running");
+    void client
+      .dispatch({
+        type: "thread.turn.start",
+        threadId: target.threadId,
+        message: { text: trimmed },
+        wakeSettled: true,
+        ...(running ? { delivery: "steer" as const } : {}),
+      })
+      .then(() => toasts.push("agent-nudge", "info", `Nudged: ${truncate(target.title, 40)}`, COPY_TOAST_MS))
+      .catch((cause: unknown) => setError(String(cause).slice(0, 120)));
+  };
+
   // Pane-OUTER width (borders included): the composer, tasks, and answer
   // panels fill this exact slot edge-to-edge. Inner text budgets subtract
   // their own chrome from it below — never shrink the slot itself, or the
   // raised panels end short of the pane edge.
   const chatWidth = Math.max(
     20,
-    width - SIDEBAR_WIDTH - (diffPanel.expandedTurn === null ? 0 : diffPanel.diffWidth) - CHAT_GUTTER * 2,
+    width - SIDEBAR_WIDTH - (sidePanelOpen ? diffPanel.diffWidth : 0) - CHAT_GUTTER * 2,
   );
   /** Toasts stay entirely inside one pane's own bounds, with a 1-col margin:
-      the diff panel's while it is open, the chat/timeline pane's otherwise —
+      the side panel's while it is open, the chat/timeline pane's otherwise —
       never floating over the sidebar or straddling panes. */
   const toastGeometry = useMemo(() => {
     const chatLeft = SIDEBAR_WIDTH + CHAT_GUTTER;
-    const diffLeft = diffPanel.expandedTurn === null ? null : chatLeft + chatWidth;
+    const diffLeft = sidePanelOpen ? chatLeft + chatWidth : null;
     const paneLeft = diffLeft ?? chatLeft;
     const paneWidth = diffLeft === null ? chatWidth : diffPanel.diffWidth;
     const paneRight = paneLeft + paneWidth;
@@ -865,7 +1060,7 @@ export function App({
       left: Math.max(paneLeft + TOAST_INSET, paneRight - TOAST_INSET - toastWidth),
       width: toastWidth,
     };
-  }, [chatWidth, diffPanel.diffWidth, diffPanel.expandedTurn]);
+  }, [chatWidth, diffPanel.diffWidth, sidePanelOpen]);
   const projectTitle =
     shell.projects.find((project) => project.id === effectiveProjectId)?.title ?? "this project";
 
@@ -881,13 +1076,65 @@ export function App({
     !shouldOfferResumeCompaction(threadState, effectiveModelSelection?.instanceId, now)
       ? null
       : { key: resumeKey, usedTokens: threadState.contextUsage?.usedTokens ?? 0 };
-  const renderAttachmentStrip = (spacedTop: boolean) => (
-    <AttachmentStrip
-      attachments={pending}
-      onRemove={(index) => setPending((current) => current.filter((_, position) => position !== index))}
-      spacedTop={spacedTop}
-    />
-  );
+  /** What waits over the composer, most urgent first; the banner pages between them. */
+  const notices: Notice[] = [];
+  if (usageBanner.banner !== null) {
+    const banner = usageBanner.banner;
+    notices.push({
+      key: "usage",
+      glyph: "◔",
+      glyphColor: banner.wrapUp ? COLOR.warn : COLOR.danger,
+      title: "Usage limit reached",
+      tags: [
+        ...(banner.wrapUp ? [{ text: "wrapping up", color: COLOR.warn }] : []),
+        ...(banner.windowLabel === null ? [] : [{ text: `${banner.windowLabel} limit`, color: COLOR.dim }]),
+      ],
+      detail:
+        banner.continueAt !== null ? (
+          <>
+            <text fg={COLOR.dim} selectable={false}>{"  Continues at "}</text>
+            <text fg={COLOR.warn} selectable={false}>{clock(banner.continueAt)}</text>
+            <text fg={COLOR.faint} selectable={false}>{` (${untilLabel(new Date(banner.continueAt), now)})`}</text>
+            <text fg={COLOR.dim} selectable={false}>{", once the limit has reset"}</text>
+          </>
+        ) : banner.resetsAt === null ? (
+          <text fg={COLOR.dim} selectable={false}>{"  Resets when the provider allows"}</text>
+        ) : (
+          <>
+            <text fg={COLOR.dim} selectable={false}>{"  Resets at "}</text>
+            <text fg={COLOR.warn} selectable={false}>{clock(banner.resetsAt.toISOString())}</text>
+            <text fg={COLOR.faint} selectable={false}>{` (${untilLabel(banner.resetsAt, now)})`}</text>
+          </>
+        ),
+      actions:
+        banner.continueAt !== null
+          ? [{ label: "Cancel continue", fg: COLOR.dim, hoverFg: COLOR.text, onClick: usageBanner.cancelContinue }]
+          : [
+              // Short labels on purpose: the three actions share one row with
+              // the title, and a longer pair pushed Dismiss off the edge.
+              // Read together: continue [at reset | in a new thread].
+              ...(banner.resetsAt === null ? [] : [{ label: "Continue at reset", fg: COLOR.accent, onClick: usageBanner.scheduleContinue }]),
+              // A fresh context instead of resuming a long one: the handoff
+              // carries the work, and waits for the reset if it has not come.
+              { label: "In a new thread", fg: COLOR.accent, onClick: usageBanner.continueInNewThread },
+              { label: "Dismiss", fg: COLOR.dim, hoverFg: COLOR.text, onClick: usageBanner.dismiss },
+            ],
+    });
+  }
+  if (resumeBanner !== null) {
+    notices.push({
+      key: "resume",
+      glyph: "◈",
+      glyphColor: COLOR.warn,
+      title: "Resume with less context",
+      detail: <text fg={COLOR.dim} selectable={false}>{`  ${formatTokenCount(resumeBanner.usedTokens)} tokens from earlier`}</text>,
+      actions: [
+        { label: "Compact", fg: COLOR.accent, onClick: () => compactSession(() => setDismissedResumeKey(resumeBanner.key)) },
+        { label: "Keep full history", fg: COLOR.dim, hoverFg: COLOR.text, onClick: () => setDismissedResumeKey(resumeBanner.key) },
+      ],
+    });
+  }
+  const noticePager = useNoticePager(notices.map((notice) => notice.key));
 
   /**
    * Modal bodies: the model list across providers plus a provider shortcut
@@ -924,6 +1171,23 @@ export function App({
                   copyPaletteText(entry.text, "nothing to copy");
                 },
               },
+              // A message still waiting can be taken back before it runs.
+              ...(entry.queued !== undefined && entry.turnId !== null && openThreadId !== null
+                ? [
+                    {
+                      key: "message:cancel",
+                      label: entry.queued.scheduledFor === null ? "Cancel queued message" : "Cancel scheduled message",
+                      onPick: () => {
+                        closePicker("chat");
+                        const turnId = entry.turnId!;
+                        void client
+                          .dispatch({ type: "thread.turn.interrupt", threadId: openThreadId, turnId })
+                          .then(() => toasts.push("queued-cancel", "info", "Message cancelled", 2500))
+                          .catch((cause: unknown) => setError(String(cause).slice(0, 120)));
+                      },
+                    },
+                  ]
+                : []),
               revertTarget === null
                 ? {
                     key: "message:revert",
@@ -934,9 +1198,27 @@ export function App({
                   }
                 : {
                     key: "message:revert",
-                    label: revertArmed ? "Confirm revert" : "Revert to before this turn",
-                    ...(revertArmed ? { meta: "enter again to confirm · keeps files" } : {}),
-                    onPick: () => revertMessageTurn(entry, revertTarget),
+                    label: revertArmed === "conversation" ? "Confirm revert" : "Revert to before this turn",
+                    meta: revertArmed === "conversation" ? "enter again to confirm · keeps files" : "conversation only",
+                    onPick: () => revertMessageTurn(entry, revertTarget, "conversation"),
+                  },
+              // The files too, from the snapshot taken before this turn ran.
+              revertTarget === null || checkpoint?.status !== "available"
+                ? {
+                    key: "message:revert-files",
+                    label: "Revert conversation and files",
+                    meta: revertTarget === null ? revertMissingMeta : "no file snapshot for this turn",
+                    disabled: true,
+                    onPick: () => {},
+                  }
+                : {
+                    key: "message:revert-files",
+                    label: revertArmed === "files" ? "Confirm revert with files" : "Revert conversation and files",
+                    meta:
+                      revertArmed === "files"
+                        ? "enter again to confirm · files go back to before this turn"
+                        : "files back to before this turn, new ones removed",
+                    onPick: () => revertMessageTurn(entry, revertTarget, "files"),
                   },
             ],
           },
@@ -1051,6 +1333,26 @@ export function App({
                   ? { meta: "no turns yet", disabled: true, onPick: () => {} }
                   : { onPick: compactSession }),
               },
+              ...(background.length === 0
+                ? []
+                : [
+                    {
+                      key: "background:browse",
+                      label: "View background tasks",
+                      meta: `${background.length} running`,
+                      onPick: () => setPicker("background-tasks"),
+                    },
+                  ]),
+              // One row per background task running in the session.
+              ...background.map((task) => ({
+                key: `background:stop:${task.taskId}`,
+                label: `Stop background: ${backgroundTaskTitle(task)}`,
+                meta: task.taskType === "local_agent" ? "agent" : "shell",
+                onPick: () => {
+                  closePicker("chat");
+                  stopBackgroundTask(task);
+                },
+              })),
               deleteSupported
                 ? {
                     key: "thread:delete",
@@ -1068,6 +1370,18 @@ export function App({
             ],
           },
           {
+            header: "Panels",
+            rows: (["diff", "git", "context", "agents", "background"] as const).map((tab) => ({
+              key: `panel:${tab}`,
+              label: `${sidePanelOpen && sidePanel.tab === tab ? "Hide" : "Show"} ${SIDE_TAB_LABEL[tab]} panel`,
+              ...(sideBadges[tab] == null ? {} : { meta: sideBadges[tab]! }),
+              onPick: () => {
+                closePicker("chat");
+                toggleSideTab(tab);
+              },
+            })),
+          },
+          {
             header: "Export",
             rows: [
               {
@@ -1076,6 +1390,21 @@ export function App({
                 ...(entries.length === 0
                   ? { meta: "no turns yet", disabled: true, onPick: () => {} }
                   : { meta: `${groups.length} turn${groups.length === 1 ? "" : "s"}`, onPick: exportThread }),
+              },
+              {
+                key: "thread:continue",
+                label: "Continue in a new thread",
+                // Same project, model and checkout; a handoff written from
+                // this thread. Held for the reset while a usage limit stands.
+                ...(entries.length === 0
+                  ? { meta: "no turns yet", disabled: true, onPick: () => {} }
+                  : {
+                      meta: usageBanner.banner?.resetsAt ? "after the reset" : "fresh context",
+                      onPick: () => {
+                        closePicker("chat");
+                        usageBanner.continueInNewThread();
+                      },
+                    }),
               },
             ],
           },
@@ -1241,8 +1570,27 @@ export function App({
       ],
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [picker, providers, providersError, effectiveModelSelection, effectiveRuntimeMode, permissionChoices, creating, deleteArmed, deleteSupported, revertArmed, answerDraft]);
+  }, [picker, providers, providersError, effectiveModelSelection, effectiveRuntimeMode, permissionChoices, creating, deleteArmed, deleteSupported, revertArmed, answerDraft, background]);
 
+  /** Wider and taller than a picker: the task browser shows commands and live output. */
+  /**
+   * The Git tab's write prompts. A forge write is outward-facing, so the
+   * tab never dispatches one directly — it asks for this, and the answer
+   * is what gets sent.
+   */
+  const [forgePrompt, setForgePrompt] = useState<{ kind: "create" } | { kind: "comment"; number: number } | null>(null);
+  // Local history and the forge, read only while the Git tab is showing.
+  const gitPanel = useGitPanel(client, selected?.id ?? null, sidePanel.tab === "git");
+  const backgroundGeometry = useMemo(() => {
+    const panelWidth = Math.min(100, Math.max(30, width - 8));
+    const panelHeight = Math.min(32, Math.max(10, height - 4));
+    return {
+      width: panelWidth,
+      height: panelHeight,
+      left: Math.max(0, Math.floor((width - panelWidth) / 2)),
+      top: Math.max(0, Math.floor((height - panelHeight) / 2)),
+    };
+  }, [width, height]);
   const pickerGeometry = useMemo(() => {
     const panelWidth = Math.min(64, Math.max(30, width - 6));
     const panelHeight = Math.min(24, Math.max(10, height - 6));
@@ -1331,7 +1679,8 @@ export function App({
    * would swallow them into the draft and keep blinking. Closing restores
    * focus via closePicker's explicit target.
    */
-  const composerFocused = focus === "composer" && picker === null && !quitConfirmOpen;
+  const composerFocused =
+    focus === "composer" && picker === null && !quitConfirmOpen && !sideQuestion.open && forgePrompt === null;
   /**
    * Inline answer panel for the pending agent question, rendered in place
    * of the composer (both slots below). Render-time closures, so picks and
@@ -1396,6 +1745,12 @@ export function App({
           onToggleProject={toggleSidebarProject}
           onCycleProject={cycleSidebarProject}
           onNewThread={startNewThread}
+          panelsOpen={sidePanelOpen}
+          onTogglePanels={() => (sidePanelOpen ? closeSidePanel() : showSideTab(lastSideTab))}
+          onOpenSettings={() => {
+            setPickerFilter("");
+            setPicker("settings");
+          }}
         />
         {creating ? (
           <box
@@ -1414,13 +1769,16 @@ export function App({
                 screen with the sidebar's — one lattice, one swarm.
                 Foreground column sits above at zIndex 1 with its own opaque
                 surfaces so text never seams. */}
-            <MonitoringBackdrop
-              width={Math.max(0, width - SIDEBAR_WIDTH)}
-              height={height}
-              offsetX={SIDEBAR_WIDTH}
-              fieldWidth={width}
-              fieldHeight={height}
-            />
+            {ui?.backdrop === "off" ? null : (
+              <MonitoringBackdrop
+                width={Math.max(0, width - SIDEBAR_WIDTH)}
+                height={height}
+                offsetX={SIDEBAR_WIDTH}
+                fieldWidth={width}
+                fieldHeight={height}
+                motion={ui?.backdrop === "static" ? "static" : "animated"}
+              />
+            )}
             {/* Explicit max-width column: alignItems:center shrink-wraps
                 children, so the composer needs its own width instead of
                 stretching like it does in the thread view. */}
@@ -1442,7 +1800,6 @@ export function App({
                 >{projectTitle}</text>
                 <text fg={COLOR.bright} selectable={false} onMouseDown={openProjectPicker}>{"?"}</text>
               </box>
-              {renderAttachmentStrip(true)}
               {answerVisible ? (
                 renderAnswerPanel(Math.min(76, Math.max(40, width - SIDEBAR_WIDTH - 8)))
               ) : (
@@ -1459,7 +1816,8 @@ export function App({
                 modelColor={modelColor}
                 effort={effort}
                 permission={permission}
-                flushTop={pending.length > 0}
+                attachments={pending.map((attachment) => attachment.name)}
+                onAttachmentRemoved={detachImage}
                 submitVerb="creates"
                 running={false}
                 width={Math.min(76, Math.max(40, width - SIDEBAR_WIDTH - 8))}
@@ -1525,51 +1883,29 @@ export function App({
               <text fg={COLOR.dim} selectable={false}>{"loading transcript…"}</text>
             </box>
           )}
-          {/* One blank row between each visible bottom block: every block
-              below carries marginTop 1 and nothing else adds gaps. */}
-          {tasksVisibleNow && plan !== null ? <TasksPanel plan={plan} width={chatWidth} /> : null}
-          {renderAttachmentStrip(tasksVisibleNow)}
-          {resumeBanner === null ? null : (
-            <box
-              style={{
-                flexDirection: "column",
-                flexShrink: 0,
-                marginTop: 1,
-                paddingLeft: 2,
-                paddingRight: 2,
-                paddingTop: 1,
-                paddingBottom: 1,
-              }}
-              border={["top"]}
-              borderColor={SURFACE.border}
-            >
-              <box style={{ flexDirection: "row", height: 1, flexShrink: 0, justifyContent: "space-between" }}>
-                <box style={{ flexDirection: "row", height: 1, flexShrink: 0 }}>
-                  <text fg={COLOR.warn} selectable={false}>{"◈ "}</text>
-                  <text fg={COLOR.bright} selectable={false}>{"Resume with less context"}</text>
-                </box>
-                <box style={{ flexDirection: "row", height: 1, flexShrink: 0 }}>
-                  <HoverButton
-                    label=" Compact "
-                    fg={COLOR.accent}
-                    onClick={() => compactSession(() => setDismissedResumeKey(resumeBanner.key))}
-                  />
-                  <text selectable={false}>{"  "}</text>
-                  <HoverButton
-                    label=" Keep full history "
-                    fg={COLOR.dim}
-                    hoverFg={COLOR.text}
-                    onClick={() => setDismissedResumeKey(resumeBanner.key)}
-                  />
-                </box>
-              </box>
-              <box style={{ flexDirection: "row", height: 1, flexShrink: 0 }}>
-                <text fg={COLOR.dim} selectable={false}>
-                  {`  ${formatTokenCount(resumeBanner.usedTokens)} tokens from earlier`}
-                </text>
-              </box>
-            </box>
-          )}
+          {/* One blank row between the timeline frame and the tasks header;
+              below, the last task row sits flush onto the notice rule. The
+              composer always keeps its blank row above — a bordered frame
+              needs air, unlike the thin rule. With tasks hidden the notice
+              drops its rule — the frame's own border is separator enough —
+              but keeps the blank row. */}
+          {dockPane === "tasks" && plan !== null ? (
+            <TasksPanel plan={plan} width={chatWidth} {...(dockPagerControl ? { pager: dockPagerControl } : {})} />
+          ) : dockPane === "queued" ? (
+            <QueuedPanel
+              items={queued.items}
+              width={chatWidth}
+              now={now}
+              onCancel={queued.cancel}
+              {...(dockPagerControl ? { pager: dockPagerControl } : {})}
+            />
+          ) : null}
+          <NoticeBanner
+            notices={notices}
+            index={noticePager.index}
+            onPage={noticePager.setIndex}
+            {...(dockPane !== null ? { flushTop: true } : { tight: true })}
+          />
           {answerVisible ? (
             renderAnswerPanel(chatWidth)
           ) : (
@@ -1582,11 +1918,13 @@ export function App({
             onFocus={() => setFocus("composer")}
             focused={composerFocused}
             placeholder={composerPlaceholder}
+            suggestion={suggestedPrompt}
             model={model}
             modelColor={modelColor}
             effort={effort}
             permission={permission}
-            flushTop={pending.length > 0}
+            attachments={pending.map((attachment) => attachment.name)}
+            onAttachmentRemoved={detachImage}
             submitVerb="sends"
             running={sessionRunning}
             width={chatWidth}
@@ -1594,54 +1932,155 @@ export function App({
             onEffortClick={openEffortPicker}
             onPermissionClick={openPermissionPicker}
             onStopClick={interruptTurn}
+            onQueue={() => {
+              if (!editingExternallyRef.current) send(draft, "queue");
+            }}
             onCopyClick={copyDraft}
             onExternalEditClick={editDraftExternally}
             editingExternally={editingExternally}
             skills={skillInventory?.skills}
             skillPrefix={skillInventory?.trigger}
             contextUsage={contextUsageDisplay}
-            onContextUsageClick={() => setContextCardOpen((open) => !open)}
+            onContextUsageClick={() => toggleSideTab("context")}
+            backgroundSummary={backgroundSummaryLabel(background)}
+            onBackgroundClick={() => toggleSideTab("background")}
+            planUsage={planGauges}
+            onPlanUsageClick={() => toggleSideTab("context")}
           />
           )}
         </box>
         )}
-        {diffPanel.expandedTurn === null ? null : (
-          <DiffPanel
-            files={diffPanel.patchFiles}
-            loading={diffPanel.patch === null}
-            fileIndex={diffPanel.diffFileIndex}
-            collapsed={diffPanel.collapsedFiles}
-            width={diffPanel.diffWidth}
-            turnCount={diffPanel.expandedTurn}
-            turnTotal={threadState.checkpoints.filter((row) => row.files.length > 0).length}
-            focused={focus === "diff"}
-            scrollRef={diffScrollRef}
-            onToggleFile={diffPanel.toggleDiffFile}
-            onFocus={() => setFocus("diff")}
-            onHeaderClick={openDiffTurnPicker}
-          />
+        {!sidePanelOpen || sidePanel.tab === null ? null : (
+          <box style={{ width: diffPanel.diffWidth, flexDirection: "column", flexShrink: 0 }}>
+            {/* Tabs sit in the frame's own top line (cutting it, with spacing)
+                so Threads / chat / side frames stay continuous instead of the
+                side frame starting one row lower. */}
+            {/* Tabs sit in the frame's own top line (cutting it, with spacing)
+                so Threads / chat / side frames stay continuous instead of the
+                side frame starting one row lower. */}
+            <SideTabBar
+              tab={sidePanel.tab}
+              badges={sideBadges}
+              onTab={showSideTab}
+              onClose={closeSidePanel}
+              focused={focus === "diff"}
+              left={2}
+              width={Math.max(10, diffPanel.diffWidth - 4)}
+            />
+            {sidePanel.tab === "diff" && diffPanel.expandedTurn !== null ? (
+              <box style={{ flexDirection: "row", flexGrow: 1 }}>
+                <DiffPanel
+                  files={diffPanel.patchFiles}
+                  loading={diffPanel.patch === null}
+                  fileIndex={diffPanel.diffFileIndex}
+                  collapsed={diffPanel.collapsedFiles}
+                  width={diffPanel.diffWidth}
+                  height={height}
+                  turnCount={diffPanel.expandedTurn}
+                  turnTotal={diffTurns.length}
+                  focused={focus === "diff"}
+                  scrollRef={diffScrollRef}
+                  onToggleFile={diffPanel.toggleDiffFile}
+                  onFocus={() => setFocus("diff")}
+                  onHeaderClick={openDiffTurnPicker}
+                />
+              </box>
+            ) : (
+              <SidePanelFrame
+                width={diffPanel.diffWidth}
+                height={height}
+                focused={focus === "diff"}
+                scrollRef={sidePanel.scrollRef}
+                onFocus={() => setFocus("diff")}
+                footer={
+                  sidePanel.tab === "git" ? (
+                    <text fg={COLOR.dim} selectable={false}>
+                      {gitPanel.forge?.slug ?? gitPanel.overview?.root ?? "no remote"}
+                    </text>
+                  ) : sidePanel.tab === "agents" ? (
+                    <text fg={COLOR.dim} selectable={false}>{`${agentRows.length} delegated · ${subagentRows.length} subagents`}</text>
+                  ) : sidePanel.tab === "context" && effectiveBreakdown !== null ? (
+                    <box style={{ flexDirection: "row", height: 1, flexShrink: 0 }} backgroundColor={SURFACE.panel}>
+                      <ActionText label="Compact now" onClick={() => compactSession(() => undefined)} />
+                      <text fg={COLOR.faint} bg={SURFACE.panel} selectable={false}>{"  frees the window"}</text>
+                    </box>
+                  ) : sidePanel.tab === "background" ? (
+                    <box style={{ flexDirection: "row", height: 1, flexShrink: 0 }} backgroundColor={SURFACE.panel}>
+                      <text fg={COLOR.dim} bg={SURFACE.panel} selectable={false}>{`${background.length} running  `}</text>
+                      <ActionText label="View all" onClick={() => setPicker("background-tasks")} />
+                    </box>
+                  ) : sidePanel.tab === "diff" && diffTurns.length > 0 ? (
+                    <text fg={COLOR.dim} selectable={false}>{`${diffTurns.length} turn${diffTurns.length === 1 ? "" : "s"} with changes`}</text>
+                  ) : null
+                }
+              >
+                {sidePanel.tab === "diff" ? (
+                  <DiffEmptyTab turns={diffTurns.length} onPick={openDiffTurnPicker} />
+                ) : sidePanel.tab === "git" ? (
+                  <GitTab
+                    overview={gitPanel.overview}
+                    forge={gitPanel.forge}
+                    requests={gitPanel.requests}
+                    loadingGit={gitPanel.loadingGit}
+                    loadingForge={gitPanel.loadingForge}
+                    error={gitPanel.error}
+                    busy={gitPanel.busy}
+                    selectedBranch={gitPanel.branch}
+                    width={diffPanel.diffWidth}
+                    now={now}
+                    onSelectBranch={gitPanel.selectBranch}
+                    onRefresh={gitPanel.refresh}
+                    onCreate={() => setForgePrompt({ kind: "create" })}
+                    onComment={(request) => setForgePrompt({ kind: "comment", number: request.number })}
+                    onMerge={(request, strategy) => {
+                      void gitPanel
+                        .merge(request.number, strategy, false)
+                        .then(() => toasts.push("forge-merge", "info", `Merged #${request.number}.`))
+                        .catch(() => undefined);
+                    }}
+                  />
+                ) : sidePanel.tab === "agents" ? (
+                  <AgentsTab
+                    threads={agentRows}
+                    subagents={subagentRows}
+                    width={diffPanel.diffWidth}
+                    now={now}
+                    onOpen={openThreadFromPanel}
+                    onNudge={(threadId, title) => {
+                      sidePanel.setNudgeTarget({ threadId, title });
+                      setPicker("agent-nudge");
+                    }}
+                  />
+                ) : sidePanel.tab === "context" ? (
+                  <ContextTab
+                    breakdown={effectiveBreakdown}
+                    fallback={threadState.contextUsage}
+                    live={contextLive}
+                    usageLimits={threadUsageLimits}
+                    providerName={currentProvider?.displayName ?? null}
+                    width={diffPanel.diffWidth}
+                    now={now}
+                  />
+                ) : (
+                  <BackgroundTab
+                    tasks={background}
+                    width={diffPanel.diffWidth}
+                    now={now}
+                    onOpen={() => setPicker("background-tasks")}
+                    onStop={(taskId) => {
+                      const task = background.find((row) => row.taskId === taskId);
+                      if (task !== undefined) stopBackgroundTask(task);
+                    }}
+                  />
+                )}
+              </SidePanelFrame>
+            )}
+          </box>
         )}
       </box>
       ) : (
         <LoadingScreen stage={bootLoadingStage(shell)} />
       )}
-      {contextCardOpen && contextUsageDisplay !== null && threadState.contextUsage !== null ? (
-        <ContextUsageCard
-          usage={threadState.contextUsage}
-          width={Math.min(40, Math.max(28, width - SIDEBAR_WIDTH - 6), chatWidth)}
-          right={Math.max(1, width - (SIDEBAR_WIDTH + CHAT_GUTTER + chatWidth))}
-          onCompact={() =>
-            compactSession(() => {
-              markModalDismissed();
-              setContextCardOpen(false);
-            })
-          }
-          onClose={() => {
-            markModalDismissed();
-            setContextCardOpen(false);
-          }}
-        />
-      ) : null}
       {toasts.toasts.map((toast, index) => (
         <box
           key={toast.id}
@@ -1654,8 +2093,12 @@ export function App({
             flexShrink: 0,
             paddingLeft: 2,
             paddingRight: 2,
-            paddingTop: 1,
-            paddingBottom: 1,
+            // Single-row while over the side panel: the tab strip already
+            // owns row 0, so a padded toast would cover the first content
+            // rows (the frame tabs start at row 1 with no spacer). In the
+            // chat pane the breathing room stays.
+            paddingTop: sidePanelOpen ? 0 : 1,
+            paddingBottom: sidePanelOpen ? 0 : 1,
             // Above every modal layer, so errors fired from inside a modal
             // (copy/dispatch failures) stay visible instead of hiding behind it.
             zIndex: 35,
@@ -1696,6 +2139,60 @@ export function App({
           </box>
         </box>
       ))}
+      {/* Outside the picker chain below: the Git tab asks for these
+          without opening a picker, so nested under it they never showed. */}
+      {forgePrompt !== null ? (
+        <RenameModal
+          initialTitle=""
+          title={forgePrompt.kind === "create" ? "Open a request" : `Comment on #${forgePrompt.number}`}
+          placeholder={forgePrompt.kind === "create" ? "Title" : "Comment"}
+          hint={
+            forgePrompt.kind === "create"
+              ? "enter opens it on the forge · esc cancels"
+              : "enter posts the comment · esc cancels"
+          }
+          maxLength={forgePrompt.kind === "create" ? 120 : 2000}
+          screenWidth={width}
+          screenHeight={height}
+          left={renameGeometry.left}
+          top={renameGeometry.top}
+          width={renameGeometry.width}
+          height={renameGeometry.height}
+          onSubmit={(value) => {
+            const text = value.trim();
+            const prompt = forgePrompt;
+            setForgePrompt(null);
+            if (text.length === 0 || prompt === null) return;
+            if (prompt.kind === "create") {
+              void gitPanel
+                .createRequest({ title: text })
+                .then((url) => toasts.push("forge-create", "info", url ?? "Request opened."))
+                .catch(() => undefined);
+              return;
+            }
+            void gitPanel
+              .commentOn(prompt.number, text)
+              .then(() => toasts.push("forge-comment", "info", `Commented on #${prompt.number}.`))
+              .catch(() => undefined);
+          }}
+          onClose={() => setForgePrompt(null)}
+        />
+      ) : null}
+      {sideQuestion.open && sideQuestion.current !== null ? (
+        <SideQuestionModal
+          entry={sideQuestion.current}
+          onCopy={(text) => {
+            void clipboard.copyText(text).then((ok) => toasts.push("btw-copy", "info", ok ? "Answer copied" : "Could not copy", COPY_TOAST_MS));
+          }}
+          screenWidth={width}
+          screenHeight={height}
+          left={backgroundGeometry.left}
+          top={backgroundGeometry.top}
+          width={backgroundGeometry.width}
+          height={backgroundGeometry.height}
+          onClose={sideQuestion.close}
+        />
+      ) : null}
       {picker === null ? null : picker === "rename" ? (
         <RenameModal
           initialTitle={selected === null ? "" : String(selected.title ?? "")}
@@ -1742,6 +2239,54 @@ export function App({
             setPickerFilter("");
             setPicker("project");
           }}
+        />
+      ) : picker === "agent-nudge" ? (
+        <RenameModal
+          initialTitle=""
+          title={`Nudge "${truncate(sidePanel.nudgeTarget?.title ?? "agent", 40)}"`}
+          placeholder="Tell the agent something…"
+          hint="enter sends (steers a running turn) · esc cancels"
+          maxLength={2000}
+          screenWidth={width}
+          screenHeight={height}
+          left={renameGeometry.left}
+          top={renameGeometry.top}
+          width={renameGeometry.width}
+          height={renameGeometry.height}
+          onSubmit={submitNudge}
+          onClose={() => {
+            sidePanel.setNudgeTarget(null);
+            setPicker(null);
+          }}
+        />
+      ) : picker === "settings" ? (
+        <SettingsModal
+          snapshot={settings.snapshot}
+          loading={settings.loading}
+          saving={settings.saving}
+          error={settings.error}
+          onSet={settings.set}
+          screenWidth={width}
+          screenHeight={height}
+          left={backgroundGeometry.left}
+          top={backgroundGeometry.top}
+          width={backgroundGeometry.width}
+          height={backgroundGeometry.height}
+          onClose={() => setPicker(null)}
+        />
+      ) : picker === "background-tasks" && selected !== null ? (
+        <BackgroundTasksModal
+          tasks={background}
+          client={client}
+          threadId={selected.id}
+          screenWidth={width}
+          screenHeight={height}
+          left={backgroundGeometry.left}
+          top={backgroundGeometry.top}
+          width={backgroundGeometry.width}
+          height={backgroundGeometry.height}
+          onClose={() => setPicker(null)}
+          onStop={stopBackgroundTask}
         />
       ) : (
         <PickerModal

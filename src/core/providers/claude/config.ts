@@ -21,6 +21,17 @@ export interface ClaudeSettings {
   readonly homePath: string;
   readonly launchArgs: readonly string[];
   readonly autoCompactWindow: number | null;
+  /**
+   * How extended thinking comes back (`--thinking-display`). Claude Code
+   * also takes `highlights`, which is deliberately not offered: the API
+   * allows it only for sessions Anthropic hosts, and every other client
+   * silently degrades to no thinking text at all.
+   */
+  readonly thinkingDisplay: "summarized" | "omitted";
+  /** Ask for one predicted next prompt after each turn. */
+  readonly promptSuggestions: boolean;
+  /** Take the token-level stream, so text appears as it is written. */
+  readonly partialMessages: boolean;
 }
 
 export const DEFAULT_CLAUDE_SETTINGS: ClaudeSettings = {
@@ -28,6 +39,9 @@ export const DEFAULT_CLAUDE_SETTINGS: ClaudeSettings = {
   homePath: "",
   launchArgs: [],
   autoCompactWindow: null,
+  thinkingDisplay: "summarized",
+  promptSuggestions: true,
+  partialMessages: true,
 };
 
 export function normalizeClaudeSettings(raw: Partial<ClaudeSettings> = {}): ClaudeSettings {
@@ -36,6 +50,9 @@ export function normalizeClaudeSettings(raw: Partial<ClaudeSettings> = {}): Clau
     homePath: raw.homePath?.trim() ?? "",
     launchArgs: raw.launchArgs ?? [],
     autoCompactWindow: raw.autoCompactWindow ?? null,
+    thinkingDisplay: raw.thinkingDisplay === "omitted" ? "omitted" : "summarized",
+    promptSuggestions: raw.promptSuggestions ?? true,
+    partialMessages: raw.partialMessages ?? true,
   };
 }
 

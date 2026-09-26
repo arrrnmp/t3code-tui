@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 
 import { testHarness } from "../../../core/testing/harness.js";
 import { DirectConnection } from "../../connection.js";
+import { openThreadStore } from "../../../core/threads/store.js";
 import { serveMcp } from "../stdio.js";
 import { callMoxenTool } from "../tools.js";
 
@@ -69,6 +70,7 @@ describe("moxen MCP server", () => {
       expect((listed.result as { tools: Array<{ name: string }> }).tools.map((tool) => tool.name)).toEqual([
         "delegate",
         "task_status",
+        "models",
         "task_cancel",
       ]);
       expect((await mcp.request("ping")).result).toEqual({});
@@ -101,6 +103,48 @@ describe("moxen MCP server", () => {
       expect(names(starts.find((input) => input.threadId === delegated.taskId))).not.toContain("moxen");
     } finally {
       await mcp.close();
+      await connection.close();
+    }
+  });
+
+  it("tells the parent thread when a delegated task settles, with its facts for a card", async () => {
+    const { harness, connection, parentThreadId } = await setup();
+    try {
+      const delegated = JSON.parse(
+        (await callMoxenTool(connection, parentThreadId, "delegate", { task: "Write the changelog", title: "changelog", isolation: "shared" })).text,
+      ) as { taskId: string };
+      // The task settles, then the batch window passes and the parent hears of it.
+      const store = await openThreadStore(harness.root);
+      const deadline = Date.now() + 8000;
+      let notification: Record<string, unknown> | undefined;
+      while (Date.now() < deadline && notification === undefined) {
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        const messages = (await store.readMessages(parentThreadId)) as unknown as Array<Record<string, unknown>>;
+        notification = messages.find((message) => message.origin === "task-notification");
+      }
+      expect(notification).toBeDefined();
+      expect(notification!.text).toContain(`Task "changelog" (taskId ${delegated.taskId}) finished`);
+      expect(notification!.text).toContain("Headline: Completed: Write the changelog");
+      expect(notification!.notification).toMatchObject({
+        tasks: [{ taskId: delegated.taskId, title: "changelog", status: "completed", headline: "Completed: Write the changelog" }],
+      });
+    } finally {
+      await connection.close();
+    }
+  }, 15_000);
+
+  it("forks: the task resumes a copy of the parent's conversation, in the parent's checkout", async () => {
+    const { connection, parentThreadId, starts } = await setup();
+    try {
+      const delegated = JSON.parse(
+        (await callMoxenTool(connection, parentThreadId, "delegate", { task: "What did we decide about caching?", fork: true })).text,
+      ) as { taskId: string; isolation: string };
+      expect(delegated.isolation).toBe("shared");
+      const childStart = starts.find((input) => input.threadId === delegated.taskId);
+      expect(childStart?.resumeCursor).toBe(`fork-of-harness-session-${parentThreadId}`);
+      const inWorktree = await callMoxenTool(connection, parentThreadId, "delegate", { task: "x", fork: true, isolation: "worktree" });
+      expect(inWorktree).toMatchObject({ isError: true, text: expect.stringContaining("FORK_NEEDS_SHARED") });
+    } finally {
       await connection.close();
     }
   });
@@ -145,6 +189,20 @@ describe("moxen MCP server", () => {
       const other = await connection.dispatch({ type: "thread.handover", cwd: harness.work, prompt: "Again", wait: true, threadEnvMode: "local" });
       const start = starts.find((input) => input.threadId === other.threadId);
       expect(start).not.toHaveProperty("mcpServers");
+    } finally {
+      await connection.close();
+    }
+  });
+
+  it("is hosted in-process unless the project points the name at a server of its own", async () => {
+    const { harness, connection, starts, parentThreadId } = await setup();
+    try {
+      const first = starts.find((input) => input.threadId === parentThreadId) as { mcpServers: Array<{ name: string; type: string }> };
+      expect(first.mcpServers.find((server) => server.name === "moxen")?.type).toBe("in-process");
+      await writeFile(path.join(harness.work, "moxen.json"), JSON.stringify({ mcpServers: { moxen: { command: "my-moxen" } } }));
+      const other = await connection.dispatch({ type: "thread.handover", cwd: harness.work, prompt: "Again", wait: true, threadEnvMode: "local" });
+      const start = starts.find((input) => input.threadId === other.threadId) as { mcpServers: Array<Record<string, unknown>> };
+      expect(start.mcpServers.find((server) => server.name === "moxen")).toMatchObject({ type: "stdio", command: "my-moxen" });
     } finally {
       await connection.close();
     }

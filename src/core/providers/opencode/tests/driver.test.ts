@@ -1,8 +1,10 @@
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Stream from "effect/Stream";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { CliError } from "../../../errors.js";
+import type { ProviderRuntimeEvent } from "../../spi.js";
 import { answersFor, OpenCodeDriver, parseOpencodeModel } from "../driver.js";
 import { FakeOpencodeTransport } from "./fakes.js";
 
@@ -552,6 +554,36 @@ describe("opencode driver", () => {
     expect(inventory.commands).toEqual([
       { name: "init", description: "Create AGENTS.md", argumentHint: null, builtin: false },
       { name: "docs", description: "MCP prompt", argumentHint: "$1", builtin: false },
+    ]);
+  });
+
+  it("streams part deltas, and publishes a step's text as a note once the next step speaks", async () => {
+    const transport = new FakeOpencodeTransport();
+    const driver = new OpenCodeDriver({ transport, env: { OPENCODE_API_KEY: "k" } });
+    drivers.push(driver);
+    const events: ProviderRuntimeEvent[] = [];
+    const fiber = Effect.runFork(Stream.runForEach(driver.streamEvents, (event) => Effect.sync(() => void events.push(event))));
+    await Effect.runPromise(driver.startSession({ threadId: "thread-1", workingDirectory: "/repo" }));
+    const sent = await Effect.runPromise(driver.sendTurn({ threadId: "thread-1", prompt: "go" }));
+    const outcome = driver.awaitTurn("thread-1", sent.turnId);
+    const part = (p: Record<string, unknown>) =>
+      transport.servers[0]!.push({ type: "message.part.updated", properties: { sessionID: "opencode-session-1", part: p } });
+    // Cumulative snapshots of one part, then a tool, then the next step.
+    await part({ id: "p1", messageID: "step1", type: "text", text: "Reading" });
+    await part({ id: "p1", messageID: "step1", type: "text", text: "Reading it." });
+    await part({ id: "p2", messageID: "step1", type: "tool", tool: "read", state: { status: "completed" } });
+    await part({ id: "p3", messageID: "step2", type: "text", text: "moxen" });
+    await transport.servers[0]!.push({ type: "session.idle", properties: { sessionID: "opencode-session-1" } });
+    expect((await outcome).text).toBe("moxen");
+    await Effect.runPromise(Fiber.interrupt(fiber));
+    const deltas = events.flatMap((event) => (event.type === "message.part.updated" ? [[event.messageId, event.text]] : []));
+    expect(deltas).toEqual([
+      ["step1", "Reading"],
+      ["step1", " it."],
+      ["step2", "moxen"],
+    ]);
+    expect(events.flatMap((event) => (event.type === "assistant.note" ? [[event.messageId, event.text]] : []))).toEqual([
+      ["step1", "Reading it."],
     ]);
   });
 

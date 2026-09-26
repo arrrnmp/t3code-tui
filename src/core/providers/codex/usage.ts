@@ -54,6 +54,7 @@ export function codexWindowsOf(snapshot: CodexRateSnapshot): RateLimitWindow[] {
       label: labelForKind(kind),
       resetsAt: isoFromEpochSeconds(window.resetsAt),
       exhausted: window.usedPercent >= 100,
+      usedPercent: window.usedPercent,
     });
   }
   return windows;

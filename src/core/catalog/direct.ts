@@ -182,11 +182,11 @@ function opencodeEfforts(model: ModelsDevModel): EffortDescriptor[] {
 
 /**
  * Per-provider `opencode/<id>` entries: categorized, browsable sections.
- * Credentialed providers list everything; keyless ones list only their
- * zero-cost models (the free tier the picker is for) with `enabled` kept
- * true — picking one without its key fails clearly at send time, like
- * both references. `enabled` otherwise follows install state, with
- * auth-pattern failures disabling (same rule as native entries).
+ * Credentialed providers list everything. Without a credential only
+ * OpenCode's own `opencode` provider serves anything — its zero-cost
+ * models, upstream's free tier (`isFreeOpencodeModel`); every other
+ * provider refuses every request, so it is listed disabled with no models
+ * rather than offering a long tail of models the user cannot run.
  */
 function opencodeProviders(
   loaded: LoadedModelsDevCatalog,
@@ -207,21 +207,24 @@ function opencodeProviders(
           : keyEnvs.length > 0
             ? "api-key"
             : null;
-    const free = provider.models.filter(isFreeModel);
-    const models = credential !== null ? provider.models : free;
+    const freeTier = credential === null && provider.id.toLowerCase() === "opencode";
+    const connected = credential !== null || freeTier;
+    const models = credential !== null ? provider.models : freeTier ? provider.models.filter(isFreeModel) : [];
     const keyHint = provider.env.length > 0 ? provider.env[0] : null;
     return {
       instanceId: `opencode/${provider.id}`,
       driver: "opencode",
       displayName: provider.name,
-      enabled: installed,
+      enabled: installed && connected,
       installed,
       status: !installed
         ? "not installed"
-        : credential === null && keyHint !== null
-          ? `free models only (set ${keyHint} for all ${provider.models.length})`
-          : credential === null
-            ? "free models only"
+        : freeTier
+          ? `free models only (connect it for all ${provider.models.length})`
+          : !connected
+            ? keyHint !== null
+              ? `not connected (set ${keyHint} or run opencode auth login)`
+              : "not connected (run opencode auth login)"
             : loaded.source === "live"
               ? null
               : `models.dev ${loaded.source}`,

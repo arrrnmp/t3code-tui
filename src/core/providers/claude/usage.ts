@@ -77,11 +77,20 @@ function epochToIso(resetsAt: number | undefined): string | null {
   return new Date(resetsAt * 1000).toISOString();
 }
 
-/** Map one streamed `rate_limit_event` to windows + park decision. */
+/**
+ * Map one streamed `rate_limit_event` to windows + park decision.
+ *
+ * `wrapUp`: the window ran out mid-task, and Claude Code is finishing on
+ * the small allowance it draws from the weekly limit to reach a stopping
+ * point (the `anthropic-ratelimit-unified-grace-*` headers, surfaced as
+ * `rateLimitGraceActive`). The field is internal and missing from the SDK
+ * types, so it is read defensively. Paid extra usage covering the overflow
+ * is not a wrap-up (nothing will be cut off), and neither is a rejection.
+ */
 export function mapRateLimitEvent(
   info: SDKRateLimitInfo,
   overageIncludedName?: string,
-): { windows: RateLimitWindow[]; blocked: boolean; rateLimitType: string } {
+): { windows: RateLimitWindow[]; blocked: boolean; wrapUp: boolean; rateLimitType: string } {
   const rateLimitType = info.rateLimitType ?? "unknown";
   const overageAllowed =
     info.overageStatus === "allowed" ||
@@ -89,15 +98,25 @@ export function mapRateLimitEvent(
     info.isUsingOverage === true ||
     info.overageInUse === true;
   const blocked = info.status === "rejected" && !overageAllowed;
+  // The event's `utilization` is a fraction (the CLI shows `× 100`), unlike
+  // the probe's percentages. A rejected window is spent whatever it says.
+  const usedPercent = blocked
+    ? 100
+    : typeof info.utilization === "number" && Number.isFinite(info.utilization)
+      ? clampPercent(info.utilization * 100)
+      : null;
   const windows: RateLimitWindow[] = [
     {
       id: windowIdForType(rateLimitType, overageIncludedName),
       label: labelForType(rateLimitType, overageIncludedName),
       resetsAt: epochToIso(info.resetsAt),
       exhausted: blocked,
+      usedPercent,
     },
   ];
-  return { windows, blocked, rateLimitType };
+  const graceActive = (info as SDKRateLimitInfo & { rateLimitGraceActive?: unknown }).rateLimitGraceActive === true;
+  const wrapUp = graceActive && !blocked && !overageAllowed && info.status !== "rejected";
+  return { windows, blocked, wrapUp, rateLimitType };
 }
 
 /** "paused until Xh Ym" for a rejected window; null when unparseable. */

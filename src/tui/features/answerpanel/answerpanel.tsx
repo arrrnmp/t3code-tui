@@ -2,8 +2,11 @@ import { useState } from "react";
 import { useKeyboard } from "@opentui/react";
 
 import { PICK_BG, PICK_FG } from "../pickers/pickermodal.js";
-import { COLOR, SURFACE, truncate } from "../../theme.js";
+import { COLOR, markdownSyntaxStyle, SURFACE, truncate } from "../../theme.js";
 import type { PendingUserInputQuestion } from "../../model/thread.js";
+
+/** A preview is a glance, not a document: long ones clip rather than push the transcript away. */
+const PREVIEW_MAX_ROWS = 14;
 
 export interface AnswerRow {
   key: string;
@@ -76,6 +79,8 @@ export function AnswerPanel({
       : []),
   ];
   const safe = rows.length === 0 ? -1 : Math.min(highlight, rows.length - 1);
+  // Option rows come first, so a highlight inside them names its option.
+  const preview = safe >= 0 && safe < question.options.length ? question.options[safe]?.preview ?? null : null;
 
   useKeyboard((key) => {
     if (suspended || rows.length === 0) return;
@@ -162,6 +167,19 @@ export function AnswerPanel({
             );
           })}
         </box>
+        {preview === null ? null : (
+          <box
+            border
+            borderStyle="rounded"
+            borderColor={SURFACE.border}
+            title=" preview "
+            titleColor={COLOR.faint}
+            style={{ flexDirection: "column", flexShrink: 0, marginTop: 1, paddingLeft: 1, paddingRight: 1, maxHeight: PREVIEW_MAX_ROWS }}
+            backgroundColor={SURFACE.raised}
+          >
+            <markdown content={preview} fg={COLOR.text} syntaxStyle={markdownSyntaxStyle()} />
+          </box>
+        )}
       </box>
       <box style={{ flexDirection: "row", height: 1, flexShrink: 0, justifyContent: "flex-end" }}>
         <text fg={COLOR.faint}>{truncate("↑↓ move · 1-9 pick · enter selects · esc dismisses", Math.max(0, width))}</text>

@@ -104,3 +104,11 @@ export function claudeCatalogModels(): ClaudeCatalogModel[] {
     return [];
   }
 }
+
+/**
+ * A model's display name ("Claude Opus 5"), for ids the CLI reports on its
+ * own — a fallback model, say. An id the list does not know reads as itself.
+ */
+export function claudeModelName(slug: string): string {
+  return claudeCatalogModels().find((model) => model.slug === slug)?.name ?? slug;
+}

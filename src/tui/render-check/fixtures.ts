@@ -52,7 +52,7 @@ const shellFrames = [
       ],
       threads: [
         thread("t-now", "p-cli", "Message delay and scheduling", 14 * 60_000),
-        thread("t-xash", "p-xash", "Neural Radiance Cache viability", 4 * HOUR, { hasPendingUserInput: true }),
+        thread("t-xash", "p-xash", "Neural Radiance Cache viability", 4 * HOUR, { hasPendingUserInput: true, worktreePath: "C:\\repo" }),
         thread("t-blocked", "p-vibe", "Build VibeCheck backend", 8 * HOUR, { session: blockedSession }),
         thread("t-s1", "p-cli", "Update skills for platforms and clarity", 60_000, { settledOverride: "settled" }),
         thread("t-s2", "p-cli", "Ping pong test", 5 * 60_000, { settledOverride: "settled" }),
@@ -686,6 +686,9 @@ export const client: ClientApi = {
   query: (async (query: { type: string; instanceId?: string }) => {
     if (query.type === "skills.list") {
       return query.instanceId === "claudeAgent" ? CLAUDE_SKILLS : { trigger: "/", skills: [], commands: [] };
+    }
+    if (query.type === "thread.background.output") {
+      return { available: true, lines: ["watching build.log", "...still going"] };
     }
     throw new Error(`render-check client does not serve ${query.type}`);
   }) as unknown as ClientApi["query"],

@@ -13,6 +13,7 @@ import {
   pinCheckpointRef,
   pruneCheckpointRefs,
   restoreWorktree,
+  restoreWorktreeTo,
 } from "../git.js";
 
 const GIT_AVAILABLE = (() => {
@@ -78,6 +79,10 @@ describe.runIf(GIT_AVAILABLE)("git checkpoints", () => {
     expect(diff).toContain("+three");
     const stat = await diffCheckpointStat(dir, pre!, post!);
     expect(stat).toEqual([{ path: "file.txt", additions: 1, deletions: 0 }]);
+    // A binary file changed too: listed, with no line counts.
+    await writeFile(path.join(dir, "blob.bin"), Buffer.from([0, 1, 2, 0, 255]));
+    const withBinary = await captureWorktree(dir, "binary");
+    expect(await diffCheckpointStat(dir, post!, withBinary!)).toEqual([{ path: "blob.bin", additions: 0, deletions: 0 }]);
 
     await writeFile(path.join(dir, "file.txt"), "changed\n");
     expect(await restoreWorktree(dir, pre!)).toBe(true);
@@ -100,5 +105,42 @@ describe.runIf(GIT_AVAILABLE)("git checkpoints", () => {
     expect(await captureWorktree(dir, "msg")).toBeNull();
     expect(await diffCheckpointRange(dir, "a", "b")).toBeNull();
     expect(await restoreWorktree(dir, "a")).toBe(false);
+  });
+});
+
+describe.runIf(GIT_AVAILABLE)("whole-worktree captures", () => {
+  it("capture untracked files too, on a clean tree as well, without touching the index", async () => {
+    const dir = await initRepo();
+    expect(await captureWorktree(dir, "clean")).toMatch(/^[0-9a-f]{40}$/);
+    await writeFile(path.join(dir, "staged.txt"), "staged\n");
+    git(dir, ["add", "staged.txt"]);
+    await writeFile(path.join(dir, "new.txt"), "brand new\n");
+    const sha = (await captureWorktree(dir, "with untracked"))!;
+    const files = spawnSync("git", ["ls-tree", "-r", "--name-only", sha], { cwd: dir, encoding: "utf8" }).stdout.trim().split("\n");
+    expect(files.sort()).toEqual(["file.txt", "new.txt", "staged.txt"]);
+    // The user's own index is exactly as they left it: only staged.txt staged.
+    const status = spawnSync("git", ["status", "--porcelain"], { cwd: dir, encoding: "utf8" }).stdout;
+    expect(status).toContain("A  staged.txt");
+    expect(status).toContain("?? new.txt");
+  });
+
+  it("restore the worktree to a capture: changes undone, deletions back, new files gone, undo kept", async () => {
+    const dir = await initRepo();
+    await writeFile(path.join(dir, "keep.txt"), "untracked before\n");
+    const pre = (await captureWorktree(dir, "pre"))!;
+    await writeFile(path.join(dir, "file.txt"), "rewritten\n");
+    await rm(path.join(dir, "keep.txt"));
+    await writeFile(path.join(dir, "created.txt"), "made by the agent\n");
+    await writeFile(path.join(dir, ".gitignore"), "ignored.log\n");
+    const restored = await restoreWorktreeTo(dir, pre);
+    expect(restored).not.toBeNull();
+    const { readFile } = await import("node:fs/promises");
+    expect(await readFile(path.join(dir, "file.txt"), "utf8")).toBe("one\n");
+    expect(await readFile(path.join(dir, "keep.txt"), "utf8")).toBe("untracked before\n");
+    await expect(readFile(path.join(dir, "created.txt"), "utf8")).rejects.toThrow();
+    // Undoing the restore brings the agent's state back.
+    await restoreWorktreeTo(dir, restored!.before);
+    expect(await readFile(path.join(dir, "created.txt"), "utf8")).toBe("made by the agent\n");
+    expect(await readFile(path.join(dir, "file.txt"), "utf8")).toBe("rewritten\n");
   });
 });

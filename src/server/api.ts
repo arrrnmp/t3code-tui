@@ -40,8 +40,20 @@ export type {
   QueryOf,
   QueryResult,
   QueryType,
+  SettingsSnapshot,
   ShellFrame,
   ThreadFrame,
+  GitBranch,
+  GitCommit,
+  GitOverview,
+  GitWorktreeStatus,
+  ForgeChecks,
+  ForgeDetection,
+  ForgeKind,
+  ForgeRequest,
+  ForgeRequestDetail,
+  ForgeRequestState,
+  MergeStrategy,
 } from "./protocol.js";
 
 export interface ClientApi {

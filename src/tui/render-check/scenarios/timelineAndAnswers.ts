@@ -21,7 +21,7 @@ export async function runTimelineAndAnswers(setup: TestRendererSetup): Promise<v
   for (let wheel = 0; wheel < 40; wheel += 1) {
     await act(async () => setup.mockMouse.scroll(70, 5, "down"));
     await setup.flush();
-    if (/Claude Opus 5\s+·\s+\d\d:\d\d/.test(setup.captureCharFrame())) break;
+    if (/Claude Opus 5\s+·\s+(?:\w{3}, )?\d\d:\d\d/.test(setup.captureCharFrame())) break;
   }
   await setup.flush();
   console.log("--- reply visible ---");

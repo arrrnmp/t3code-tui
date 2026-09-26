@@ -12,19 +12,24 @@
  * | OpenCode | `system` on every `session.promptAsync` |
  * | Grok | `session/new` `_meta.rules` ("extra rules appended to the system prompt") |
  *
- * Sections appear only when they apply, so a plain local thread with no
- * configured instructions gets none at all and runs exactly as the provider
- * would on its own. Project rules files (`AGENTS.md`, `CLAUDE.md`) are the
- * providers' business — each already reads its own; this is for what only
- * moxen knows.
+ * Every session gets one line saying it runs through moxen, in its own
+ * harness — so an agent asked where it is answers truthfully, while still
+ * being the Claude Code / Codex / … it is. It names no model: the model can
+ * change mid-thread, and each harness already states its own. Every session
+ * is also told to research before it guesses. The other sections appear
+ * only when they apply. Project rules files (`AGENTS.md`,
+ * `CLAUDE.md`) are the providers' business — each already reads its own;
+ * this is for what only moxen knows.
  */
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
-import { APP_NAME } from "../config.js";
+import { APP_DISPLAY_NAME, APP_NAME } from "../config.js";
 import type { ThreadEnv } from "./types.js";
 
 export interface RuntimeInstructionsInput {
+  /** The model selection's instance id (`claudeAgent`, `codex`, `opencode/…`): names the harness. */
+  readonly instanceId: string;
   /** Where the session runs. A worktree gets told what that means. */
   readonly env: ThreadEnv;
   /** Set when this thread is a delegated task of another thread. */
@@ -37,9 +42,34 @@ export interface RuntimeInstructionsInput {
   readonly userInstructions?: readonly string[];
 }
 
-/** The instructions for one session, or null when none apply. */
-export function buildRuntimeInstructions(input: RuntimeInstructionsInput): string | null {
-  const sections: string[] = [];
+/**
+ * Agents lean on memory and local greps for how a library or service works,
+ * and guess when those run out. Docs and changelogs say what an API is for
+ * and what it is called, which is what makes a search of the installed
+ * source land.
+ */
+export const RESEARCH_GUIDANCE =
+  "When the work depends on how a library, tool, API or service behaves, look it up rather than relying on memory: " +
+  "if you can search the web, read the official documentation, changelogs and issues, then check the installed source " +
+  "(dependencies, vendored code) knowing what to look for. Research is part of the work, not a detour from it.";
+
+/** "Claude Code", "Codex", …: the harness a provider instance runs in, as its users call it. */
+export function harnessName(instanceId: string): string {
+  const key = instanceId.trim().toLowerCase();
+  if (key === "claudeagent" || key === "claude") return "Claude Code";
+  if (key === "codex") return "Codex";
+  if (key === "grok") return "Grok";
+  if (key === "opencode" || key.startsWith("opencode/")) return "OpenCode";
+  return instanceId;
+}
+
+/** The instructions for one session. */
+export function buildRuntimeInstructions(input: RuntimeInstructionsInput): string {
+  const sections: string[] = [
+    `In case you're asked: you are running in ${APP_DISPLAY_NAME}, a terminal app that runs coding agents as threads, ` +
+      `through the ${harnessName(input.instanceId)} harness. No need to mention this otherwise.`,
+    RESEARCH_GUIDANCE,
+  ];
   const delegation = input.delegation ?? null;
 
   if (delegation) {
@@ -47,6 +77,7 @@ export function buildRuntimeInstructions(input: RuntimeInstructionsInput): strin
       `You are a subagent: another agent working in the thread "${delegation.parentTitle}" delegated this task to you.`,
       "Your final message is returned to that agent as the task's result, and it is all they will read.",
       "Make it a self-contained report: what you did, which files you changed, how you verified it, and anything left unfinished.",
+      "Open the report with a single line that sums up the outcome (e.g. \"Audited 3 route files: 2 missing auth checks\") — it is shown as the task's headline.",
     ];
     if (input.env.mode === "worktree" && input.env.branch) {
       lines.push(
@@ -69,7 +100,7 @@ export function buildRuntimeInstructions(input: RuntimeInstructionsInput): strin
   const user = (input.userInstructions ?? []).map((entry) => entry.trim()).filter((entry) => entry.length > 0);
   if (user.length > 0) sections.push(user.join("\n\n"));
 
-  return sections.length > 0 ? sections.join("\n\n") : null;
+  return sections.join("\n\n");
 }
 
 /** `instructions` from `<workspaceRoot>/moxen.json`: a string, or an array of lines. */

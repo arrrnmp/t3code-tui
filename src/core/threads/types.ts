@@ -8,6 +8,7 @@
  * See ARCHITECTURE.md §9.
  */
 import type { ImageAttachmentUpload } from "../attachments.js";
+import type { TaskNotification } from "./notify.js";
 import type {
   InteractionMode,
   ModelSelection,
@@ -57,7 +58,8 @@ export interface StoredThread {
 
 export type TurnStatus = "queued" | "running" | "completed" | "interrupted" | "failed";
 
-export type TurnDelivery = "started" | "queued" | "steered" | "restarted" | "injected";
+/** `background`: a turn the provider started itself, woken by a finished background task or a Monitor event. */
+export type TurnDelivery = "started" | "queued" | "steered" | "restarted" | "injected" | "background";
 
 export interface StoredTurn {
   readonly id: string;
@@ -74,11 +76,28 @@ export interface StoredTurn {
   readonly modelSelection: ModelSelection | null;
   /** Steer/restart chains reference the turn they superseded. */
   readonly parentTurnId: string | null;
+  /**
+   * A queued turn that waits for this instant before it may run — a message
+   * scheduled for later, or a continue set for when a usage limit resets.
+   * Absent on turns that run as soon as the thread is free.
+   */
+  readonly scheduledFor?: string | null;
+  /**
+   * Why it was scheduled: the user's own choice; a continue set for when a
+   * usage limit resets; or `usage-hold` — a message the user queued that
+   * came up while a limit still stood, held for the reset rather than sent
+   * into the wall.
+   */
+  readonly scheduleReason?: "user" | "usage-reset" | "usage-hold" | null;
+  /** For an automatic continue after a usage limit: which attempt in a row (1-based). */
+  readonly continueAttempt?: number;
   readonly error: string | null;
   /** Tokens spent by the provider run; null when the driver reported none. */
   readonly usage: TurnUsage | null;
   readonly createdAt: string;
   readonly updatedAt: string;
+  /** When a queued or scheduled turn actually started; a turn that ran at once started at `createdAt`. */
+  readonly startedAt?: string;
   readonly completedAt: string | null;
   /**
    * The process expected to run the turn, set when it becomes `running`.
@@ -124,7 +143,14 @@ export interface StoredMessage {
   readonly text: string;
   readonly createdAt: string;
   readonly attachments?: readonly StoredAttachment[];
+  /** A message moxen wrote into the thread rather than the user (see `MessageOrigin`). */
+  readonly origin?: MessageOrigin;
+  /** The origin's structured facts (`task-notification`: the tasks), for a client to draw. */
+  readonly notification?: { readonly tasks: readonly TaskNotification[] };
 }
+
+/** `task-notification`: delegated tasks settling. `usage-continue`: picking up after a usage limit reset. */
+export type MessageOrigin = "task-notification" | "usage-continue";
 
 export interface StoredActivity {
   readonly id: string;
@@ -151,7 +177,18 @@ export interface StoredCheckpoint {
   readonly ref: string | null;
   /** Pre-turn capture sha (diff base). */
   readonly baseRef: string | null;
+  /**
+   * What the turn changed, per file, recorded as it settles. Absent on rows
+   * written before it was recorded (clients get it backfilled on read).
+   */
+  readonly files?: ReadonlyArray<CheckpointFileStat>;
   readonly createdAt: string;
+}
+
+export interface CheckpointFileStat {
+  readonly path: string;
+  readonly additions: number;
+  readonly deletions: number;
 }
 
 export type DelegationStatus =
@@ -200,6 +237,17 @@ export interface SendTurnInput {
   readonly handoffNote?: string;
   /** Images sent with the prompt; saved and recorded on the user message. */
   readonly attachments?: readonly ImageAttachmentUpload[];
+  /**
+   * Hold the message until this instant: it is queued, and runs once it is
+   * due and the thread is free. A time already past means "now".
+   */
+  readonly scheduledFor?: string;
+  readonly scheduleReason?: "user" | "usage-reset";
+  /** Set by the automatic continue after a usage limit (which attempt in a row). */
+  readonly continueAttempt?: number;
+  /** A message moxen writes itself (with its facts), rather than the user. */
+  readonly origin?: MessageOrigin;
+  readonly notification?: { readonly tasks: readonly TaskNotification[] };
 }
 
 export type ReadView = "messages" | "turn-items" | "plans" | "checkpoints" | "transfers";

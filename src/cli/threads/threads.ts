@@ -48,6 +48,8 @@ export interface ThreadSendOptions {
   wakeSettled?: boolean;
   delivery?: ThreadSendDelivery;
   handoffNote?: string;
+  /** Hold the message until this ISO instant; the send returns once it is queued. */
+  scheduledFor?: string;
   confirmSettled?: (thread: ThreadEnvelope, project: ProjectEnvelope | null) => Promise<boolean>;
   drivers?: TurnDriverFactories;
   /** Return at acceptance; otherwise block until the turn settles. */
@@ -539,6 +541,7 @@ export async function sendThreadMessage(config: CliConfig, options: ThreadSendOp
       ...(options.wakeSettled !== undefined ? { wakeSettled: options.wakeSettled } : {}),
       ...(modelSelection ? { modelSelection } : {}),
       ...(options.handoffNote !== undefined ? { handoffNote: options.handoffNote } : {}),
+      ...(options.scheduledFor !== undefined ? { scheduledFor: options.scheduledFor } : {}),
     })
     .catch((cause: unknown) => {
       if (cause instanceof CliError && SEND_PASSTHROUGH_CODES.has(cause.code)) throw cause;
@@ -547,7 +550,8 @@ export async function sendThreadMessage(config: CliConfig, options: ThreadSendOp
         details: { threadId: thread.id },
       });
     });
-  if (options.noWait !== true) await awaitTurn(client, threadId, sent.turnId);
+  // A scheduled message has nothing to wait for yet: it runs later, by whoever owns the sessions then.
+  if (options.noWait !== true && options.scheduledFor === undefined) await awaitTurn(client, threadId, sent.turnId);
   return {
     ...envelope(sent.messageId),
     dispatch: null,
@@ -750,7 +754,7 @@ export async function revertConversation(
   config: CliConfig,
   rawThreadId: string,
   rawKeep: string | number,
-  options: { drivers?: TurnDriverFactories } = {},
+  options: { drivers?: TurnDriverFactories; restoreFiles?: boolean } = {},
 ) {
   const threadId = requireThreadId(rawThreadId);
   const keep = typeof rawKeep === "number" ? rawKeep : Number(String(rawKeep).trim());
@@ -763,7 +767,8 @@ export async function revertConversation(
   // Rolling the provider back may mean resuming its session: drivers matter.
   const client = await cliClient(config, options.drivers);
   const { project, thread } = await inspect(client, threadId);
-  const result = await client.dispatch({ type: "thread.conversation.revert", threadId, turnCount: keep });
+  const restoreFiles = options.restoreFiles === true ? { restoreFiles: true } : {};
+  const result = await client.dispatch({ type: "thread.conversation.revert", threadId, turnCount: keep, ...restoreFiles });
   return {
     runtime: directRuntime(),
     auth: directAuth(),
@@ -772,8 +777,27 @@ export async function revertConversation(
     keptTurns: result.keptTurns,
     removedTurns: result.removedTurns,
     providers: result.providers,
-    command: { type: "thread.conversation.revert" as const, commandId: randomUUID(), threadId, turnCount: keep },
+    // Only with --restore-files, so the plain envelope stays as it was.
+    ...(result.filesRestored ? { filesRestored: result.filesRestored } : {}),
+    command: { type: "thread.conversation.revert" as const, commandId: randomUUID(), threadId, turnCount: keep, ...restoreFiles },
     dispatch: null,
     verification: { accepted: true as const, snapshotSequence: 0 },
   };
+}
+
+/**
+ * Background work running in a thread's live session: `run_in_background`
+ * commands, Monitor watches, background subagents. `live: false` when this
+ * process (or the shared server it talks to) holds no session for it.
+ */
+export async function listBackgroundTasks(config: CliConfig, rawThreadId: string) {
+  const threadId = requireThreadId(rawThreadId);
+  const result = await (await cliClient(config)).query({ type: "thread.background.list", threadId });
+  return { runtime: directRuntime(), auth: directAuth(), threadId, live: result.live, tasks: [...result.tasks] };
+}
+
+export async function stopBackgroundTask(config: CliConfig, rawThreadId: string, taskId: string) {
+  const threadId = requireThreadId(rawThreadId);
+  const result = await (await cliClient(config)).dispatch({ type: "thread.background.stop", threadId, taskId });
+  return { runtime: directRuntime(), auth: directAuth(), threadId, ...result };
 }

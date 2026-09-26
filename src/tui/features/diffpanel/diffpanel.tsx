@@ -1,12 +1,11 @@
 import type { RefObject } from "react";
 import type { ScrollBoxRenderable } from "@opentui/core";
-import { SyntaxStyle } from "@opentui/core";
 
 import { useHover } from "../../hooks/useHover.js";
 import { useAnimTick } from "../../hooks/useAnimTick.js";
 import type { PatchFile } from "../../model/patch.js";
 import { shortPath } from "../../model/patch.js";
-import { CODE_SYNTAX_TOKENS, COLOR, DIFF_BG, MARKER, SPINNER_FRAMES, SURFACE } from "../../theme.js";
+import { COLOR, DIFF_BG, MARKER, SPINNER_FRAMES, SURFACE, markdownSyntaxStyle } from "../../theme.js";
 
 /** Loading skeleton: braille spinner + a shimmer bar sweeping a dim track. Mounted only while fetching. */
 function DiffLoading({ width }: { width: number }) {
@@ -23,11 +22,11 @@ function DiffLoading({ width }: { width: number }) {
   );
 }
 
-let cached: SyntaxStyle | null = null;
-function syntaxStyle(): SyntaxStyle {
-  cached ??= SyntaxStyle.fromStyles(CODE_SYNTAX_TOKENS);
-  return cached;
-}
+// The shared markdown+code style (theme.ts): `<diff>` highlights each hunk
+// with the file's own grammar, so a markdown file yields `markup.*`
+// captures. The old code-only table had no `markup.*` entries and every
+// token fell back to the default — white text on the red/green rows.
+const syntaxStyle = markdownSyntaxStyle;
 
 function FileSection({
   file,
@@ -100,6 +99,7 @@ export function DiffPanel({
   width,
   turnCount,
   turnTotal,
+  height,
   focused,
   scrollRef,
   onToggleFile,
@@ -114,6 +114,12 @@ export function DiffPanel({
   turnCount: number | null;
   /** How many turns have diffs — the header's right-hand meta. */
   turnTotal: number;
+  /**
+   * Terminal height (app only): pins the frame viewport-tall so long diffs
+   * scroll internally and the `+N −M` footer stays on-screen — same trap as
+   * SidePanelFrame (flexGrow alone sizes to content).
+   */
+  height?: number;
   focused: boolean;
   scrollRef: RefObject<ScrollBoxRenderable | null>;
   onToggleFile: (index: number) => void;
@@ -128,10 +134,8 @@ export function DiffPanel({
 
   return (
     <box
-      style={{ width, flexDirection: "column", borderStyle: "rounded", backgroundColor: SURFACE.panel }}
+      style={{ width, ...(height === undefined ? {} : { height }), flexDirection: "column", borderStyle: "rounded", backgroundColor: SURFACE.panel }}
       borderColor={focused ? SURFACE.borderFocus : SURFACE.border}
-      bottomTitle={` +${added} -${removed} · click a file to fold `}
-      bottomTitleAlignment="right"
       onMouseDown={onFocus}
     >
       {/* The border `title` prop is decorative with no click support, so the
@@ -179,6 +183,15 @@ export function DiffPanel({
           ))}
         </scrollbox>
       )}
+      {/* Bottom status line, like every other tab's footer: the counts in
+          their own colours (green/red) instead of one monochrome title. */}
+      <box style={{ flexDirection: "row", height: 1, flexShrink: 0, justifyContent: "space-between", paddingLeft: 1, paddingRight: 1 }} backgroundColor={SURFACE.panel}>
+        <box style={{ flexDirection: "row", height: 1, flexShrink: 0 }} backgroundColor={SURFACE.panel}>
+          <text fg={COLOR.added} bg={SURFACE.panel} selectable={false}>{`+${added}`}</text>
+          <text fg={COLOR.removed} bg={SURFACE.panel} selectable={false}>{` -${removed}`}</text>
+        </box>
+        <text fg={COLOR.faint} bg={SURFACE.panel} selectable={false}>{"click a file to fold"}</text>
+      </box>
     </box>
   );
 }

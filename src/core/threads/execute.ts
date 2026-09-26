@@ -19,6 +19,10 @@ import * as Fiber from "effect/Fiber";
 import * as Stream from "effect/Stream";
 
 import type { SkillInventory } from "../catalog/summary.js";
+import type { BackgroundTaskSummary } from "../providers/spi.js";
+import { noteMessageId, USAGE_CONTINUE_GRACE_MS } from "./views.js";
+import { armScheduledTurn } from "./schedule.js";
+import { recordUsageWindows, standingLimit } from "../usage/limits.js";
 import type { McpServerSpec } from "../mcp.js";
 
 import { ClaudeDriver } from "../providers/claude/driver.js";
@@ -26,6 +30,7 @@ import { CodexDriver } from "../providers/codex/driver.js";
 import { GrokDriver } from "../providers/grok/driver.js";
 import { OpenCodeDriver } from "../providers/opencode/driver.js";
 import type {
+  ContextBreakdown,
   ContextWindowUsage,
   ProviderApprovalDecision,
   ProviderImage,
@@ -33,15 +38,18 @@ import type {
   ProviderSendTurnInput,
   ProviderSessionStartInput,
   ProviderUserInputAnswers,
+  SideAnswer,
+  SideQuestionInput,
 } from "../providers/spi.js";
 import { CliError } from "../errors.js";
-import type { InteractionMode, ModelSelection, RuntimeMode } from "../types.js";
+import type { InteractionMode, ModelSelection, ProvidersConfig, RuntimeMode } from "../types.js";
 import {
   captureWorktree,
+  diffCheckpointStat,
   pinCheckpointRef,
   pruneCheckpointRefs,
 } from "../checkpoints/git.js";
-import { completeTurn, failTurn, interruptTurn } from "./threads.js";
+import { completeTurn, failTurn, holdPromotedTurn, interruptTurn, openTurn, startBackgroundTurn, updateThreadMeta } from "./threads.js";
 import { ThreadStore } from "./store.js";
 import { toolActivityRow, type ToolRuntimeEvent } from "./toolactivity.js";
 import { userInputActivityRow, type UserInputRuntimeEvent } from "./requestactivity.js";
@@ -77,12 +85,40 @@ export interface TurnDriver {
   /** Optional only so a test double need not implement it; all four drivers do. */
   resumeCursor?(threadId: string): string | null;
   contextUsage?(threadId: string): Promise<ContextWindowUsage | null>;
+  /** What fills the window, by category; absent where the provider reports only totals. */
+  contextBreakdown?(threadId: string): Promise<ContextBreakdown | null>;
   steerTurn?(threadId: string, text: string): Effect.Effect<void, CliError>;
   /** Skills and slash commands the provider resolves for `workingDirectory`. */
   skillInventory?(workingDirectory: string): Promise<SkillInventory>;
+  /** Background work running in the thread's live session (Claude: commands, Monitor watches, subagents). */
+  backgroundTasks?(threadId: string): readonly BackgroundTaskSummary[];
+  stopBackgroundTask?(threadId: string, taskId: string): Effect.Effect<void, CliError>;
+  /**
+   * A background task's output so far, best-effort — null when the driver
+   * cannot read it right now (unsupported, task gone, nothing written yet).
+   * Not a live stream: callers re-fetch to refresh.
+   */
+  backgroundTaskOutput?(threadId: string, taskId: string): Promise<{ readonly lines: readonly string[] } | null>;
+  /**
+   * Copy a native session whole (its handle, as `resumeCursor` gives it) into
+   * a new one, for a delegated task that starts from its parent's
+   * conversation. Resolves to the copy's handle. Absent where the provider
+   * cannot fork (Codex, Grok).
+   */
+  forkSession?(cursor: string, workingDirectory: string): Promise<string>;
   /** Drop the provider's last `numTurns` prompts. All four drivers have it; Grok's always refuses. */
   rollbackThread?(threadId: string, numTurns: number): Effect.Effect<unknown, CliError>;
+  /**
+   * A side question (`/btw`): answered on a throwaway copy of the thread's
+   * provider context, with no tools, and never recorded in the thread or
+   * its provider session. Runs alongside a turn in flight. Absent where the
+   * provider cannot copy a session into a tool-less one-shot (Claude has
+   * it; Codex and Grok cannot fork, and OpenCode's fork keeps its tools).
+   */
+  sideQuestion?(input: SideQuestionInput): Promise<SideAnswer>;
 }
+
+export type { SideAnswer, SideQuestionInput } from "../providers/spi.js";
 
 export interface TurnOutcome {
   readonly status: "completed" | "failed" | "interrupted";
@@ -125,6 +161,7 @@ export function driverForInstance(
   owner: object,
   instanceId: string,
   factories: TurnDriverFactories = defaultFactories,
+  providers?: ProvidersConfig,
 ): TurnDriver {
   const key = driverKey(instanceId);
   let byFactories = driverCache.get(owner);
@@ -142,7 +179,11 @@ export function driverForInstance(
   let driver: TurnDriver | undefined;
   if (key === "codex") driver = factories.codex?.() ?? new CodexDriver();
   else if (key === "grok") driver = factories.grok?.() ?? new GrokDriver();
-  else if (key === "claude") driver = factories.claude?.() ?? new ClaudeDriver();
+  // Provider settings are read here, once, because the driver owns the
+  // spawned process: an already-running session cannot be moved to a
+  // different binary or config directory. The schema says as much
+  // (`restartRequired`), so a change applies to the next server start.
+  else if (key === "claude") driver = factories.claude?.() ?? new ClaudeDriver(providers?.claude ? { settings: providers.claude } : {});
   else if (key === "opencode") driver = factories.opencode?.() ?? new OpenCodeDriver();
   if (!driver) {
     throw new CliError("PROVIDER_UNKNOWN", `No direct driver for provider "${instanceId}".`, {
@@ -167,6 +208,9 @@ function ensureDriverPump(driver: TurnDriver): Map<string, Set<EventSubscriber>>
   const fiber = Effect.runFork(
     Stream.runForEach(driver.streamEvents, (event) =>
       Effect.sync(() => {
+        // Plan usage belongs to the account, not the thread: recorded here,
+        // once per event, whoever (if anyone) watches the thread.
+        if (event.type === "rate-limits.updated") recordUsageWindows(event.provider, event.windows);
         for (const subscriber of subscribers.get(event.threadId) ?? []) subscriber(event);
       }),
     ),
@@ -250,6 +294,10 @@ export interface ExecuteTurnArgs {
   readonly workingDirectory?: string;
   /** Provider events for this thread while the turn runs (TUI streaming). */
   readonly onEvent?: (event: ProviderRuntimeEvent) => void;
+  /** The provider already started this turn itself (a background turn): await it, send nothing. */
+  readonly driverTurnId?: string;
+  /** A usage limit stopped this turn (`resetsAt` when the provider said): the automatic continue hooks in here. */
+  readonly onUsageLimit?: (storeTurnId: string, resetsAt: string | null) => void;
 }
 
 export function executeTurn(args: ExecuteTurnArgs): Promise<void> {
@@ -291,6 +339,16 @@ async function runPromotedTurn(args: ExecuteTurnArgs): Promise<void> {
     // driver, which this runner does not hold; leave it for a client.
     const current = args.modelSelection ?? thread.modelSelection;
     if (driverKey(selection.instanceId) !== driverKey(current.instanceId)) return;
+    // The turn that just settled may have ended on a usage limit. Running
+    // the next queued message now would only fail it against the same wall
+    // (and then the next, until the whole queue is failed turns), so hold
+    // it for just after the reset instead — it runs then like a scheduled one.
+    const standing = standingLimit(driverKey(selection.instanceId));
+    if (standing !== null) {
+      const until = new Date(Date.parse(standing.resetsAt) + USAGE_CONTINUE_GRACE_MS).toISOString();
+      if (await holdPromotedTurn(store, threadId, next.id, until)) armScheduledTurn(threadId, next.id, until);
+      return;
+    }
     const message = (await store.readMessages(threadId)).find((candidate) => candidate.id === next.messageId);
     if (!message?.text) return;
     // Its images were saved when it was queued; the bytes come off disk.
@@ -305,6 +363,7 @@ async function runPromotedTurn(args: ExecuteTurnArgs): Promise<void> {
       modelSelection: selection,
       workingDirectory: thread.env.path,
       ...(args.onEvent ? { onEvent: args.onEvent } : {}),
+      ...(args.onUsageLimit ? { onUsageLimit: args.onUsageLimit } : {}),
     });
   } catch {
     // Best effort: the turn stays promoted and a later send can see it.
@@ -334,6 +393,8 @@ export async function ensureDriverSession(
     readonly workingDirectory?: string;
     readonly mcpServers?: readonly McpServerSpec[];
     readonly instructions?: string | null;
+    /** Watch the session for what happens between turns (`watchDriverSession`). */
+    readonly store?: ThreadStore;
   } = {},
 ): Promise<void> {
   const hasSession = await Effect.runPromise(driver.hasSession(thread.id)).catch(() => false);
@@ -353,6 +414,117 @@ export async function ensureDriverSession(
       ...(options.instructions ? { instructions: options.instructions } : {}),
     }),
   );
+  if (options.store) watchDriverSession(options.store, driver, thread.id, cwd);
+}
+
+const watching = new WeakMap<TurnDriver, Map<string, () => void>>();
+
+/**
+ * What a provider session does between our turns, recorded for as long as
+ * the session lives in this process:
+ *
+ * - a turn the provider starts itself (`turn.started`, origin background —
+ *   Claude Code woken by a finished background task or a Monitor event) is
+ *   stored and run like any turn, so its output is not lost;
+ * - background tasks starting and ending, and the live set of them, become
+ *   activity rows the transcript and the tasks panel read.
+ */
+export function watchDriverSession(store: ThreadStore, driver: TurnDriver, threadId: string, cwd: string): void {
+  let byThread = watching.get(driver);
+  if (!byThread) {
+    byThread = new Map();
+    watching.set(driver, byThread);
+  }
+  if (byThread.has(threadId)) return;
+  let lastTasks = "";
+  let chain: Promise<void> = Promise.resolve();
+  const latestTurnId = async (): Promise<string | null> => {
+    const turns = await store.readTurns(threadId);
+    return (openTurn(turns) ?? turns.at(-1))?.id ?? null;
+  };
+  const record = (kind: string, summary: string, payload: Record<string, unknown>): void => {
+    chain = chain.then(async () => {
+      await store
+        .appendLedger(threadId, "activity", {
+          id: store.newId(),
+          threadId,
+          turnId: await latestTurnId(),
+          kind,
+          summary,
+          payload,
+          createdAt: store.nowIso(),
+        })
+        .catch(() => undefined);
+      store.emit(threadId, "activity");
+    });
+  };
+  const unsubscribe = subscribeDriverThread(driver, threadId, (event) => {
+    if (event.type === "turn.started" && event.origin === "background") {
+      void runBackgroundTurn(store, driver, threadId, event.turnId, cwd);
+      return;
+    }
+    if (event.type === "background.task") {
+      const verb = event.status === "started" ? "Started" : event.status === "completed" ? "Finished" : event.status === "failed" ? "Failed" : "Stopped";
+      record(`background.${event.status}`, `${verb} in the background: ${event.description || event.taskId}`, {
+        title: event.description || event.taskId,
+        taskId: event.taskId,
+        status: event.status,
+        description: event.description,
+        taskType: event.taskType,
+        toolUseId: event.toolUseId,
+        summary: event.summary,
+      });
+      return;
+    }
+    if (event.type === "background.tasks.changed") {
+      const signature = JSON.stringify(event.tasks);
+      if (signature === lastTasks) return;
+      lastTasks = signature;
+      record("background.tasks", `${event.tasks.length} background task${event.tasks.length === 1 ? "" : "s"} running`, {
+        tasks: event.tasks,
+      });
+      return;
+    }
+    if (event.type === "prompt.suggested") {
+      // It lands after the turn settled, so only this watcher is still
+      // listening; the composer offers the latest one until a turn follows.
+      record("prompt.suggestion", "Suggested next prompt", { suggestion: event.suggestion });
+      return;
+    }
+    if (event.type === "thread.state.changed" && event.state === "session-ended") stop();
+  });
+  const stop = (): void => {
+    unsubscribe();
+    byThread!.delete(threadId);
+  };
+  byThread.set(threadId, stop);
+}
+
+async function runBackgroundTurn(
+  store: ThreadStore,
+  driver: TurnDriver,
+  threadId: string,
+  driverTurnId: string,
+  cwd: string,
+): Promise<void> {
+  try {
+    const thread = await store.readThreadRecord(threadId);
+    if (!thread) return;
+    const turn = await startBackgroundTurn(store, threadId, { modelSelection: null });
+    await executeTurn({
+      store,
+      driver,
+      threadId,
+      storeTurnId: turn.id,
+      prompt: "",
+      driverTurnId,
+      ...(turn.modelSelection ? { modelSelection: turn.modelSelection } : {}),
+      workingDirectory: cwd,
+    });
+  } catch {
+    // Best effort: a background turn that cannot be recorded still runs in
+    // the provider; only its transcript rows are missing.
+  }
 }
 
 /**
@@ -400,8 +572,11 @@ function recordTurnActivity(
   store: ThreadStore,
   threadId: string,
   storeTurnId: string,
-): { onEvent: (event: ProviderRuntimeEvent) => void; flush: () => Promise<void> } {
+  modelSelection: ModelSelection | null,
+  onUsageLimit?: (storeTurnId: string, resetsAt: string | null) => void,
+): { onEvent: (event: ProviderRuntimeEvent) => void; flush: () => Promise<void>; noteFailure: () => void } {
   const written = new Map<string, string>();
+  let limitRecorded = false;
   // Appends are chained rather than fired in parallel: the ledger is an
   // append-only file and the rows must land in the order they happened.
   // The runner awaits this chain before returning, so a one-shot CLI
@@ -419,7 +594,154 @@ function recordTurnActivity(
     };
     chain = chain.then(() => store.appendLedger(threadId, "activity", row).catch(() => undefined));
   };
+  const notes = new Set<string>();
+  const switches = new Map<string, "refusal-fallback" | "auto">();
   const onEvent = (event: ProviderRuntimeEvent): void => {
+    if (event.type === "reasoning.updated") {
+      // One row as it starts and one as it ends; both carry the same
+      // `toolCallId`, so the transcript folds them into one card that goes
+      // "Thinking…" → "Thought for 12s".
+      const signature = `reasoning:${event.reasoningId}:${event.status}`;
+      if (written.has(signature)) return;
+      written.set(signature, signature);
+      const took =
+        event.durationMs === null
+          ? null
+          : event.durationMs < 1000
+            ? `${Math.max(1, Math.floor(event.durationMs))}ms`
+            : `${Math.round(event.durationMs / 1000)}s`;
+      append("reasoning", event.status === "running" ? "Thinking" : took === null ? "Thought" : `Thought for ${took}`, {
+        itemType: "reasoning",
+        toolCallId: `reasoning:${event.reasoningId}`,
+        status: event.status === "running" ? "inProgress" : "completed",
+        text: event.text,
+        startedAt: event.startedAt,
+        durationMs: event.durationMs,
+      });
+      return;
+    }
+    if (event.type === "message.retracted") {
+      // The provider took back a refused attempt's output. Ledgers are
+      // append-only, so this is a tombstone the transcript filters by.
+      append("message.retracted", "Output retracted", {
+        messageIds: event.messageIds.map((messageId) => noteMessageId(storeTurnId, messageId)),
+        toolCallIds: [...event.toolUseIds],
+      });
+      return;
+    }
+    if (event.type === "session.notice") {
+      append("notice", event.title, { notice: event.notice, provider: event.provider, detail: event.detail });
+      return;
+    }
+    if (event.type === "subagent.updated") {
+      // Folds per agent (`toolCallId`) into one row that goes started → stopped.
+      append("subagent", `${event.agentType} ${event.status}`, {
+        toolCallId: `subagent:${event.agentId}`,
+        agentId: event.agentId,
+        agentType: event.agentType,
+        status: event.status,
+        lastMessage: event.lastMessage,
+      });
+      return;
+    }
+    if (event.type === "model.changed") {
+      // A refusal fallback can also surface as the provider's own "auto"
+      // switch to the same model. One row per model per turn: the refusal
+      // wins (it says why), and a later "auto" for the same move adds nothing.
+      const switchKey = `model:${storeTurnId}:${event.to}`;
+      const seen = switches.get(switchKey);
+      if (seen === "refusal-fallback" || (seen === "auto" && event.reason === "auto")) return;
+      switches.set(switchKey, event.reason);
+      append("model.changed", `Switched to ${event.toLabel ?? event.to}`, {
+        toolCallId: switchKey,
+        provider: event.provider,
+        from: event.from,
+        to: event.to,
+        fromLabel: event.fromLabel ?? null,
+        toLabel: event.toLabel ?? null,
+        reason: event.reason,
+        scope: event.scope,
+        category: event.category,
+      });
+      // A session-wide switch sticks: the turn ran on the new model, and the
+      // thread's own choice follows it — otherwise the next turn would ask
+      // for the old model and walk straight back into the same refusal.
+      if (event.scope === "session" && modelSelection) {
+        const next: ModelSelection = { ...modelSelection, model: event.to };
+        chain = chain.then(async () => {
+          await store
+            .withThreadLock(threadId, () => store.updateTurn(threadId, storeTurnId, { modelSelection: next }))
+            .catch(() => undefined);
+          await updateThreadMeta(store, threadId, { modelSelection: next }).catch(() => undefined);
+        });
+      }
+      return;
+    }
+    if (event.type === "thread.state.changed" && (event.state === "rate-limited" || event.state === "usage-wrap-up")) {
+      // A wrap-up is the same limit, met gracefully: the turn goes on, on a
+      // small allowance, to a stopping point — so the continue after the
+      // reset is just as due.
+      const wrapUp = event.state === "usage-wrap-up";
+      const raw = event.raw !== null && typeof event.raw === "object" ? (event.raw as Record<string, unknown>) : {};
+      const resetsAt = typeof raw.resetsAt === "string" ? raw.resetsAt : null;
+      limitRecorded = true;
+      append(wrapUp ? "usage.wrap-up" : "usage.limit", wrapUp ? "Usage limit reached, wrapping up" : "Usage limit reached", {
+        provider: event.provider,
+        rateLimitType: typeof raw.rateLimitType === "string" ? raw.rateLimitType : null,
+        label: typeof raw.label === "string" ? raw.label : null,
+        resetsAt,
+      });
+      onUsageLimit?.(storeTurnId, resetsAt);
+      return;
+    }
+    if (event.type === "assistant.note") {
+      // An interim message, kept as its own assistant row so the transcript
+      // can show it between the tool calls it narrates.
+      if (notes.has(event.messageId) || !event.text.trim()) return;
+      notes.add(event.messageId);
+      const createdAt = store.nowIso();
+      const row = {
+        id: noteMessageId(storeTurnId, event.messageId),
+        threadId,
+        turnId: storeTurnId,
+        role: "assistant",
+        text: event.text,
+        createdAt,
+      };
+      chain = chain.then(() => store.appendLedger(threadId, "messages", row).catch(() => undefined));
+      return;
+    }
+    if (event.type === "turn.plan.updated") {
+      // A live checklist re-emits on every step change; each version is its
+      // own row so `latestPlan` (the pinned tasks panel) always reads the
+      // newest, and `collapseToolActivities` folds them onto one card in
+      // the transcript (which hides it anyway — the panel is where this
+      // renders). A markdown plan-mode proposal is not this shape (no
+      // `plan` array) — recorded the same way, just never read as a checklist.
+      const raw = event.raw;
+      const payload = raw !== null && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+      append("turn.plan.updated", "Plan updated", payload);
+      return;
+    }
+    if (event.type === "permission.request.opened" || event.type === "permission.request.resolved") {
+      // Bracket rows for a tool approval, so a reader can tell how long the
+      // turn stood waiting on the user (the transcript's "Worked for" and
+      // live clock leave that time out). Tool name only: the input can be
+      // a whole file, and the prompt itself is rendered live elsewhere.
+      const opened = event.type === "permission.request.opened";
+      const key = `permission:${event.requestId}:${opened ? "requested" : "resolved"}`;
+      if (written.has(key)) return;
+      written.set(key, key);
+      const raw = event.raw !== null && typeof event.raw === "object" ? (event.raw as Record<string, unknown>) : {};
+      const toolName = typeof raw.toolName === "string" ? raw.toolName : null;
+      append(opened ? "permission.requested" : "permission.resolved", opened ? `Asked to use ${toolName ?? "a tool"}` : "Permission answered", {
+        requestId: event.requestId,
+        provider: event.provider,
+        toolName,
+        ...(!opened && typeof raw.behavior === "string" ? { behavior: raw.behavior } : {}),
+      });
+      return;
+    }
     if (
       event.type === "user-input.request.opened" ||
       event.type === "user-input.request.resolved"
@@ -454,13 +776,37 @@ function recordTurnActivity(
     written.set(row.callId, row.signature);
     append(row.kind, row.summary, row.payload);
   };
-  return { onEvent, flush: () => chain };
+  /**
+   * Called when the turn fails. A turn that ran into a limit already in
+   * force gets no fresh rate-limit event — the provider only reports one
+   * when the limit changes — so without this it fails with a bare error,
+   * reads to the transcript as "a later turn got through", and hides the
+   * limit card (and never schedules the continue). A queued message sent
+   * after a hit is exactly that turn.
+   */
+  const noteFailure = (): void => {
+    if (limitRecorded || modelSelection === null) return;
+    const provider = driverKey(modelSelection.instanceId);
+    const standing = standingLimit(provider);
+    if (standing === null) return;
+    limitRecorded = true;
+    append("usage.limit", "Usage limit reached", {
+      provider,
+      rateLimitType: null,
+      label: standing.label,
+      resetsAt: standing.resetsAt,
+      // Inferred from the recorded windows, not announced for this turn.
+      standing: true,
+    });
+    onUsageLimit?.(storeTurnId, standing.resetsAt);
+  };
+  return { onEvent, flush: () => chain, noteFailure };
 }
 
 async function runExecuteTurn(args: ExecuteTurnArgs): Promise<void> {
   const { store, driver, threadId, storeTurnId } = args;
   const cwd = args.workingDirectory?.trim() ? args.workingDirectory.trim() : null;
-  const recordTools = recordTurnActivity(store, threadId, storeTurnId);
+  const recordTools = recordTurnActivity(store, threadId, storeTurnId, args.modelSelection ?? null, args.onUsageLimit);
   const onEvent = args.onEvent;
   const unsubscribe = subscribeDriverThread(driver, threadId, (event) => {
     recordTools.onEvent(event);
@@ -470,24 +816,47 @@ async function runExecuteTurn(args: ExecuteTurnArgs): Promise<void> {
   const pre = cwd ? await captureWorktree(cwd, `moxen ${threadId}/${storeTurnId} pre`) : null;
   const controller = new AbortController();
   store.trackRunning(storeTurnId, () => controller.abort());
+  // Live context readings while the turn runs: a long turn otherwise showed
+  // the reading from before it started until it ended. Only a moved number
+  // is written, and a slow provider never stacks readings up.
+  let lastLiveReading: string | null = null;
+  let liveReading = false;
+  const liveContext = setInterval(() => {
+    if (liveReading) return;
+    liveReading = true;
+    void recordContextUsage(store, driver, threadId, storeTurnId, (usage) => {
+      // Cost moves on its own (a long tool run between requests does not
+      // grow the context, but the requests before it cost something).
+      const reading = `${usage.usedTokens}:${usage.costUsd ?? ""}`;
+      if (reading === lastLiveReading) return false;
+      lastLiveReading = reading;
+      return true;
+    }).finally(() => {
+      liveReading = false;
+    });
+  }, LIVE_CONTEXT_MS);
+  liveContext.unref?.();
   const onAbort = (): void => {
     Effect.runFork(driver.interruptTurn(threadId));
   };
   controller.signal.addEventListener("abort", onAbort, { once: true });
   try {
-    const sent = await Effect.runPromise(
-      driver.sendTurn({
-        threadId,
-        prompt: args.prompt,
-        ...(args.images?.length ? { images: args.images } : {}),
-        ...(args.modelSelection ? { modelSelection: args.modelSelection } : {}),
-      }),
-    );
+    const sent = args.driverTurnId
+      ? { turnId: args.driverTurnId }
+      : await Effect.runPromise(
+          driver.sendTurn({
+            threadId,
+            prompt: args.prompt,
+            ...(args.images?.length ? { images: args.images } : {}),
+            ...(args.modelSelection ? { modelSelection: args.modelSelection } : {}),
+          }),
+        );
     // Persisted as soon as the turn is under way, not only at settle: a
     // process that dies mid-turn is exactly the one whose successor needs it.
     await persistResumeCursor(store, driver, threadId);
     const outcome = await driver.awaitTurn(threadId, sent.turnId, controller.signal);
     await recordContextUsage(store, driver, threadId, storeTurnId);
+    if (outcome.status === "failed") recordTools.noteFailure();
     await settleTurn(store, args, outcome, cwd, pre);
   } catch (cause) {
     if (cause instanceof CliError && cause.code === "TURN_ABORTED") {
@@ -496,6 +865,7 @@ async function runExecuteTurn(args: ExecuteTurnArgs): Promise<void> {
       return;
     }
     const message = cause instanceof Error ? cause.message : String(cause);
+    recordTools.noteFailure();
     try {
       await failTurn(store, threadId, storeTurnId, { error: message.slice(0, 500) });
     } catch {
@@ -503,6 +873,7 @@ async function runExecuteTurn(args: ExecuteTurnArgs): Promise<void> {
     }
     await settleCheckpoints(store, args, cwd, pre);
   } finally {
+    clearInterval(liveContext);
     controller.signal.removeEventListener("abort", onAbort);
     store.untrackRunning(storeTurnId);
     unsubscribe();
@@ -516,6 +887,9 @@ async function runExecuteTurn(args: ExecuteTurnArgs): Promise<void> {
 
 const CONTEXT_USAGE_TIMEOUT_MS = 10_000;
 
+/** How often a running turn's context reading refreshes. */
+const LIVE_CONTEXT_MS = 30_000;
+
 /**
  * Record how full the context window is as the turn ends — before its
  * outcome, so whoever sees the turn settle also sees the reading. The
@@ -527,6 +901,8 @@ async function recordContextUsage(
   driver: TurnDriver,
   threadId: string,
   turnId: string,
+  /** Live readings pass this to skip writing a row when nothing moved. */
+  shouldRecord: (usage: ContextWindowUsage) => boolean = () => true,
 ): Promise<void> {
   if (!driver.contextUsage) return;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -536,7 +912,7 @@ async function recordContextUsage(
       timer = setTimeout(() => resolve(null), CONTEXT_USAGE_TIMEOUT_MS);
     }),
   ]).finally(() => clearTimeout(timer));
-  if (usage === null) return;
+  if (usage === null || !shouldRecord(usage)) return;
   const summary =
     usage.maxTokens === null
       ? `${usage.usedTokens} tokens in context`
@@ -592,6 +968,8 @@ async function settleCheckpoints(
   const available = pre !== null && post !== null;
   if (cwd && pre) await pinCheckpointRef(args.threadId, args.storeTurnId, pre, cwd, "pre").catch(() => undefined);
   if (cwd && post) await pinCheckpointRef(args.threadId, args.storeTurnId, post, cwd, "post").catch(() => undefined);
+  // The per-file summary clients draw a turn's diff row from.
+  const files = cwd && pre && post ? await diffCheckpointStat(cwd, pre, post) : [];
   try {
     await store.appendLedger(args.threadId, "checkpoints", {
       id: store.newId(),
@@ -600,6 +978,7 @@ async function settleCheckpoints(
       status: available ? "available" : "unavailable",
       ref: post,
       baseRef: pre,
+      ...(available ? { files } : {}),
       createdAt: store.nowIso(),
     });
   } catch {

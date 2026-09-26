@@ -1,5 +1,6 @@
 import type { MessageEnvelope, SessionEnvelope, ThreadEnvelope, ActivityEnvelope } from "../../core/types.js";
 import { describeActivity } from "./activity.js";
+import { USAGE_CONTINUE_PROMPT } from "../../core/threads/views.js";
 
 export interface TimelineEntry {
   id: string;
@@ -17,6 +18,8 @@ export interface TimelineEntry {
   editStats: { added: number; removed: number } | null;
   /** A plan proposed for this turn (plan-mode approval flow) — see `ProposedPlanEnvelope`. */
   proposedPlan: TurnProposedPlan | null;
+  /** A user message still waiting: queued behind the running turn, or scheduled (`scheduledFor`). */
+  queued?: { scheduledFor: string | null; reason: "user" | "usage-reset" | "usage-hold" | null } | undefined;
 }
 
 export interface TurnCheckpoint {
@@ -59,6 +62,8 @@ export interface ContextUsage {
   cachedInputTokens: number | null;
   compactsAutomatically: boolean | null;
   autoCompactThreshold: number | null;
+  /** Running session total in USD; Claude only, null when the driver never reports one. */
+  costUsd: number | null;
 }
 
 export interface ContextResume {
@@ -86,6 +91,12 @@ export interface ThreadState {
   synchronized: boolean;
   /** Event types this build does not model, kept so unknown traffic is visible rather than silent. */
   unhandled: Record<string, number>;
+  /**
+   * Reasoning text streamed live for thoughts still running, by the
+   * `toolCallId` their activity rows share. Never stored: a thought's
+   * completed row carries its whole text and supersedes this.
+   */
+  liveReasoning: Record<string, string>;
 }
 
 export function emptyThreadState(): ThreadState {
@@ -102,6 +113,7 @@ export function emptyThreadState(): ThreadState {
     contextResume: null,
     synchronized: false,
     unhandled: {},
+    liveReasoning: {},
   };
 }
 
@@ -175,6 +187,7 @@ function decodeContextUsage(raw: Record<string, unknown>): ContextUsage | null {
     cachedInputTokens: typeof raw.cachedInputTokens === "number" ? raw.cachedInputTokens : null,
     compactsAutomatically: typeof raw.compactsAutomatically === "boolean" ? raw.compactsAutomatically : null,
     autoCompactThreshold: typeof raw.autoCompactThreshold === "number" ? raw.autoCompactThreshold : null,
+    costUsd: typeof raw.costUsd === "number" ? raw.costUsd : null,
   };
 }
 
@@ -198,6 +211,7 @@ function decodeContextWindowActivity(activity: ActivityEnvelope): ContextUsage |
     cachedInputTokens: typeof payload.cachedInputTokens === "number" ? payload.cachedInputTokens : null,
     compactsAutomatically: typeof payload.compactsAutomatically === "boolean" ? payload.compactsAutomatically : null,
     autoCompactThreshold: typeof payload.autoCompactThreshold === "number" ? payload.autoCompactThreshold : null,
+    costUsd: typeof payload.costUsd === "number" ? payload.costUsd : null,
   };
 }
 
@@ -260,16 +274,45 @@ function snapshotContextUsage(snapshot: Record<string, unknown>, thread: Record<
   return null;
 }
 
+/**
+ * A snapshot lists only stored messages, so replacing the list wiped any
+ * text still streaming — and the next delta re-added just a fragment. Keep
+ * a streaming message while its turn is still running and nothing stored
+ * has taken its id; a stored note arrives under the same id and replaces it.
+ */
+function withLiveStreams(
+  stored: readonly MessageEnvelope[],
+  previous: readonly MessageEnvelope[],
+  thread: Record<string, unknown>,
+): MessageEnvelope[] {
+  const latest = asRecord(thread.latestTurn);
+  const running = latest !== null && latest.state === "running" && typeof latest.turnId === "string" ? latest.turnId : null;
+  if (running === null) return [...stored];
+  const ids = new Set(stored.map((message) => message.id));
+  const live = previous.filter((message) => message.streaming && message.turnId === running && !ids.has(message.id));
+  return [...stored, ...live];
+}
+
 function applySnapshot(state: ThreadState, snapshot: Record<string, unknown>): ThreadState {
   const thread = asRecord(snapshot.thread);
   if (thread === null) return state;
   const activities = asArray(thread.activities).flatMap((row) => decodeActivity(row) ?? []);
   const windowUsage = latestContextWindowUsage(activities);
+  const stored = asArray(thread.messages).flatMap((row) => decodeMessage(row) ?? []);
+  // Streamed thinking outlives a snapshot until its thought's completed row lands.
+  const finished = new Set(
+    activities.flatMap((activity) => {
+      const payload = asRecord(activity.payload);
+      return payload?.itemType === "reasoning" && payload.status === "completed" && typeof payload.toolCallId === "string" ? [payload.toolCallId] : [];
+    }),
+  );
+  const liveReasoning = Object.fromEntries(Object.entries(state.liveReasoning).filter(([toolCallId]) => !finished.has(toolCallId)));
   return {
     ...state,
+    liveReasoning,
     snapshotSequence: typeof snapshot.snapshotSequence === "number" ? snapshot.snapshotSequence : state.snapshotSequence,
     thread: thread as unknown as ThreadEnvelope,
-    messages: asArray(thread.messages).flatMap((row) => decodeMessage(row) ?? []),
+    messages: withLiveStreams(stored, state.messages, thread),
     activities,
     checkpoints: asArray(thread.checkpoints).flatMap((row) => decodeCheckpoint(row) ?? []),
     proposedPlans: asArray(thread.proposedPlans).flatMap((row) => decodeProposedPlan(row) ?? []),
@@ -301,7 +344,10 @@ export function applyThreadFrame(state: ThreadState, frame: unknown): ThreadStat
   const type = typeof event.type === "string" ? event.type : "unknown";
 
   if (payload !== null && type === "thread.message-sent") {
-    const message = decodeMessage(payload);
+    // The wire nests the message (`payload.message`, see `server/protocol.ts`);
+    // decoding the payload itself found no id and dropped every streamed
+    // delta, so live text never showed. A flat payload is still accepted.
+    const message = decodeMessage(asRecord(payload.message) ?? payload);
     if (message === null) return state;
     // The server streams an assistant reply as many `thread.message-sent`
     // events carrying incremental `text` with `streaming: true`, then one
@@ -318,6 +364,12 @@ export function applyThreadFrame(state: ThreadState, frame: unknown): ThreadStat
             ? message.text
             : existing.text;
     return { ...state, messages: upsertById(state.messages, { ...message, text }) };
+  }
+  if (payload !== null && type === "thread.reasoning-delta") {
+    const toolCallId = typeof payload.toolCallId === "string" ? payload.toolCallId : null;
+    const text = typeof payload.text === "string" ? payload.text : "";
+    if (toolCallId === null || text.length === 0) return state;
+    return { ...state, liveReasoning: { ...state.liveReasoning, [toolCallId]: `${state.liveReasoning[toolCallId] ?? ""}${text}` } };
   }
   if (payload !== null && type === "thread.activity-appended") {
     const raw = asRecord(payload.activity);
@@ -516,14 +568,117 @@ function isBookkeepingActivity(activity: ActivityEnvelope): boolean {
     // The answer itself is visible (answer panel + the user's next message);
     // a bare "User input submitted" row adds nothing.
     activity.kind === "user-input.resolved" ||
+    // Tool-approval brackets: they exist so the working clock can leave the
+    // wait out; the prompt itself is shown live, and the tool call that
+    // follows is the visible outcome.
+    activity.kind === "permission.requested" ||
+    activity.kind === "permission.resolved" ||
     // Our own ledger's turn bookkeeping. These rows exist so `threads read`
     // can reconstruct a turn's lifecycle; none of them carries anything the
     // transcript doesn't already show. Left in, a plain two-message chat
     // read as "Worked for 4s · 2 steps" over a `turn.started` echo of the
     // prompt and a `turn.completed` row whose summary is a raw turn id.
     // `turn.failed` is deliberately absent: its summary is the real error.
-    TURN_LIFECYCLE_KINDS.has(activity.kind)
+    TURN_LIFECYCLE_KINDS.has(activity.kind) ||
+    // The live set feeds the background panel. (Per-task rows stay: they
+    // collapse by `taskId` into one card that goes running → finished.)
+    activity.kind === "background.tasks" ||
+    // A tombstone: what it names is hidden, the row itself says nothing.
+    activity.kind === "message.retracted" ||
+    // A native subagent's lifecycle: its Agent tool call already has a card
+    // in the transcript; these rows feed the agents view.
+    activity.kind === "subagent" ||
+    // Offered in the composer instead (`promptSuggestion`).
+    activity.kind === "prompt.suggestion"
   );
+}
+
+/** A tool call the provider took back with its refused attempt. */
+function isRetractedToolActivity(activity: ActivityEnvelope, retracted: ReadonlySet<string>): boolean {
+  if (retracted.size === 0) return false;
+  const callId = asRecord(activity.payload)?.toolCallId;
+  return typeof callId === "string" && retracted.has(callId);
+}
+
+function stringOf(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+export interface BackgroundTaskRow {
+  taskId: string;
+  taskType: string | null;
+  description: string;
+  /** The tool that started it ("Bash", "Monitor", …); null when the driver never reported one. */
+  toolName: string | null;
+  command: string | null;
+  startedAt: string | null;
+}
+
+/**
+ * The background tasks running now — `run_in_background` commands, Monitor
+ * watches, background subagents — from the latest `background.tasks` row
+ * (the provider's full live set, written whenever it changes). Empty when
+ * the latest set is empty or none was ever reported.
+ */
+export function latestBackgroundTasks(state: ThreadState): BackgroundTaskRow[] {
+  for (let index = state.activities.length - 1; index >= 0; index -= 1) {
+    const activity = state.activities[index];
+    if (activity === undefined || activity.kind !== "background.tasks") continue;
+    const payload = asRecord(activity.payload);
+    const tasks = Array.isArray(payload?.tasks) ? payload.tasks : [];
+    return tasks.flatMap((raw) => {
+      const task = asRecord(raw);
+      const taskId = task === null ? null : stringOf(task.taskId);
+      if (task === null || taskId === null) return [];
+      return [
+        {
+          taskId,
+          taskType: stringOf(task.taskType),
+          description: stringOf(task.description) ?? taskId,
+          toolName: stringOf(task.toolName),
+          command: stringOf(task.command),
+          startedAt: stringOf(task.startedAt),
+        },
+      ];
+    });
+  }
+  return [];
+}
+
+/**
+ * "1 shell, 1 monitor" / "3 shells" — the composer footer's background
+ * segment, Claude Code-style. Groups by `toolName` (falling back to "task"
+ * for anything else, e.g. subagents); null when nothing is running, which
+ * hides the segment.
+ */
+export type BackgroundTaskKind = "shell" | "monitor" | "agent" | "task";
+
+/** `Bash` → shell, `Monitor` → monitor, a subagent → agent; `taskType` covers shells and monitors alike, so the tool decides. */
+export function backgroundTaskKind(task: Pick<BackgroundTaskRow, "toolName" | "taskType">): BackgroundTaskKind {
+  if (task.toolName === "Bash") return "shell";
+  if (task.toolName === "Monitor") return "monitor";
+  if (task.toolName === "Agent" || task.toolName === "Task") return "agent";
+  if (task.taskType === "local_agent" || task.taskType === "remote_agent") return "agent";
+  if (task.taskType === "local_bash") return "shell";
+  return "task";
+}
+
+/** What a task row is called: its description, else its command's first line, else its id — never blank. */
+export function backgroundTaskTitle(task: Pick<BackgroundTaskRow, "description" | "command" | "taskId">): string {
+  const description = task.description.trim();
+  if (description) return description;
+  const command = task.command?.trim().split("\n")[0]?.trim();
+  return command || task.taskId;
+}
+
+export function backgroundSummaryLabel(tasks: readonly BackgroundTaskRow[]): string | null {
+  if (tasks.length === 0) return null;
+  const counts = new Map<string, number>();
+  for (const task of tasks) {
+    const kind = backgroundTaskKind(task);
+    counts.set(kind, (counts.get(kind) ?? 0) + 1);
+  }
+  return [...counts.entries()].map(([kind, count]) => `${count} ${count === 1 ? kind : `${kind}s`}`).join(", ");
 }
 
 /**
@@ -534,6 +689,9 @@ function isBookkeepingActivity(activity: ActivityEnvelope): boolean {
 const TURN_LIFECYCLE_KINDS: ReadonlySet<string> = new Set([
   "turn.started",
   "turn.queued",
+  "turn.scheduled",
+  // Held for a usage reset: the Queued panel says so, next to the message.
+  "turn.held",
   "turn.promoted",
   "turn.completed",
   "turn.interrupted",
@@ -603,6 +761,8 @@ export interface PendingUserInputOption {
   label: string;
   description: string | null;
   value: string | null;
+  /** Markdown shown while the option is highlighted (a mockup, a snippet). */
+  preview: string | null;
 }
 
 export interface PendingUserInputQuestion {
@@ -654,6 +814,7 @@ function decodeUserInputRequest(activity: ActivityEnvelope): PendingUserInputReq
         label,
         description: asText(option?.description),
         value: asText(option?.value),
+        preview: asText(option?.preview),
       });
     }
     questions.push({
@@ -689,11 +850,129 @@ export function pendingUserInputRequests(state: ThreadState): PendingUserInputRe
   return requested.filter((request) => !resolved.has(request.requestId));
 }
 
+/**
+ * Turns taken back before they ran: a queued or scheduled message cancelled
+ * while it waited. The ledger marks the interrupt `beforeStart`; older rows
+ * are recognised by a queued/scheduled turn that was interrupted without
+ * ever being promoted.
+ */
+export function cancelledBeforeStart(activities: readonly ActivityEnvelope[]): Set<string> {
+  const waited = new Set<string>();
+  const promoted = new Set<string>();
+  const interrupted = new Set<string>();
+  const cancelled = new Set<string>();
+  for (const activity of activities) {
+    const turnId = activity.turnId;
+    if (turnId === null) continue;
+    if (activity.kind === "turn.queued" || activity.kind === "turn.scheduled") waited.add(turnId);
+    else if (activity.kind === "turn.promoted") promoted.add(turnId);
+    else if (activity.kind === "turn.interrupted") {
+      interrupted.add(turnId);
+      if (asRecord(activity.payload)?.beforeStart === true) cancelled.add(turnId);
+    }
+  }
+  for (const turnId of interrupted) if (waited.has(turnId) && !promoted.has(turnId)) cancelled.add(turnId);
+  return cancelled;
+}
+
+/** Turns that have not run: still waiting in the queue, or cancelled before they started. */
+function unstartedTurnIds(state: ThreadState): Set<string> {
+  const unstarted = cancelledBeforeStart(state.activities);
+  for (const queued of state.thread?.queuedTurns ?? []) unstarted.add(queued.turnId);
+  return unstarted;
+}
+
+/**
+ * The continue moxen sends once a usage limit resets: tagged `usage-continue`,
+ * or (in threads from before the tag) recognised by its fixed text.
+ */
+export function isUsageContinue(message: MessageEnvelope | null): boolean {
+  if (message === null) return false;
+  return message.origin === "usage-continue" || (message.role === "user" && message.text === USAGE_CONTINUE_PROMPT);
+}
+
+/** One message the agent has not been sent yet, for the Queued panel. */
+export interface QueuedMessage {
+  readonly turnId: string;
+  readonly messageId: string;
+  readonly text: string;
+  readonly attachments: number;
+  /** When it will be sent, if it waits for a time rather than for the turn. */
+  readonly scheduledFor: string | null;
+  readonly reason: "user" | "usage-reset" | "usage-hold" | null;
+}
+
+/**
+ * Messages still waiting to reach the agent, in the order they will be
+ * sent: the ones queued behind the running turn first (a settle promotes
+ * the oldest ungated one), then those waiting for a time, soonest first.
+ * A waiting continue is left out — the usage-limit banner owns it.
+ */
+export function queuedMessages(state: ThreadState): QueuedMessage[] {
+  const byId = new Map(state.messages.map((message) => [message.id, message] as const));
+  const items = (state.thread?.queuedTurns ?? []).flatMap((queued): QueuedMessage[] => {
+    const message = byId.get(queued.messageId);
+    if (message === undefined || queued.scheduleReason === "usage-reset" || isUsageContinue(message)) return [];
+    const attachments = Array.isArray(message.attachments) ? message.attachments.length : 0;
+    return [
+      {
+        turnId: queued.turnId,
+        messageId: queued.messageId,
+        text: message.text,
+        attachments,
+        scheduledFor: queued.scheduledFor,
+        reason: queued.scheduleReason,
+      },
+    ];
+  });
+  const ungated = items.filter((item) => item.scheduledFor === null);
+  const timed = items
+    .filter((item) => item.scheduledFor !== null)
+    .sort((left, right) => Date.parse(left.scheduledFor!) - Date.parse(right.scheduledFor!));
+  return [...ungated, ...timed];
+}
+
+/** A running thought's rows carry no text yet: give them what has streamed so far. */
+function withLiveReasoning(activities: readonly ActivityEnvelope[], live: Record<string, string>): readonly ActivityEnvelope[] {
+  if (Object.keys(live).length === 0) return activities;
+  return activities.map((activity) => {
+    const payload = asRecord(activity.payload);
+    if (payload?.itemType !== "reasoning" || payload.status === "completed" || typeof payload.toolCallId !== "string") return activity;
+    const text = live[payload.toolCallId];
+    return text === undefined ? activity : { ...activity, payload: { ...payload, text } };
+  });
+}
+
+/** The provider's own one-line "limit reached" reply: "You've hit your session limit · resets 4:40am (Europe/Madrid)". */
+const PROVIDER_LIMIT_TEXT = /^you['’]ve (hit|reached) your [^\n]*limit[^\n]*$/iu;
+
 /** Messages and activities interleaved into the single chronological list the chat pane renders. */
 export function timeline(state: ThreadState): TimelineEntry[] {
   const checkpointsByTurn = new Map(state.checkpoints.map((checkpoint) => [checkpoint.turnId, checkpoint]));
+  const retracted = retractedIds(state.activities);
+  const waiting = new Map(
+    (state.thread?.queuedTurns ?? []).map((queued) => [queued.messageId, { scheduledFor: queued.scheduledFor, reason: queued.scheduleReason }] as const),
+  );
+  // Taken back before running: gone from the transcript, prompt and all.
+  const cancelled = cancelledBeforeStart(state.activities);
+  const limitedTurns = new Set(
+    state.activities.flatMap((activity) =>
+      (activity.kind === "usage.limit" || activity.kind === "usage.wrap-up") && activity.turnId !== null ? [activity.turnId] : [],
+    ),
+  );
   const entries: TimelineEntry[] = [
-    ...state.messages.map((message) => ({
+    ...state.messages
+      .filter((message) => !retracted.messages.has(message.id) && !cancelled.has(message.turnId ?? ""))
+      // A message the agent has not been sent yet — queued behind the
+      // running turn, scheduled, or held for a usage reset — is the Queued
+      // panel's (and a waiting continue the usage-limit banner's). It joins
+      // the transcript once it is sent, which is when the agent sees it.
+      .filter((message) => !waiting.has(message.id))
+      // Claude's own "You've hit your session limit · resets 4:40am" says
+      // what the turn's usage-limit notice already shows, better.
+      .filter((message) => !(message.role === "assistant" && limitedTurns.has(message.turnId ?? "") && PROVIDER_LIMIT_TEXT.test(message.text.trim())))
+      .map((message) => ({
+      ...(waiting.has(message.id) ? { queued: waiting.get(message.id) } : {}),
       id: message.id,
       at: message.createdAt,
       turnId: message.turnId,
@@ -708,10 +987,14 @@ export function timeline(state: ThreadState): TimelineEntry[] {
       editStats: null,
       proposedPlan: null,
     })),
-    ...collapseToolActivities(state.activities)
+    ...collapseToolActivities(withLiveReasoning(state.activities, state.liveReasoning))
       .filter(
         (activity) =>
-          !isPlanActivity(activity) && !isBookkeepingActivity(activity) && !isQuestionToolActivity(activity),
+          !isPlanActivity(activity) &&
+          !isBookkeepingActivity(activity) &&
+          !cancelled.has(activity.turnId ?? "") &&
+          !isQuestionToolActivity(activity) &&
+          !isRetractedToolActivity(activity, retracted.toolCalls),
       )
       .map((activity) => ({
         id: activity.id,
@@ -819,43 +1102,99 @@ export function latestPlan(state: ThreadState): PlanSnapshot | null {
 }
 
 export interface UsageLimitBlock {
-  message: string;
+  /** The window that ran out, as the provider names it ("Session", "Weekly"). */
+  label: string | null;
   resetsAt: Date | null;
   rateLimitType: string | null;
+  /** Met gracefully: the turn wraps up on a small allowance rather than stopping. */
+  wrapUp: boolean;
 }
 
 /**
- * A turn stopped by provider quota. The reset instant rides along on the
- * `runtime.warning` activity, so no usage polling is needed to know when the
- * thread can continue.
+ * The thread's latest turn ran into a plan usage limit that has not reset
+ * yet. The runner records the hit as a `usage.limit` row carrying the reset
+ * instant, so no usage polling is needed to know when the thread can go on.
  */
-export function detectUsageLimit(state: ThreadState): UsageLimitBlock | null {
-  const lastError = state.session?.lastError;
-  const stopped = state.session?.status === "stopped" || state.session?.status === "error";
-  if (!stopped || typeof lastError !== "string" || !/usage limit/i.test(lastError)) return null;
-
+export function detectUsageLimit(state: ThreadState, now: number = Date.now()): UsageLimitBlock | null {
+  // A continue scheduled (or cancelled) after the hit hasn't run, so it
+  // hasn't got through the limit: it must not count as the latest turn.
+  const unstarted = unstartedTurnIds(state);
+  const latestTurn =
+    [...state.activities].reverse().find((activity) => activity.turnId !== null && !unstarted.has(activity.turnId))?.turnId ?? null;
   for (const activity of [...state.activities].reverse()) {
-    if (activity.kind !== "runtime.warning") continue;
-    const detail = asRecord(asRecord(activity.payload)?.detail);
-    const resetsAt = detail?.resetsAt;
-    if (typeof resetsAt === "number") {
-      return {
-        message: lastError,
-        resetsAt: new Date(resetsAt * 1000),
-        rateLimitType: typeof detail?.rateLimitType === "string" ? detail.rateLimitType : null,
-      };
+    if (activity.kind !== "usage.limit" && activity.kind !== "usage.wrap-up") continue;
+    // Only the latest turn's hit counts: a later turn that ran got through.
+    if (latestTurn !== null && activity.turnId !== latestTurn) return null;
+    const payload = asRecord(activity.payload) ?? {};
+    const resetsIso = typeof payload.resetsAt === "string" ? payload.resetsAt : null;
+    const resetsAt = resetsIso === null || Number.isNaN(Date.parse(resetsIso)) ? null : new Date(resetsIso);
+    if (resetsAt !== null && resetsAt.getTime() <= now) return null;
+    return {
+      label: typeof payload.label === "string" ? payload.label : null,
+      resetsAt,
+      rateLimitType: typeof payload.rateLimitType === "string" ? payload.rateLimitType : null,
+      wrapUp: activity.kind === "usage.wrap-up",
+    };
+  }
+  return null;
+}
+
+/**
+ * The provider's guess at the user's next prompt, offered while the thread
+ * is idle. It belongs to the turn it followed: once another turn exists (or
+ * one is running) it is stale.
+ */
+export function promptSuggestion(state: ThreadState): string | null {
+  const status = state.session?.status;
+  if (status === "running" || status === "starting") return null;
+  const latest = [...state.activities].reverse().find((activity) => activity.kind === "prompt.suggestion");
+  if (latest === undefined) return null;
+  const latestTurnId = state.thread?.latestTurn?.turnId ?? null;
+  if (latestTurnId !== null && latest.turnId !== latestTurnId) return null;
+  const suggestion = asRecord(latest.payload)?.suggestion;
+  return typeof suggestion === "string" && suggestion.trim() ? suggestion.trim() : null;
+}
+
+/** "in 1h 12m" / "in 4m" / "now" until an instant. */
+export function untilLabel(target: Date, now: number = Date.now()): string {
+  const minutes = Math.ceil((target.getTime() - now) / 60_000);
+  if (minutes <= 0) return "now";
+  const hours = Math.floor(minutes / 60);
+  const days = Math.floor(hours / 24);
+  if (days > 0) return `in ${days}d ${hours % 24}h`;
+  if (hours > 0) return `in ${hours}h ${minutes % 60}m`;
+  return `in ${minutes}m`;
+}
+
+/**
+ * Message and tool-call ids a provider took back (`message.retracted`
+ * tombstones) — a refused attempt's output, re-run on a fallback model.
+ */
+export function retractedIds(activities: readonly ActivityEnvelope[]): { messages: Set<string>; toolCalls: Set<string> } {
+  const messages = new Set<string>();
+  const toolCalls = new Set<string>();
+  for (const activity of activities) {
+    if (activity.kind !== "message.retracted") continue;
+    const payload = asRecord(activity.payload) ?? {};
+    for (const id of Array.isArray(payload.messageIds) ? payload.messageIds : []) {
+      if (typeof id === "string") messages.add(id);
+    }
+    for (const id of Array.isArray(payload.toolCallIds) ? payload.toolCallIds : []) {
+      if (typeof id === "string") toolCalls.add(id);
     }
   }
-  return { message: lastError, resetsAt: null, rateLimitType: null };
+  return { messages, toolCalls };
 }
 
 /**
  * Mirrors the desktop `shouldOfferResumeCompaction`
  * (`upstream/apps/web/src/components/chat/ContextWindowMeter.logic.ts`):
  * the "Resume with less context" banner is a plain staleness check, not a
- * wire event — Claude threads whose context snapshot holds >= 100k tokens
- * and hasn't refreshed in >= 70 minutes get the banner. `now` is the same
- * ticking clock the timeline already uses.
+ * wire event — idle Claude threads whose context snapshot holds >= 100k
+ * tokens and hasn't refreshed in >= 70 minutes get the banner. 70 minutes
+ * is a guess at the prompt cache having expired (its 1-hour TTL plus
+ * margin): the API reports cache hits after the fact, never when the cache
+ * goes cold. `now` is the same ticking clock the timeline already uses.
  */
 export const RESUME_COMPACTION_MINUTES = 70;
 export const RESUME_COMPACTION_TOKENS = 100_000;
@@ -866,6 +1205,11 @@ export function shouldOfferResumeCompaction(
   now: number,
 ): boolean {
   if (providerInstanceId !== "claudeAgent") return false;
+  // A running turn keeps the cache warm with every request: nothing to
+  // resume, whatever the last reading's age. (Readings used to arrive only
+  // when a turn ended, so an hour-long turn tripped this mid-flight.)
+  const status = state.session?.status;
+  if (status === "running" || status === "starting") return false;
   const usedTokens = state.contextUsage?.usedTokens ?? 0;
   if (usedTokens < RESUME_COMPACTION_TOKENS) return false;
   const updatedAt =
@@ -879,4 +1223,50 @@ export function resumeCompactionKey(state: ThreadState): string | null {
   const threadId = state.thread?.id;
   if (threadId === undefined || state.contextWindowUpdatedAt === null) return null;
   return `${threadId}:${state.contextWindowUpdatedAt}`;
+}
+
+/** One settled delegated task, as a task-notification message carries it. */
+export interface TaskNotificationView {
+  taskId: string;
+  title: string;
+  status: string;
+  durationMs: number | null;
+  model: string | null;
+  branch: string | null;
+  headline: string | null;
+  filesChanged: number | null;
+  additions: number | null;
+  deletions: number | null;
+}
+
+/**
+ * The tasks a moxen-written "your delegated tasks settled" message reports,
+ * or null for any other message (a user's own prompt included).
+ */
+export function taskNotifications(message: MessageEnvelope | null): TaskNotificationView[] | null {
+  if (message === null || message.origin !== "task-notification") return null;
+  const tasks = asRecord(message.notification)?.tasks;
+  if (!Array.isArray(tasks)) return null;
+  const text = (value: unknown): string | null => (typeof value === "string" && value.length > 0 ? value : null);
+  const count = (value: unknown): number | null => (typeof value === "number" && Number.isFinite(value) ? value : null);
+  const views = tasks.flatMap((raw): TaskNotificationView[] => {
+    const task = asRecord(raw);
+    const taskId = text(task?.taskId);
+    if (task === null || taskId === null) return [];
+    return [
+      {
+        taskId,
+        title: text(task.title) ?? "Delegated task",
+        status: text(task.status) ?? "completed",
+        durationMs: count(task.durationMs),
+        model: text(task.model),
+        branch: text(task.branch),
+        headline: text(task.headline),
+        filesChanged: count(task.filesChanged),
+        additions: count(task.additions),
+        deletions: count(task.deletions),
+      },
+    ];
+  });
+  return views.length > 0 ? views : null;
 }

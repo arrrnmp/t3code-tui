@@ -219,3 +219,24 @@ export function openQuestions(thread: ThreadEnvelope): OpenRequest[] {
   }
   return open.filter((request) => !resolved.has(request.requestId));
 }
+
+/**
+ * The id an interim assistant message (a note written between tool calls)
+ * is stored under: the turn plus the provider's own message id. The live
+ * stream uses the same id, so streaming text and the stored note are one
+ * row to a client rather than a duplicate.
+ */
+export function noteMessageId(turnId: string, messageId: string): string {
+  return `${turnId}:${messageId}`;
+}
+
+/**
+ * What a continue after a usage limit sends once the limit resets — the
+ * automatic one (config `autoContinueAtUsageLimit`) and the one a client
+ * schedules on request alike.
+ */
+export const USAGE_CONTINUE_PROMPT =
+  "The usage limit that stopped the last turn has reset. Continue the task where you left off.";
+
+/** How long after a reported reset a continue waits: a reset given to the second can still refuse a request sent on it. */
+export const USAGE_CONTINUE_GRACE_MS = 60_000;

@@ -23,7 +23,7 @@ export function permissionFooterTarget(setup: TestRendererSetup): { x: number; y
     tool rows above it reflow the pane, so stale coordinates would miss. */
 export function replyHeader(setup: TestRendererSetup): { x: number; y: number } {
   const rows = setup.captureCharFrame().split("\n");
-  const y = rows.findIndex((line) => /Claude Opus 5\s+·\s+\d\d:\d\d/.test(line));
+  const y = rows.findIndex((line) => /Claude Opus 5\s+·\s+(?:\w{3}, )?\d\d:\d\d/.test(line));
   if (y === -1) fail("closing reply header not visible");
   const x = rows[y]?.indexOf("Claude Opus 5") ?? -1;
   // Click the header row well right of the text, still inside the card: a

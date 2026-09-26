@@ -15,6 +15,7 @@ import type {
   ClaudeQueryOptions,
   ClaudeSessionApi,
   ClaudeTransport,
+  FlagSettings,
   ForkSessionResult,
 } from "../transport.js";
 
@@ -127,6 +128,13 @@ export class FakeQuery implements ClaudeQuery {
     this.models.push(model);
   }
 
+  /** Every `applyFlagSettings` call, in order. */
+  readonly flagSettings: FlagSettings[] = [];
+
+  async applyFlagSettings(settings: FlagSettings): Promise<void> {
+    this.flagSettings.push(settings);
+  }
+
   async getContextUsage(options?: { detail?: "summary" | "full" }): Promise<unknown> {
     this.contextUsageRequests.push(options);
     return this.contextUsageResponse;
@@ -164,7 +172,7 @@ export class FakeTransport implements ClaudeTransport {
 }
 
 export class FakeSessionApi implements ClaudeSessionApi {
-  readonly forks: Array<{ sessionId: string; upToMessageId: string }> = [];
+  readonly forks: Array<{ sessionId: string; upToMessageId: string | undefined }> = [];
 
   /** Session ids `sessionExists` reports; everything else reads as gone. */
   readonly existing = new Set<string>();
@@ -182,7 +190,7 @@ export class FakeSessionApi implements ClaudeSessionApi {
     return this.history;
   }
 
-  async forkSession(sessionId: string, upToMessageId: string): Promise<ForkSessionResult> {
+  async forkSession(sessionId: string, upToMessageId?: string): Promise<ForkSessionResult> {
     this.forks.push({ sessionId, upToMessageId });
     return { sessionId: this.forkResult };
   }
@@ -285,6 +293,26 @@ export function compactBoundary(preTokens = 100, postTokens = 20): SDKMessage {
     compact_metadata: { trigger: "manual", pre_tokens: preTokens, post_tokens: postTokens },
     uuid: "compact-1",
     session_id: "session-1",
+  });
+}
+
+/** The CLI re-running a flagged request on a fallback model. */
+export function refusalFallback(overrides: Record<string, unknown> = {}): SDKMessage {
+  return asMessage({
+    type: "system",
+    subtype: "model_refusal_fallback",
+    trigger: "refusal",
+    direction: "retry",
+    scope: "session",
+    original_model: "claude-fable-5-1",
+    fallback_model: "claude-opus-5",
+    request_id: null,
+    api_refusal_category: "bio",
+    retracted_message_uuids: [],
+    content: "Re-running on Opus 5.",
+    uuid: "fallback-1",
+    session_id: "session-1",
+    ...overrides,
   });
 }
 

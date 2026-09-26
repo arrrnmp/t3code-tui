@@ -45,7 +45,7 @@ export async function runSkillsAndContext(setup: TestRendererSetup): Promise<voi
         type: "provider-thread.updated",
         payload: {
           id: "pt_1",
-          contextUsage: { usedTokens: 359_000, maxTokens: 1_000_000, totalProcessedTokens: 1_400_000 },
+          contextUsage: { usedTokens: 359_000, maxTokens: 1_000_000, totalProcessedTokens: 1_400_000, costUsd: 4.2 },
         },
       },
     });
@@ -54,9 +54,25 @@ export async function runSkillsAndContext(setup: TestRendererSetup): Promise<voi
   console.log("--- context-usage footer segment ---");
   console.log(setup.captureCharFrame());
 
-  // Clicking the segment opens the full card (%, bar, total processed, compact).
-  await act(async () => setup.mockMouse.click(105, 23));
+  // Clicking the segment opens the side panel's Context tab (the reading,
+  // session cost and tokens processed).
+  const footer = setup.captureCharFrame().split("\n");
+  const segmentRow = footer.findIndex((row) => row.includes("36% · 359k/1m"));
+  const segmentCol = footer[segmentRow]!.indexOf("36% · 359k/1m");
+  await act(async () => setup.mockMouse.click(segmentCol + 2, segmentRow));
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 150)));
   await setup.flush();
-  console.log("--- context-usage card (open) ---");
-  console.log(setup.captureCharFrame());
+  console.log("--- context tab (from the footer) ---");
+  const tab = setup.captureCharFrame();
+  console.log(tab);
+  if (!tab.includes("359k / 1m")) fail("context-usage segment did not open the Context tab");
+  if (!tab.includes("$4.20")) fail("Context tab did not show the session cost");
+  if (!tab.includes("1.4m tokens processed")) fail("Context tab did not show the tokens processed");
+
+  // The tab bar's × closes the panel.
+  const tabBar = tab.split("\n")[0]!;
+  await act(async () => setup.mockMouse.click(tabBar.lastIndexOf("×"), 0));
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 150)));
+  await setup.flush();
+  if (setup.captureCharFrame().includes("session cost $4.20")) fail("the tab bar's × did not close the Context tab");
 }

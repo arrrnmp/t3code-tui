@@ -1,4 +1,5 @@
-import { realpath, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { readFile, realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { describe, expect, it } from "vitest";
@@ -17,12 +18,15 @@ import type { ProviderRuntimeEvent } from "../../core/providers/spi.js";
 import type { TurnDriver, TurnOutcome } from "../../core/threads/execute.js";
 import { createThread, readThread } from "../../core/threads/threads.js";
 import { DirectConnection } from "../connection.js";
+import { openClient } from "../client.js";
+import type { ProviderSummary } from "../../core/catalog/summary.js";
+import { recordUsageWindows, resetUsageLimitsForTests } from "../../core/usage/limits.js";
 
 function storeRoot(): string {
   return process.env.MOXEN_STORE_ROOT!;
 }
 
-async function waitFor(label: string, check: () => Promise<boolean>, timeoutMs = 5000): Promise<void> {
+async function waitFor(label: string, check: () => Promise<boolean>, timeoutMs = 15_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     if (await check()) return;
@@ -102,9 +106,14 @@ class QuestionDriver implements TurnDriver {
   }
 
   async awaitTurn(): Promise<TurnOutcome> {
-    await new Promise<void>((resolve) => {
-      this.parked = () => resolve();
-    });
+    // The runner awaits only after sending and persisting the resume
+    // cursor; a test that answers inside that gap must not be lost (a real
+    // driver keeps the answer). This raced under a loaded suite.
+    if (this.answered === null && !this.dismissed) {
+      await new Promise<void>((resolve) => {
+        this.parked = () => resolve();
+      });
+    }
     return {
       status: "completed",
       text: this.answered ? `Answered: ${JSON.stringify(this.answered)}` : "Dismissed",
@@ -629,9 +638,15 @@ describe("DirectConnection model and session continuity", () => {
       expect(servers.map((server) => server.name)).toEqual(["local", "moxen", "shared"]);
       expect(servers[0]).toEqual({ name: "local", type: "stdio", command: "node", args: ["server.js"], env: { TOKEN: "t" } });
       expect(servers[2]).toEqual({ name: "shared", type: "http", url: "https://project.example/mcp", headers: {} });
-      // moxen's own tools, bound to this thread and this store.
-      expect(servers[1]).toMatchObject({ type: "stdio", env: { MOXEN_STORE_ROOT: harness.root } });
-      expect((servers[1]!.args as string[]).slice(-2)).toEqual(["--thread", "thread-m"]);
+      // moxen's own tools, hosted in this process and always loaded; a
+      // provider that cannot host them reaches them through the fallback —
+      // here the stdio child, bound to this thread and this store (no HTTP
+      // endpoint: this connection never became a long-lived owner).
+      expect(servers[1]).toMatchObject({ name: "moxen", type: "in-process", alwaysLoad: true });
+      expect((servers[1]!.tools as Array<{ name: string }>).map((tool) => tool.name)).toEqual(["delegate", "task_status", "models", "task_cancel"]);
+      const fallback = servers[1]!.fallback as { type: string; env: Record<string, string>; args: string[] };
+      expect(fallback).toMatchObject({ type: "stdio", env: { MOXEN_STORE_ROOT: harness.root } });
+      expect(fallback.args.slice(-2)).toEqual(["--thread", "thread-m"]);
     } finally {
       await connection.close();
     }
@@ -1023,6 +1038,30 @@ describe("DirectConnection revert", () => {
     }
   });
 
+  it("puts the files back too when asked: to before the first dropped turn, with an undo ref", async () => {
+    const driver = new RecordingDriver("native-1");
+    const { harness, connection, threadId } = await threeTurns(driver);
+    try {
+      const thread = await harness.store.readThreadRecord(threadId);
+      const cwd = thread!.env.path;
+      // Every settled turn recorded what it changed (none of these did).
+      expect((await harness.store.readCheckpoints(threadId)).map((row) => row.files)).toEqual([[], [], []]);
+      // Work that landed after turn 2's snapshot was taken: a new file.
+      await writeFile(path.join(cwd, "agent-made.txt"), "from a dropped turn\n");
+      const reverted = await connection.dispatch({ type: "thread.conversation.revert", threadId, turnCount: 1, restoreFiles: true });
+      expect(reverted).toMatchObject({ keptTurns: 1, removedTurns: 2, filesRestored: { files: 1 } });
+      await expect(readFile(path.join(cwd, "agent-made.txt"), "utf8")).rejects.toThrow();
+      const undoRef = (reverted as { filesRestored: { undoRef: string } }).filesRestored.undoRef;
+      expect(undoRef).toMatch(/^refs\/moxen\/checkpoints\/.+\/revert-\d+$/);
+      expect(spawnSync("git", ["rev-parse", "--verify", undoRef], { cwd }).status).toBe(0);
+      // Without the flag the result carries no files field at all (the CLI envelope is pinned).
+      const plain = await connection.dispatch({ type: "thread.conversation.revert", threadId, turnCount: 0 });
+      expect(plain).not.toHaveProperty("filesRestored");
+    } finally {
+      await connection.close();
+    }
+  });
+
   it("refuses while a turn is in progress", async () => {
     const driver = new GateDriver();
     const harness = await testHarness({ drivers: { claude: () => driver, codex: () => driver, grok: () => driver, opencode: () => driver } });
@@ -1112,6 +1151,276 @@ describe("DirectConnection images", () => {
       expect(driver.prompts[1]).toBe("What is in this?");
       expect(driver.images[1]).toEqual([{ name: "shot.png", mimeType: "image/png", data: "iVBORw0KGgo=" }]);
       await driver.release();
+    } finally {
+      await connection.close();
+    }
+  });
+});
+
+describe("DirectConnection plan usage", () => {
+  it("serves the recorded usage windows and fills them into the provider list", async () => {
+    const harness = await testHarness();
+    const connection = new DirectConnection({
+      storeRoot: harness.root,
+      drivers: harness.drivers,
+      providers: async () => [
+        {
+          instanceId: "claudeAgent",
+          driver: "claude",
+          displayName: "Claude",
+          enabled: true,
+          status: "ready",
+          authStatus: null,
+          models: [],
+          usageLimits: null,
+        } as unknown as ProviderSummary,
+      ],
+    });
+    try {
+      const resetsAt = new Date(Date.now() + 3_600_000).toISOString();
+      recordUsageWindows("claude", [{ id: "session", label: "Session", resetsAt, exhausted: false, usedPercent: 37 }]);
+      const usage = await connection.query({ type: "usage.limits" });
+      expect(usage.providers.claude?.windows).toEqual([{ id: "session", kind: "session", label: "Session", usedPercent: 37, resetsAt }]);
+      const listed = await connection.query({ type: "providers.list" });
+      expect(listed.providers[0]?.usageLimits?.windows[0]?.usedPercent).toBe(37);
+    } finally {
+      resetUsageLimitsForTests();
+      await connection.close();
+    }
+  });
+});
+
+describe("DirectConnection settings", () => {
+  it("reads every setting with its descriptor and current value", async () => {
+    const harness = await testHarness();
+    const connection = new DirectConnection({ storeRoot: harness.root, drivers: harness.drivers });
+    try {
+      const snapshot = await connection.query({ type: "settings.read" });
+      // The descriptors ride along so a client talking to a newer server
+      // renders the settings that server actually honours.
+      const runtimeMode = snapshot.settings.find((view) => view.descriptor.key === "runtimeMode");
+      expect(runtimeMode?.descriptor.label).toBe("Tool permissions");
+      expect(runtimeMode?.value).toBe("full-access");
+      expect(runtimeMode?.explicit).toBe(true);
+      const backdrop = snapshot.settings.find((view) => view.descriptor.key === "ui.backdrop");
+      expect(backdrop).toMatchObject({ value: "animated", explicit: false });
+    } finally {
+      await connection.close();
+    }
+  });
+
+  it("writes a nested key through and answers with the whole snapshot", async () => {
+    const harness = await testHarness();
+    const connection = new DirectConnection({ storeRoot: harness.root, drivers: harness.drivers });
+    try {
+      const result = await connection.dispatch({
+        type: "settings.set",
+        key: "providers.claude.thinkingDisplay",
+        value: "omitted",
+      });
+      expect(result.accepted).toBe(true);
+      const written = result.settings.find((view) => view.descriptor.key === "providers.claude.thinkingDisplay");
+      expect(written).toMatchObject({ value: "omitted", explicit: true });
+      // The file is the source of truth: a fresh read must agree.
+      const reread = await connection.query({ type: "settings.read" });
+      expect(reread.settings.find((view) => view.descriptor.key === "providers.claude.thinkingDisplay")?.value).toBe(
+        "omitted",
+      );
+      expect(JSON.parse(await readFile(reread.path, "utf8"))).toMatchObject({
+        providers: { claude: { thinkingDisplay: "omitted" } },
+      });
+    } finally {
+      await connection.close();
+    }
+  });
+
+  it("refuses a bad value without writing anything", async () => {
+    const harness = await testHarness();
+    const connection = new DirectConnection({ storeRoot: harness.root, drivers: harness.drivers });
+    try {
+      await expect(
+        connection.dispatch({ type: "settings.set", key: "ui.backdrop", value: "sparkly" }),
+      ).rejects.toThrow("ui.backdrop must be one of: animated, static, off.");
+      const snapshot = await connection.query({ type: "settings.read" });
+      expect(snapshot.settings.find((view) => view.descriptor.key === "ui.backdrop")).toMatchObject({
+        value: "animated",
+        explicit: false,
+      });
+    } finally {
+      await connection.close();
+    }
+  });
+
+  it("keeps every edit made in one session, the way the TUI connects", async () => {
+    // The TUI once handed its connection the config object it launched
+    // with. Every read then returned launch-time values (a click flashed
+    // and snapped back), and each write re-applied onto that stale object,
+    // so a second edit silently undid the first. It now passes the path.
+    const harness = await testHarness();
+    const configPath = path.join(harness.root, "tui-config.json");
+    const connection = await openClient({ mode: "direct", configPath, drivers: harness.drivers });
+    try {
+      await connection.dispatch({ type: "settings.set", key: "ui.backdrop", value: "off" });
+      const second = await connection.dispatch({ type: "settings.set", key: "git.historyLimit", value: "120" });
+      const valueOf = (key: string) => second.settings.find((view) => view.descriptor.key === key)?.value;
+      expect(valueOf("ui.backdrop")).toBe("off");
+      expect(valueOf("git.historyLimit")).toBe(120);
+      expect(JSON.parse(await readFile(configPath, "utf8"))).toMatchObject({
+        ui: { backdrop: "off" },
+        git: { historyLimit: 120 },
+      });
+    } finally {
+      await connection.close();
+    }
+  });
+
+  it("refuses a key it does not know", async () => {
+    const harness = await testHarness();
+    const connection = new DirectConnection({ storeRoot: harness.root, drivers: harness.drivers });
+    try {
+      await expect(connection.dispatch({ type: "settings.set", key: "nope", value: "1" })).rejects.toThrow(
+        "Unknown config key: nope",
+      );
+    } finally {
+      await connection.close();
+    }
+  });
+});
+
+describe("DirectConnection git and forge", () => {
+  it("reads a thread's own checkout, not the process's", async () => {
+    const harness = await testHarness();
+    const connection = new DirectConnection({ storeRoot: harness.root, drivers: harness.drivers });
+    try {
+      const workspaceRoot = await realpath(harness.work);
+      const ensured = await ensureStoredProject(storeRoot(), { workspaceRoot });
+      await connection.dispatch({
+        type: "thread.create",
+        threadId: "git-thread",
+        projectId: ensured.project.id,
+        title: "Git",
+        modelSelection: { instanceId: "codex", model: "gpt-5.4" },
+      });
+      const overview = await connection.query({ type: "git.overview", threadId: "git-thread" });
+      expect(overview.isRepository).toBe(true);
+      expect(overview.branch).toBe("main");
+      // The harness seeds one commit so HEAD resolves.
+      expect(overview.commits.length).toBeGreaterThan(0);
+      expect(overview.branches.some((branch) => branch.name === "main")).toBe(true);
+    } finally {
+      await connection.close();
+    }
+  });
+
+  it("reports no forge for a checkout with no remote, rather than failing", async () => {
+    const harness = await testHarness();
+    const connection = new DirectConnection({ storeRoot: harness.root, drivers: harness.drivers });
+    try {
+      const workspaceRoot = await realpath(harness.work);
+      const ensured = await ensureStoredProject(storeRoot(), { workspaceRoot });
+      await connection.dispatch({
+        type: "thread.create",
+        threadId: "forge-thread",
+        projectId: ensured.project.id,
+        title: "Forge",
+        modelSelection: { instanceId: "codex", model: "gpt-5.4" },
+      });
+      const detection = await connection.query({ type: "forge.detect", threadId: "forge-thread" });
+      expect(detection.kind).toBeNull();
+      expect(detection.reason).toMatch(/no origin remote/i);
+      // An unusable forge yields an empty list, not an error: the panel
+      // shows why alongside the history it can still read.
+      const listed = await connection.query({ type: "forge.requests.list", threadId: "forge-thread" });
+      expect(listed.requests).toEqual([]);
+    } finally {
+      await connection.close();
+    }
+  });
+
+  it("refuses git and forge reads for a thread that does not exist", async () => {
+    const harness = await testHarness();
+    const connection = new DirectConnection({ storeRoot: harness.root, drivers: harness.drivers });
+    try {
+      await expect(connection.query({ type: "git.overview", threadId: "ghost" })).rejects.toThrow("No thread ghost.");
+    } finally {
+      await connection.close();
+    }
+  });
+});
+
+describe("DirectConnection continue in a new thread", () => {
+  it("opens a thread on the same project, model and checkout, holding the handoff until asked", async () => {
+    const harness = await testHarness();
+    const connection = new DirectConnection({ storeRoot: harness.root, drivers: harness.drivers });
+    try {
+      const workspaceRoot = await realpath(harness.work);
+      const ensured = await ensureStoredProject(storeRoot(), { workspaceRoot });
+      await connection.dispatch({
+        type: "thread.create",
+        threadId: "old-thread",
+        projectId: ensured.project.id,
+        title: "Auth audit",
+        modelSelection: { instanceId: "codex", model: "gpt-5.4" },
+        runtimeMode: "auto-accept-edits",
+      });
+      const scheduledFor = new Date(Date.now() + 3_600_000).toISOString();
+      const result = await connection.dispatch({ type: "thread.continue", threadId: "old-thread", scheduledFor });
+      expect(result).toMatchObject({ accepted: true, title: "Auth audit (continued)", scheduledFor });
+
+      const fresh = await connection.query({ type: "thread.inspect", threadId: result.threadId });
+      const inspected = fresh.thread as unknown as {
+        projectId: string;
+        modelSelection: { instanceId: string; model: string };
+        runtimeMode: string;
+      };
+      expect(inspected.projectId).toBe(ensured.project.id);
+      expect(inspected.modelSelection).toMatchObject({ instanceId: "codex", model: "gpt-5.4" });
+      expect(inspected.runtimeMode).toBe("auto-accept-edits");
+
+      // The handoff is the new thread's first message, waiting for its time.
+      const read = await connection.query({ type: "thread.read", threadId: result.threadId });
+      const messages = (read.thread as unknown as { messages: Array<{ role: string; text: string }> }).messages;
+      expect(messages[0]?.role).toBe("user");
+      expect(messages[0]?.text.startsWith("# Continuing: Auth audit")).toBe(true);
+
+      // The old thread points at its continuation.
+      const old = await connection.query({ type: "thread.read", threadId: "old-thread", view: "turn-items" });
+      expect(JSON.stringify(old)).toContain("Continued in");
+    } finally {
+      await connection.close();
+    }
+  });
+
+  it("refuses a thread that does not exist", async () => {
+    const harness = await testHarness();
+    const connection = new DirectConnection({ storeRoot: harness.root, drivers: harness.drivers });
+    try {
+      await expect(connection.dispatch({ type: "thread.continue", threadId: "ghost" })).rejects.toThrow("No thread ghost.");
+    } finally {
+      await connection.close();
+    }
+  });
+});
+
+describe("DirectConnection side questions", () => {
+  it("refuses plainly for a provider that cannot copy a session, and never touches the thread", async () => {
+    const harness = await testHarness();
+    const connection = new DirectConnection({ storeRoot: harness.root, drivers: harness.drivers });
+    try {
+      const workspaceRoot = await realpath(harness.work);
+      const ensured = await ensureStoredProject(storeRoot(), { workspaceRoot });
+      await connection.dispatch({
+        type: "thread.create",
+        threadId: "btw-thread",
+        projectId: ensured.project.id,
+        title: "Btw",
+        modelSelection: { instanceId: "codex", model: "gpt-5.4" },
+      });
+      await expect(
+        connection.dispatch({ type: "thread.side-question", threadId: "btw-thread", question: "what did we decide?" }),
+      ).rejects.toThrow(/\/btw needs a provider .* codex cannot/);
+      const read = await connection.query({ type: "thread.read", threadId: "btw-thread" });
+      expect((read.thread as unknown as { messages: unknown[] }).messages).toEqual([]);
     } finally {
       await connection.close();
     }

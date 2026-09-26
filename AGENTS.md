@@ -23,8 +23,12 @@ exceptions.
   (store, lifecycle, turn runner, tool-activity mapping, read views, and
   `operations.ts` — handover, delegation, send policies — that every
   client calls), `projects/` (registry + workspace resolution),
-  `checkpoints/`, `usage/`, `events/`, `catalog/`, plus the shared kernel
-  `types.ts` / `errors.ts` / `config.ts`. Each area keeps its own `tests/`.
+  `checkpoints/`, `usage/`, `events/`, `catalog/`, `git/` (read-only local
+  history, branches and status — separate from `checkpoints/git.ts`, which
+  writes), `forge/` (pull and merge requests through `gh` / `glab`; we drive
+  their CLIs so we never hold a token), plus the shared kernel
+  `types.ts` / `errors.ts` / `config.ts` / `configschema.ts` (the settings
+  table both clients render from). Each area keeps its own `tests/`.
 - `src/server/` — the boundary: `api.ts` is `ClientApi`, the typed
   contract every frontend talks through (`dispatch` for commands, `query`
   for reads, `subscribeShell`, `subscribeThread`, `turnDiff`,
@@ -39,13 +43,14 @@ exceptions.
 - `src/cli/` — a client: `index.ts` (command definitions; thin dispatch
   over the modules below), `output.ts`, `doctor.ts`, and `catalog/`,
   `handover/`, `infra/` (`client.ts` — the CLI's `ClientApi`), `projects/`,
-  `threads/` — flags, prompts and `--json` envelopes over `ClientApi`;
+  `threads/`, `git/` (the `git` and `pr` command groups) — flags, prompts
+  and `--json` envelopes over `ClientApi`;
   `tests/envelopes/` pins every envelope byte-for-byte.
   Each has its own `tests/` subfolder.
 - `src/tui/` — a client, the interactive app:
   - `app/` — the root component: `app.tsx` wires hooks together and holds root identity/picker-orchestration state, `hooks/` for cross-cutting hooks used by `app.tsx` but not owned by one feature (`useThreadCreation`, `useThreadOps`, `useQuitConfirm`), plus `utils.ts` / `constants.ts`.
-  - `features/` — one folder per feature pairing its component with its hook: `sidebar/`, `composer/`, `timeline/`, `diffpanel/`, `taskspanel/`, `answerpanel/`, `pickers/`.
-  - `ui/` — generic presentational primitives with no feature-specific state: `hoverbutton.tsx`, `modalshell.tsx`, `renamemodal.tsx`, `contextusagecard.tsx`, `attachmentstrip.tsx`, `backdrop.tsx`, `theme.ts`.
+  - `features/` — one folder per feature pairing its component with its hook: `sidebar/`, `composer/`, `timeline/`, `diffpanel/`, `sidepanel/` (the tab strip and the Diff / Context / Agents / Background tabs, in that order), `gitpanel/` (the Git tab: history, branches, and PR/MR actions), `settings/` (the settings page, rendered from `core/configschema.ts`), `taskspanel/`, `answerpanel/`, `pickers/`.
+  - `ui/` — generic presentational primitives with no feature-specific state: `hoverbutton.tsx`, `modalshell.tsx`, `renamemodal.tsx`, `noticebanner.tsx`, `backdrop.tsx`, `theme.ts`.
   - `model/` — pure projection logic (`thread.ts`, `turns.ts`, `activity.ts`, …), genuinely cross-cutting across features.
   - `hooks/` — shared runtime hooks used across features (`useToasts`, `useClipboard`, `useHover`, `useAnimTick`).
   - `render-check/` — snapshot harness: `fixtures.ts` (mock client/builders), `helpers.ts`, `scenarios/*.ts` (one file per feature area); `render-check.tsx` at the top level is the slim orchestrator that runs them in sequence against a mock client with scripted input and captures char frames. No live terminal needed.
@@ -66,7 +71,8 @@ exceptions.
 
 ## Boundaries
 
-- Never print or persist provider credentials. Provider CLIs own their own logins; we only ever observe credential *presence*.
+- Never print or persist provider credentials. Provider CLIs own their own logins; we only ever observe credential *presence*. The same rule governs forges: `gh` and `glab` own their logins, so `core/forge/` shells out to them and never handles a token. `forge.*` config is executable paths and an off switch, nothing more.
+- Settings live in one table (`core/configschema.ts`). Adding a setting means adding a descriptor there — never a key list in a client — so `moxen config` and the TUI settings page stay in step by construction.
 - Keep local project discovery read-only; fall back to authenticated HTTP when the projection DB/schema is unavailable.
 - Pass handover prompts as argv/stdin arrays, never concatenated into shell commands.
 

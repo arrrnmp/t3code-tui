@@ -1,6 +1,6 @@
 import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { CliError } from "../../../errors.js";
 import type { ProviderRuntimeEvent } from "../../spi.js";
@@ -372,6 +372,26 @@ describe("claude driver compaction, limits, rollback", () => {
     });
   });
 
+  it("announces a graceful wrap-up once per turn, as its own state", async () => {
+    const resetsAt = Math.floor(Date.now() / 1000) + 5400;
+    const info = { status: "allowed_warning", rateLimitType: "five_hour", resetsAt, rateLimitGraceActive: true };
+    const transport = new FakeTransport([[initMessage()]]);
+    const driver = new ClaudeDriver({ transport });
+    const eventsPromise = collectEvents(driver, 6);
+    await Effect.runPromise(driver.startSession(START));
+    const sent = await Effect.runPromise(driver.sendTurn({ threadId: "thread-1", prompt: "hi" }));
+    const outcomePromise = driver.awaitTurn("thread-1", sent.turnId);
+    const query = transport.created[0]!;
+    query.push(rateLimitEvent(info as never));
+    query.push(rateLimitEvent(info as never));
+    query.push(successResult("done"));
+    await outcomePromise;
+    const events = await eventsPromise;
+    const states = events.filter((event) => event.type === "thread.state.changed" && event.state !== "session-started");
+    expect(states.map((event) => (event as { state: string }).state)).toEqual(["usage-wrap-up"]);
+    expect(states[0]).toMatchObject({ raw: { rateLimitType: "five_hour", label: "Session" } });
+  });
+
   it("rolls back via fork and validates input", async () => {
     const api = new FakeSessionApi([historyUser("u-1", "one"), historyToolResult("tr-1"), historyUser("u-2", "two")]);
     const transport = new FakeTransport([[initMessage()]]);
@@ -562,6 +582,38 @@ describe("claude context usage", () => {
     transport.created[0]!.contextUsageResponse = response;
     expect((await driver.contextUsage("thread-1"))?.usedTokens).toBe(431_553);
     expect(transport.created[0]!.contextUsageRequests).toEqual([{ detail: "summary" }]);
+  });
+
+  it("carries the session's running cost alongside the token reading", async () => {
+    const transport = new FakeTransport([[initMessage()]]);
+    const driver = new ClaudeDriver({ transport });
+    await Effect.runPromise(driver.startSession(START));
+    const sent = await Effect.runPromise(driver.sendTurn({ threadId: "thread-1", prompt: "hi" }));
+    const outcomePromise = driver.awaitTurn("thread-1", sent.turnId);
+    transport.created[0]!.push(successResult("hello", 0.02));
+    await outcomePromise;
+    transport.created[0]!.contextUsageResponse = response;
+    expect(await driver.contextUsage("thread-1")).toMatchObject({ usedTokens: 431_553, costUsd: 0.02 });
+  });
+
+  it("takes the running cost from the usage probe, mid-turn, before any result", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const transport = new FakeTransport([[initMessage()]], [{ session: { total_cost_usd: 1.5 } }]);
+      const driver = new ClaudeDriver({ transport });
+      await Effect.runPromise(driver.startSession(START));
+      await sleep(10);
+      const query = transport.created[0]!;
+      query.contextUsageResponse = response;
+      // The start-up probe carries a resumed session's spend.
+      expect(await driver.contextUsage("thread-1")).toMatchObject({ costUsd: 1.5 });
+      // A reading once the probe has gone stale probes again.
+      query.usageProbeResponse = { session: { total_cost_usd: 2.25 } };
+      vi.setSystemTime(Date.now() + 30_000);
+      expect(await driver.contextUsage("thread-1")).toMatchObject({ costUsd: 2.25 });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

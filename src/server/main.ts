@@ -21,12 +21,16 @@ export interface RunServerOptions {
 export async function runServer(options: RunServerOptions = {}): Promise<ServerHandle> {
   const connection = new DirectConnection(options.config ? { config: options.config } : {});
   try {
-    return await serve({
+    const handle = await serve({
       endpoint: options.endpoint ?? defaultEndpoint(),
       api: connection,
       // Stops every driver: provider processes end with the server.
       onClose: () => connection.close(),
     });
+    // The server owns every session, so it runs scheduled turns too — with
+    // or without a client attached.
+    connection.startScheduling();
+    return handle;
   } catch (cause) {
     await connection.close();
     throw cause;

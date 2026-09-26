@@ -25,6 +25,57 @@ export interface CliConfig {
   mcpServers?: Record<string, McpServerEntry>;
   /** Appended to every provider session's system prompt (`core/threads/instructions.ts`). */
   instructions?: string;
+  /**
+   * When a plan usage limit stops a turn, schedule a "continue" for just
+   * after the limit resets (at most twice in a row). Off unless set: it runs
+   * work while nobody is watching.
+   */
+  autoContinueAtUsageLimit?: boolean;
+  /** TUI presentation; ignored by the CLI, which has no panels. */
+  ui?: UiConfig;
+  git?: GitConfig;
+  forge?: ForgeConfig;
+  /** Per-provider settings, read when that provider's driver is built. */
+  providers?: ProvidersConfig;
+}
+
+export type BackdropMode = "animated" | "static" | "off";
+
+export interface UiConfig {
+  backdrop?: BackdropMode;
+  defaultSidePanel?: "context" | "git" | "agents" | "background";
+  contextRefreshSeconds?: number;
+  usageRefreshSeconds?: number;
+}
+
+export interface GitConfig {
+  historyLimit?: number;
+  /** Fetch before reading history; off by default because it hits the network. */
+  autoFetch?: boolean;
+}
+
+/**
+ * Forge access is executable paths and an off switch, nothing more: `gh`
+ * and `glab` own their own logins, and we only ever observe that they are
+ * present and authenticated. No token ever lands in this file.
+ */
+export interface ForgeConfig {
+  enabled?: boolean;
+  ghPath?: string;
+  glabPath?: string;
+}
+
+export interface ProvidersConfig {
+  claude?: ClaudeProviderConfig;
+}
+
+export interface ClaudeProviderConfig {
+  binaryPath?: string;
+  homePath?: string;
+  launchArgs?: readonly string[];
+  thinkingDisplay?: "summarized" | "omitted";
+  promptSuggestions?: boolean;
+  partialMessages?: boolean;
 }
 
 export interface RuntimeState {
@@ -124,8 +175,22 @@ export interface ThreadEnvelope {
    * were stored are absent; read those as the thread's selection.
    */
   turnModelSelections?: Record<string, ModelSelection>;
+  /**
+   * Messages waiting their turn, oldest first: queued behind the running
+   * turn, or scheduled for later (`scheduledFor`). Absent when there are none.
+   */
+  queuedTurns?: QueuedTurnEnvelope[];
+  /** The thread that delegated this one, for a delegated task; absent otherwise. */
+  parentThreadId?: string;
   deletedAt?: string | null;
   [key: string]: unknown;
+}
+
+export interface QueuedTurnEnvelope {
+  turnId: string;
+  messageId: string;
+  scheduledFor: string | null;
+  scheduleReason: "user" | "usage-reset" | "usage-hold" | null;
 }
 
 export interface LatestTurnEnvelope {

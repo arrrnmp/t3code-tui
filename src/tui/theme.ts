@@ -1,3 +1,5 @@
+import { SyntaxStyle } from "@opentui/core";
+
 /**
  * One quiet zinc scale, OpenCode-style: panes separate by a few lightness
  * steps on the same hue, so chrome never bands into stripes. Keep every
@@ -39,13 +41,14 @@ export const COLOR = {
 } as const;
 
 /**
- * Tree-sitter highlight-group palette shared by every `<code>`/`<diff>`/
- * `<markdown>` renderable's `syntaxStyle`. `SyntaxStyle.create()` registers
- * no token styles, which paints every token the same default colour — this
- * is the explicit table both `diffpanel.tsx` (code diffs) and
- * `timeline.tsx` (fenced code blocks inside chat markdown) merge in so a
- * `js`/`ts`/etc. fence gets the same real syntax highlighting a diff does,
- * not just plain text.
+ * Tree-sitter highlight-group palette for code grammars (`keyword`,
+ * `string`, `function`, …). `SyntaxStyle.create()` registers no token
+ * styles, which paints every token the same default colour —
+ * `MARKDOWN_SYNTAX_TOKENS` below merges this table in so fenced code and
+ * diffs share one code palette, while `markup.*` entries cover markdown.
+ * Consumed only via `markdownSyntaxStyle()` (every `<code>`/`<diff>`/
+ * `<markdown>` renderable); never passed to a renderable directly, or
+ * markdown files render all-white (no `markup.*` groups).
  */
 export const CODE_SYNTAX_TOKENS = {
   default: { fg: "#e5e7eb" },
@@ -183,4 +186,63 @@ export function pulseColor(elapsedMs: number, from: string, to: string, periodMs
   const phase = (elapsedMs % periodMs) / periodMs;
   const triangle = phase < 0.5 ? phase * 2 : (1 - phase) * 2;
   return lerpColor(from, to, triangle);
+}
+
+/**
+ * `SyntaxStyle.create()` registers no token styles, which paints every
+ * markdown construct — headings, lists, bold, links, code — in the same
+ * default colour. These names are the `<markdown>` renderable's fixed
+ * vocabulary (marked.js token groups for inline styles, tree-sitter capture
+ * groups from `@opentui/core/assets/markdown/highlights.scm` for block-level
+ * ones like headings/lists/quotes); an explicit table is required per level
+ * since the renderable's group-name fallback only strips to the first
+ * dot-segment (`markup.heading.3` → `markup`, not `markup.heading`).
+ *
+ * Fenced code blocks render through a nested `CodeRenderable` that reuses
+ * this same `syntaxStyle` but highlights with language-grammar groups
+ * (`keyword`, `string`, `function`, ...) instead of `markup.*` ones — the
+ * spread of `CODE_SYNTAX_TOKENS` above keeps those vivid. `<diff>`
+ * renderables (`diffpanel.tsx`, inline file rows in `timeline.tsx`) take
+ * this same style so `md`/`mdx` hunks highlight via `markup.*` instead of
+ * falling back to all-white default text.
+ */
+const MARKDOWN_SYNTAX_TOKENS = {
+  ...CODE_SYNTAX_TOKENS,
+  default: { fg: COLOR.text },
+  conceal: { fg: COLOR.faint },
+  "markup.heading": { fg: COLOR.bright, bold: true },
+  "markup.heading.1": { fg: COLOR.accent, bold: true, underline: true },
+  "markup.heading.2": { fg: COLOR.accent, bold: true },
+  "markup.heading.3": { fg: COLOR.bright, bold: true },
+  "markup.heading.4": { fg: COLOR.text, bold: true },
+  "markup.heading.5": { fg: COLOR.dim, bold: true },
+  "markup.heading.6": { fg: COLOR.dim, italic: true },
+  "markup.strong": { fg: COLOR.bright, bold: true },
+  "markup.italic": { italic: true },
+  "markup.strikethrough": { fg: COLOR.dim, dim: true },
+  "markup.raw": { fg: COLOR.command },
+  "markup.raw.block": { fg: COLOR.command },
+  "markup.link": { fg: COLOR.dim },
+  "markup.link.label": { fg: COLOR.accent, underline: true },
+  "markup.link.url": { fg: COLOR.dim },
+  "markup.list": { fg: COLOR.accent },
+  "markup.list.checked": { fg: COLOR.added },
+  "markup.list.unchecked": { fg: COLOR.dim },
+  "markup.quote": { fg: COLOR.dim, italic: true },
+  // Shared by markdown's own decoration marks (table pipes, `hr`) *and*
+  // code's template-literal interpolation braces (`${...}`) — one group
+  // name, two contexts; `dim` reads fine as de-emphasis in both rather than
+  // vanishing against the panel background like `faint` did for `${}`.
+  "punctuation.special": { fg: COLOR.dim },
+  label: { fg: COLOR.dim },
+  "keyword.directive": { fg: COLOR.warn },
+  "string.escape": { fg: COLOR.dim },
+} as const;
+
+let cachedMarkdownStyle: SyntaxStyle | null = null;
+
+/** The shared style every `<markdown>` renderable takes (messages, plans, question previews). */
+export function markdownSyntaxStyle(): SyntaxStyle {
+  cachedMarkdownStyle ??= SyntaxStyle.fromStyles(MARKDOWN_SYNTAX_TOKENS);
+  return cachedMarkdownStyle;
 }

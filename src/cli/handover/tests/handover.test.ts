@@ -286,7 +286,7 @@ describe("createHandoverThread", () => {
     });
     expect(result.thread.id).toBeTruthy();
 
-    const deadline = Date.now() + 5000;
+    const deadline = Date.now() + 15_000;
     for (;;) {
       const read = await readThread(harness.store, result.thread.id);
       const last = read.turns[read.turns.length - 1];

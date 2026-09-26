@@ -77,6 +77,30 @@ export interface ContextWindowUsage {
   /** Where the provider compacts on its own, when it does. */
   readonly autoCompactThreshold: number | null;
   readonly compactsAutomatically: boolean | null;
+  /**
+   * Running session total in USD, from the provider's own accounting
+   * (Claude: the SDK's `total_cost_usd`) — an estimate, not a bill.
+   * Absent when the provider reports no cost figure.
+   */
+  readonly costUsd?: number;
+}
+
+/**
+ * What fills the context window, by category — the detail behind a
+ * `ContextWindowUsage` reading. `estimated` is true when the shares are
+ * moxen's estimate (message sizes scaled to the provider's real total)
+ * rather than the provider's own count.
+ */
+export interface ContextBreakdown extends ContextWindowUsage {
+  readonly categories: ReadonlyArray<{
+    readonly name: string;
+    readonly tokens: number;
+    /** `used` fills the window; `free` is what is left; `buffer` is held back for compaction. */
+    readonly kind: "used" | "free" | "buffer";
+  }>;
+  readonly estimated: boolean;
+  /** Per-tool shares of the conversation, heaviest first, when the provider reports them. */
+  readonly tools?: ReadonlyArray<{ readonly name: string; readonly tokens: number }>;
 }
 
 export interface ProviderSession {
@@ -174,6 +198,8 @@ export interface RateLimitWindow {
   readonly label: string;
   readonly resetsAt: string | null;
   readonly exhausted: boolean;
+  /** How much of the window is spent (0–100), when the provider says. */
+  readonly usedPercent?: number | null;
 }
 
 /**
@@ -184,12 +210,65 @@ export interface RateLimitWindow {
  */
 export type ProviderRuntimeEvent =
   | {
+      /**
+       * Streamed assistant text. `text` is a *delta*, appended to the
+       * message named by `messageId` (one assistant message of possibly
+       * several in a turn); a driver that only sees cumulative snapshots
+       * sends the difference.
+       */
       readonly type: "message.part.updated";
       readonly provider: ProviderDriverKind;
       readonly threadId: ThreadId;
       readonly turnId: TurnId | null;
+      readonly messageId?: string;
       readonly text: string;
       readonly raw?: unknown;
+    }
+  | {
+      /**
+       * An assistant message that turned out *not* to be the turn's answer:
+       * the notes the model writes between tool calls ("Now checking X…").
+       * Sent once, whole, when the next tool call or message shows it was
+       * interim. The turn's final message is never sent as a note.
+       */
+      readonly type: "assistant.note";
+      readonly provider: ProviderDriverKind;
+      readonly threadId: ThreadId;
+      readonly turnId: TurnId | null;
+      readonly messageId: string;
+      readonly text: string;
+    }
+  | {
+      /**
+       * A turn the provider started on its own — Claude Code waking the
+       * session for a finished background task or a Monitor event. It is
+       * awaited and settled like any other turn (`awaitTurn`).
+       */
+      readonly type: "turn.started";
+      readonly provider: ProviderDriverKind;
+      readonly threadId: ThreadId;
+      readonly turnId: TurnId;
+      readonly origin: "background";
+    }
+  | {
+      /** One background task (a `run_in_background` command, a Monitor watch, a background subagent) starting or ending. */
+      readonly type: "background.task";
+      readonly provider: ProviderDriverKind;
+      readonly threadId: ThreadId;
+      readonly turnId: TurnId | null;
+      readonly taskId: string;
+      readonly status: "started" | "completed" | "failed" | "stopped";
+      readonly description: string;
+      readonly taskType: string | null;
+      readonly toolUseId: string | null;
+      readonly summary: string | null;
+    }
+  | {
+      /** The full live set of background tasks (a level, not an edge). */
+      readonly type: "background.tasks.changed";
+      readonly provider: ProviderDriverKind;
+      readonly threadId: ThreadId;
+      readonly tasks: ReadonlyArray<BackgroundTaskSummary>;
     }
   | {
       readonly type: "tool.execute.started" | "tool.execute.updated" | "tool.execute.completed";
@@ -228,6 +307,112 @@ export type ProviderRuntimeEvent =
       readonly raw?: unknown;
     }
   | {
+      /**
+       * One stretch of the model's reasoning: sent as it starts (`running`)
+       * and once it ends (`completed`, with how long it took). `text` is the
+       * whole readable summary so far — empty when the provider shows none.
+       * The same `reasoningId` names both, so they fold into one row.
+       */
+      readonly type: "reasoning.updated";
+      readonly provider: ProviderDriverKind;
+      readonly threadId: ThreadId;
+      readonly turnId: TurnId | null;
+      readonly reasoningId: string;
+      readonly status: "running" | "completed";
+      readonly text: string;
+      readonly startedAt: string | null;
+      readonly durationMs: number | null;
+    }
+  | {
+      /**
+       * Readable reasoning as it streams, between a `reasoning.updated`
+       * `running` and its `completed`: `text` is a delta of the
+       * `reasoningId` stretch. Live only — the completed event carries the
+       * whole text for the record.
+       */
+      readonly type: "reasoning.delta";
+      readonly provider: ProviderDriverKind;
+      readonly threadId: ThreadId;
+      readonly turnId: TurnId | null;
+      readonly reasoningId: string;
+      readonly text: string;
+    }
+  | {
+      /**
+       * The provider switched models on its own mid-turn — Claude re-running
+       * a request its safety classifiers flagged (`refusal-fallback`). With
+       * `scope: "session"` the switch sticks: later turns run on `to`.
+       * `local` means only a subagent's or side question's response moved.
+       */
+      readonly type: "model.changed";
+      readonly provider: ProviderDriverKind;
+      readonly threadId: ThreadId;
+      readonly turnId: TurnId | null;
+      readonly from: string | null;
+      readonly to: string;
+      /** Display names for `from` / `to`, when the driver knows them. */
+      readonly fromLabel?: string | null;
+      readonly toLabel?: string | null;
+      /** `auto`: any other switch the provider made itself (an overloaded model's fallback, say). */
+      readonly reason: "refusal-fallback" | "auto";
+      readonly scope: "session" | "local";
+      /** Why the request was flagged ("bio", "cyber", …), when the provider says. */
+      readonly category: string | null;
+    }
+  | {
+      /**
+       * Something the provider did to the session that the transcript should
+       * say: it compacted the conversation (`detail` is the summary it kept),
+       * or its auto mode refused a tool call (`detail` is why).
+       */
+      readonly type: "session.notice";
+      readonly provider: ProviderDriverKind;
+      readonly threadId: ThreadId;
+      readonly turnId: TurnId | null;
+      readonly notice: "compacted" | "permission-denied";
+      readonly title: string;
+      readonly detail: string | null;
+    }
+  | {
+      /**
+       * What the user will likely ask next, predicted after a turn ends
+       * (Claude's prompt suggestions). Arrives after the turn has settled.
+       */
+      readonly type: "prompt.suggested";
+      readonly provider: ProviderDriverKind;
+      readonly threadId: ThreadId;
+      readonly suggestion: string;
+    }
+  | {
+      /**
+       * A provider-native subagent (Claude's Agent tool) starting or
+       * stopping, with the last thing it said. Moxen's own delegated threads
+       * are threads, not this.
+       */
+      readonly type: "subagent.updated";
+      readonly provider: ProviderDriverKind;
+      readonly threadId: ThreadId;
+      readonly turnId: TurnId | null;
+      readonly agentId: string;
+      readonly agentType: string;
+      readonly status: "started" | "stopped";
+      readonly lastMessage: string | null;
+    }
+  | {
+      /**
+       * Output already streamed that the provider took back — the partial a
+       * refused request produced before it was re-run. `messageIds` name
+       * assistant messages (as `message.part.updated` / `assistant.note`
+       * carried them); `toolUseIds` name tool calls.
+       */
+      readonly type: "message.retracted";
+      readonly provider: ProviderDriverKind;
+      readonly threadId: ThreadId;
+      readonly turnId: TurnId | null;
+      readonly messageIds: ReadonlyArray<string>;
+      readonly toolUseIds: ReadonlyArray<string>;
+    }
+  | {
       readonly type: "rate-limits.updated";
       readonly provider: ProviderDriverKind;
       readonly threadId: ThreadId;
@@ -248,6 +433,18 @@ export type ProviderRuntimeEvent =
       readonly state: string;
       readonly raw?: unknown;
     };
+
+/** A live background task, as a driver reports it. */
+export interface BackgroundTaskSummary {
+  readonly taskId: string;
+  readonly taskType: string | null;
+  readonly description: string;
+  /** The tool that started it ("Bash", "Monitor", …) — same `taskType` covers both, so this is what tells them apart. */
+  readonly toolName?: string | null;
+  /** The originating command/script text, when the driver can recover it. */
+  readonly command?: string | null;
+  readonly startedAt?: string | null;
+}
 
 export interface ProviderAdapter<TError = unknown> {
   readonly provider: ProviderDriverKind;
@@ -328,4 +525,21 @@ export interface ProviderAdapter<TError = unknown> {
   readonly stopAll: () => Effect.Effect<void, TError>;
 
   readonly streamEvents: Stream.Stream<ProviderRuntimeEvent>;
+}
+
+/** A side question (`/btw`); see `TurnDriver.sideQuestion`. */
+export interface SideQuestionInput {
+  /** The thread's native session (`resumeCursor`); null answers without its context. */
+  readonly cursor: string | null;
+  readonly workingDirectory: string;
+  readonly question: string;
+  /** The thread's model, so the side answer comes from the same one. */
+  readonly model?: string;
+  readonly signal?: AbortSignal;
+}
+
+export interface SideAnswer {
+  readonly text: string;
+  /** False when there was no session to copy, so the answer had no thread context. */
+  readonly withContext: boolean;
 }

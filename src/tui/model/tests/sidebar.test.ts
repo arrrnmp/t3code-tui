@@ -201,3 +201,36 @@ describe("buildSidebarSections", () => {
     expect(waiting.get("approval")).toBe(true);
   });
 });
+
+describe("delegated threads in the sidebar", () => {
+  it("sit right under their parent, oldest first, one level deep", () => {
+    const sections = buildSidebarSections(
+      shellWith([
+        thread("parent", { latestUserMessageAt: ago(1_000) }),
+        thread("other", { latestUserMessageAt: ago(2_000) }),
+        // Newer than its parent by recency, yet shown under it.
+        thread("task-b", { parentThreadId: "parent", createdAt: ago(20_000), latestUserMessageAt: ago(500) }),
+        thread("task-a", { parentThreadId: "parent", createdAt: ago(30_000) }),
+        // A task of a task nests beside its siblings, not deeper.
+        thread("task-a-1", { parentThreadId: "task-a", createdAt: ago(10_000) }),
+      ]),
+      { settledExpanded: false, settledLimit: 10, now: NOW },
+    );
+    expect(sections.active.map((row) => [row.thread.id, row.depth])).toEqual([
+      ["parent", 0],
+      ["task-a", 1],
+      ["task-b", 1],
+      ["task-a-1", 1],
+      ["other", 0],
+    ]);
+  });
+
+  it("keeps a task at the top level when its parent is not in the list", () => {
+    const sections = buildSidebarSections(shellWith([thread("orphan", { parentThreadId: "gone" })]), {
+      settledExpanded: false,
+      settledLimit: 10,
+      now: NOW,
+    });
+    expect(sections.active.map((row) => [row.thread.id, row.depth])).toEqual([["orphan", 0]]);
+  });
+});

@@ -61,6 +61,7 @@ describe("applyThreadFrame contextUsage", () => {
             cachedInputTokens: 12_000,
             compactsAutomatically: true,
             autoCompactThreshold: 900_000,
+            costUsd: 1.23,
           },
         },
       },
@@ -72,6 +73,7 @@ describe("applyThreadFrame contextUsage", () => {
       cachedInputTokens: 12_000,
       compactsAutomatically: true,
       autoCompactThreshold: 900_000,
+      costUsd: 1.23,
     });
     expect(state.unhandled).toEqual({});
   });
@@ -101,6 +103,7 @@ describe("applyThreadFrame contextUsage", () => {
       cachedInputTokens: null,
       compactsAutomatically: null,
       autoCompactThreshold: null,
+      costUsd: null,
     });
 
     let viaProviderThreads = emptyThreadState();
@@ -155,6 +158,7 @@ describe("applyThreadFrame contextUsage", () => {
       cachedInputTokens: null,
       compactsAutomatically: null,
       autoCompactThreshold: null,
+      costUsd: null,
     });
   });
 
@@ -520,6 +524,44 @@ describe("timeline plan filtering", () => {
     expect(latestPlan(state)?.items).toHaveLength(1);
   });
 
+  it("hides Claude's Task tool calls, and loading them, like todowrite — the tasks panel shows the list", () => {
+    // `planActivity` summarizes every row as "0 todos" — which the title
+    // heuristic hides on its own — so these carry the wire's real summary.
+    const call = (id: string, toolName: string, input: Record<string, unknown>) => ({
+      ...planActivity(id, "tool.completed", {
+        itemType: "dynamic_tool_call",
+        toolCallId: `toolu_${id}`,
+        status: "completed",
+        title: "Tool call",
+        detail: `${toolName}: ${JSON.stringify(input)}`,
+        data: { toolName, input },
+      }),
+      summary: "Tool call",
+    });
+    let state = emptyThreadState();
+    state = applyThreadFrame(
+      state,
+      snapshotWith({
+        thread: {
+          id: "t1",
+          activities: [
+            call("t1", "ToolSearch", { query: "select:TaskCreate,TaskUpdate" }),
+            call("t2", "TaskCreate", { subject: "Todo 1", description: "…" }),
+            call("t3", "TaskUpdate", { taskId: "1", status: "in_progress" }),
+            call("t4", "TaskList", {}),
+            call("t5", "TaskGet", { taskId: "1" }),
+            planActivity("p1", "turn.plan.updated", { plan: [{ step: "Todo 1", status: "inProgress" }] }),
+            // Loading other tools alongside still shows.
+            call("t6", "ToolSearch", { query: "select:TaskCreate,WebFetch" }),
+          ],
+        },
+      }),
+    );
+    const entries = timeline(state);
+    expect(entries.map((entry) => entry.id)).toEqual(["t6"]);
+    expect(latestPlan(state)?.items).toEqual([{ content: "Todo 1", status: "inProgress" }]);
+  });
+
   it("hides stripped wire-shape todowrite rows by title", () => {
     let state = emptyThreadState();
     state = applyThreadFrame(
@@ -694,8 +736,8 @@ describe("pendingUserInputRequests", () => {
     expect(pending[0]?.requestId).toBe("que_1");
     expect(pending[0]?.questions[0]).toMatchObject({ id: "q1", header: "Next", multiSelect: false });
     expect(pending[0]?.questions[0]?.options).toEqual([
-      { label: "A", description: "first", value: null },
-      { label: "B", description: "second", value: "b-val" },
+      { label: "A", description: "first", value: null, preview: null },
+      { label: "B", description: "second", value: "b-val", preview: null },
     ]);
     state = applyThreadFrame(
       state,
@@ -778,5 +820,11 @@ describe("shouldOfferResumeCompaction", () => {
     const stale = stateWithWindow(431_553, "2026-09-17T04:40:00.000Z");
     expect(shouldOfferResumeCompaction(stale, "codex", now)).toBe(false);
     expect(shouldOfferResumeCompaction(emptyThreadState(), "claudeAgent", now)).toBe(false);
+  });
+
+  it("never offers it while a turn is running, however old the reading", () => {
+    const stale = stateWithWindow(431_553, "2026-09-17T04:40:00.000Z");
+    const running = { ...stale, session: { ...(stale.session ?? {}), status: "running" } } as typeof stale;
+    expect(shouldOfferResumeCompaction(running, "claudeAgent", now)).toBe(false);
   });
 });

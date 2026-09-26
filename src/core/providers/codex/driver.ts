@@ -39,7 +39,7 @@ import type {
   TokenUsageDelta,
   TurnId,
 } from "../spi.js";
-import type { McpServerSpec } from "../../mcp.js";
+import { outOfProcess, type McpServerSpec } from "../../mcp.js";
 import {
   codexAccountTypeOf,
   codexSignedOutMessage,
@@ -866,23 +866,22 @@ export class CodexDriver implements ProviderAdapter<CliError> {
         const text = textOfDelta(params);
         const open = session.transcript.find((candidate) => candidate.status === "running");
         const itemId = asString(asRecord(params)?.["itemId"]) ?? "";
-        let commentary = false;
         if (text && open) {
           const message = open.messages.get(itemId) ?? { text: "", phase: null };
           message.text += text;
           open.messages.set(itemId, message);
           open.text = answerText(open.messages);
           open.items.push({ kind: "assistant", text });
-          commentary = message.phase === "commentary";
         }
-        // Commentary is working narration, not the answer: keep it out of
-        // the live answer stream too.
-        if (text && !commentary) {
+        // Commentary streams live like any message; once complete it is
+        // recorded as a note (on item/completed), never as the turn's answer.
+        if (text) {
           this.publish({
             type: "message.part.updated",
             provider: "codex",
             threadId: session.threadId,
             turnId: open?.id ?? null,
+            messageId: itemId || "codex-message",
             text,
           });
         }
@@ -912,6 +911,17 @@ export class CodexDriver implements ProviderAdapter<CliError> {
           if (method === CODEX_METHODS.itemCompleted && agentMessage.text !== null) message.text = agentMessage.text;
           open.messages.set(agentMessage.id, message);
           open.text = answerText(open.messages);
+          // A finished `commentary` message is the model narrating its work.
+          if (method === CODEX_METHODS.itemCompleted && message.phase === "commentary" && message.text.trim()) {
+            this.publish({
+              type: "assistant.note",
+              provider: "codex",
+              threadId: session.threadId,
+              turnId: open.id,
+              messageId: agentMessage.id,
+              text: message.text,
+            });
+          }
         }
         if (open && method === CODEX_METHODS.itemCompleted) {
           open.items.push({ kind: "tool", tool, text: textOfDelta(params) ?? tool });
@@ -1190,7 +1200,8 @@ export function codexContextUsageOf(raw: unknown): ContextWindowUsage | null {
  */
 function codexMcpConfig(servers: readonly McpServerSpec[]): Record<string, unknown> {
   return Object.fromEntries(
-    servers.map((server) => [
+    // Codex hosts nothing in-process: moxen's own tools come over their fallback.
+    servers.map(outOfProcess).map((server) => [
       `mcp_servers.${server.name}`,
       server.type === "http"
         ? { url: server.url, ...(Object.keys(server.headers).length > 0 ? { http_headers: { ...server.headers } } : {}) }

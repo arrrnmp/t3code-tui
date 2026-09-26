@@ -29,7 +29,7 @@ import {
 } from "../catalog/selection.js";
 import { APP_NAME } from "../config.js";
 import { CliError } from "../errors.js";
-import { resolveMcpServers, type McpServerEntry, type McpServerSpec } from "../mcp.js";
+import { outOfProcess, resolveMcpServers, type McpServerEntry, type McpServerSpec, type OutOfProcessMcpServerSpec } from "../mcp.js";
 import { runProcess } from "../infra/process.js";
 import {
   ensureStoredProject,
@@ -66,9 +66,15 @@ import {
   inspectThread,
   interruptTurn,
   listThreads,
+  openTurn,
+  promoteDueScheduledTurn,
   sendTurn,
   type SendTurnResult,
 } from "./threads.js";
+import { armScheduledTurn } from "./schedule.js";
+import { USAGE_CONTINUE_GRACE_MS, USAGE_CONTINUE_PROMPT } from "./views.js";
+import { reportHeadline, taskNotificationText, type TaskNotification } from "./notify.js";
+import { CHECKPOINT_REF_NAMESPACE, diffCheckpointStat, restoreWorktreeTo } from "../checkpoints/git.js";
 import type { SendTurnInput, StoredThread, StoredTurn } from "./types.js";
 import {
   delegatedStatusOf,
@@ -123,25 +129,53 @@ export interface OperationContext {
 async function sessionSetup(
   ctx: OperationContext,
   thread: StoredThread,
-): Promise<{ mcpServers: McpServerSpec[]; instructions: string | null }> {
+): Promise<{ mcpServers: McpServerSpec[]; instructions: string; store: ThreadStore }> {
   const project = await projectById(ctx.storeRoot, thread.projectId);
   const workspaceRoot = project?.workspaceRoot ?? (thread.env.path.trim() || null);
   const delegation = await delegationOf(ctx.store, thread.id);
   const builtin = delegation ? [] : (ctx.builtinMcpServers?.(thread.id) ?? []);
   const base: Record<string, McpServerEntry> = {};
-  for (const spec of builtin) {
+  for (const built of builtin) {
+    // Layered by name like any configured server, in the form a config entry has.
+    const spec = outOfProcess(built);
     if (spec.type === "stdio") base[spec.name] = { type: "stdio", command: spec.command, args: spec.args, env: spec.env };
     else base[spec.name] = { type: "http", url: spec.url, headers: spec.headers };
   }
-  const [mcpServers, fromProject] = await Promise.all([
+  const [resolved, fromProject] = await Promise.all([
     resolveMcpServers({ ...base, ...ctx.config.mcpServers }, workspaceRoot),
     projectInstructions(workspaceRoot),
   ]);
+  // A built-in server the config left as it was keeps everything its
+  // config-shaped entry dropped: in-process hosting, `alwaysLoad`. One the
+  // config replaced (or removed, with `null`) is the config's.
+  const mcpServers = resolved.map((spec) => {
+    const built = builtin.find((candidate) => candidate.name === spec.name);
+    return built !== undefined && sameEndpoint(outOfProcess(built), spec) ? built : spec;
+  });
   const user = [ctx.config.instructions, fromProject].filter((entry): entry is string => Boolean(entry));
   return {
     mcpServers,
-    instructions: buildRuntimeInstructions({ env: thread.env, delegation, userInstructions: user }),
+    instructions: buildRuntimeInstructions({
+      instanceId: thread.modelSelection.instanceId,
+      env: thread.env,
+      delegation,
+      userInstructions: user,
+    }),
+    // So the session is watched between turns (background turns and tasks).
+    store: ctx.store,
   };
+}
+
+/** Whether two out-of-process specs reach the same server the same way. */
+function sameEndpoint(left: OutOfProcessMcpServerSpec, right: McpServerSpec): boolean {
+  if (right.type === "in-process" || left.type !== right.type) return false;
+  if (left.type === "http" && right.type === "http") {
+    return left.url === right.url && JSON.stringify(left.headers) === JSON.stringify(right.headers);
+  }
+  if (left.type === "stdio" && right.type === "stdio") {
+    return left.command === right.command && JSON.stringify(left.args) === JSON.stringify(right.args) && JSON.stringify(left.env) === JSON.stringify(right.env);
+  }
+  return false;
 }
 
 /**
@@ -188,7 +222,89 @@ async function runRecoveredTurn(ctx: OperationContext, threadId: string, turn: S
     ...(images.length > 0 ? { images } : {}),
     modelSelection: selection,
     workingDirectory: thread.env.path,
+    ...usageLimitHook(ctx, threadId),
   });
+}
+
+// -- scheduled turns --------------------------------------------------------------
+
+/**
+ * Run the thread's scheduled turn once it is due and the thread is free.
+ * Called by the schedule timer and by the shell poll; safe to call any time
+ * — nothing happens when nothing is due or a turn is already running.
+ */
+export async function runDueScheduledTurn(ctx: OperationContext, threadId: string): Promise<boolean> {
+  await recoverOrphanedTurn(ctx, threadId);
+  const turn = await promoteDueScheduledTurn(ctx.store, threadId).catch(() => null);
+  if (!turn) return false;
+  await runRecoveredTurn(ctx, threadId, turn).catch(() => undefined);
+  return true;
+}
+
+/** Arm timers for every pending scheduled turn on disk (a starting owner process calls this once). */
+export async function armPendingScheduledTurns(ctx: OperationContext): Promise<void> {
+  const ids = await ctx.store.listThreadIds().catch(() => [] as string[]);
+  for (const threadId of ids) {
+    const turns = await ctx.store.readTurns(threadId).catch(() => [] as StoredTurn[]);
+    for (const turn of turns) {
+      if (turn.status === "queued" && typeof turn.scheduledFor === "string") armScheduledTurn(threadId, turn.id, turn.scheduledFor);
+    }
+  }
+}
+
+/** Automatic continues in a row before moxen stops trying (Claude Code's own cap). */
+export const MAX_USAGE_CONTINUES = 2;
+
+/** The runner hook that schedules a continue after a usage limit, when config asks for it. */
+function usageLimitHook(
+  ctx: OperationContext,
+  threadId: string,
+): { onUsageLimit?: (storeTurnId: string, resetsAt: string | null) => void } {
+  if (ctx.config.autoContinueAtUsageLimit !== true) return {};
+  return {
+    onUsageLimit: (storeTurnId, resetsAt) => void scheduleUsageContinue(ctx, threadId, storeTurnId, resetsAt).catch(() => undefined),
+  };
+}
+
+/**
+ * Queue a "continue" for just after the limit resets. At most one pending,
+ * and at most `MAX_USAGE_CONTINUES` in a row: a continue that hits the limit
+ * again counts up, and past the cap a notice says it stopped.
+ */
+export async function scheduleUsageContinue(
+  ctx: OperationContext,
+  threadId: string,
+  storeTurnId: string,
+  resetsAt: string | null,
+): Promise<StoredTurn | null> {
+  const { store } = ctx;
+  if (resetsAt === null || !Number.isFinite(Date.parse(resetsAt))) return null;
+  const turns = await store.readTurns(threadId);
+  if (turns.some((turn) => turn.status === "queued" && turn.scheduleReason === "usage-reset")) return null;
+  const stopped = turns.find((turn) => turn.id === storeTurnId);
+  const attempt = stopped?.scheduleReason === "usage-reset" ? (stopped.continueAttempt ?? 1) + 1 : 1;
+  if (attempt > MAX_USAGE_CONTINUES) {
+    await store.appendLedger(threadId, "activity", {
+      id: store.newId(),
+      threadId,
+      turnId: storeTurnId,
+      kind: "notice",
+      summary: "Automatic continue stopped after repeated usage-limit hits",
+      payload: { notice: "other", detail: `It tried ${MAX_USAGE_CONTINUES} times in a row. Send a message to pick the task up again.` },
+      createdAt: store.nowIso(),
+    });
+    store.emit(threadId, "activity");
+    return null;
+  }
+  const at = new Date(Date.parse(resetsAt) + USAGE_CONTINUE_GRACE_MS).toISOString();
+  const sent = await sendTurn(store, threadId, {
+    prompt: USAGE_CONTINUE_PROMPT,
+    scheduledFor: at,
+    scheduleReason: "usage-reset",
+    continueAttempt: attempt,
+  });
+  armScheduledTurn(threadId, sent.turn.id, at);
+  return sent.turn;
 }
 
 /** The delegation that created this thread, with its parent's title, if it is a delegated task. */
@@ -266,6 +382,9 @@ export async function startTurn(ctx: OperationContext, input: StartTurnInput): P
     const text = imageMention(input.driverPrompt ?? input.prompt.trim(), uploads.map((upload) => upload.name));
     return { ...sent, run: null, steerDelivered: await deliverSteer(driver, thread.id, text) };
   }
+  if (sent.turn.status === "queued" && typeof sent.turn.scheduledFor === "string") {
+    armScheduledTurn(thread.id, sent.turn.id, sent.turn.scheduledFor);
+  }
   const fresh = (sent.delivery === "started" || sent.delivery === "restarted") && sent.turn.status === "running";
   if (!fresh) return { ...sent, run: null };
 
@@ -299,6 +418,7 @@ export async function startTurn(ctx: OperationContext, input: StartTurnInput): P
     modelSelection: turnModel,
     workingDirectory: sent.thread.env.path,
     ...(onEvent ? { onEvent } : {}),
+    ...usageLimitHook(ctx, thread.id),
   }).catch(() => undefined);
   return { ...sent, run };
 }
@@ -326,12 +446,27 @@ export interface RevertResult {
   readonly removedTurns: number;
   /** Drivers whose provider-side conversation was rolled back too. */
   readonly providers: readonly string[];
+  /**
+   * Present only when files were asked back too: how many the restore
+   * touched, and the ref holding the worktree as it was just before — the
+   * way to undo the restore.
+   */
+  readonly filesRestored?: { readonly files: number; readonly undoRef: string };
+}
+
+export interface RevertOptions {
+  /**
+   * Put the files back too, to how they were before the first dropped turn
+   * (its pre-turn checkpoint) — untracked ones included. Refused, before
+   * anything changes, when that checkpoint is unavailable.
+   */
+  readonly restoreFiles?: boolean;
 }
 
 /**
  * Revert a thread's conversation so its first `keepTurns` turns remain.
- * Files are left as they are (the TUI's revert says "keeps files"); the
- * checkpoints stay available to diff against.
+ * Files are left as they are unless `restoreFiles` asks for them too; the
+ * checkpoints stay available to diff against either way.
  *
  * The provider has to forget the dropped turns too, or the next turn
  * answers from a history the thread no longer shows. So every provider
@@ -340,7 +475,12 @@ export interface RevertResult {
  * the ledger cut. A provider that cannot roll back (Grok) refuses the
  * whole revert before anything changes.
  */
-export async function revertThread(ctx: OperationContext, rawThreadId: string, keepTurns: number): Promise<RevertResult> {
+export async function revertThread(
+  ctx: OperationContext,
+  rawThreadId: string,
+  keepTurns: number,
+  options: RevertOptions = {},
+): Promise<RevertResult> {
   const { store } = ctx;
   const threadId = requireThreadId(rawThreadId);
   if (!Number.isInteger(keepTurns) || keepTurns < 0) {
@@ -385,6 +525,20 @@ export async function revertThread(ctx: OperationContext, rawThreadId: string, k
       { exitCode: 4, details: { threadId, provider: "grok" } },
     );
   }
+  // The files' target: the worktree as it was before the first dropped turn.
+  // Checked before anything changes, so a revert that cannot restore files
+  // leaves the conversation alone too.
+  const filesTarget =
+    options.restoreFiles === true
+      ? ((await store.readCheckpoints(threadId)).find((checkpoint) => checkpoint.turnId === removed[0]!.id && checkpoint.baseRef)?.baseRef ?? null)
+      : null;
+  if (options.restoreFiles === true && filesTarget === null) {
+    throw new CliError(
+      "REVERT_FILES_UNAVAILABLE",
+      "There is no snapshot of the files from before that turn (not a git repository, or taken before snapshots existed). Revert the conversation alone.",
+      { exitCode: 4, details: { threadId } },
+    );
+  }
 
   const rolledBack: string[] = [];
   for (const [key, entry] of byDriver) {
@@ -416,6 +570,21 @@ export async function revertThread(ctx: OperationContext, rawThreadId: string, k
     });
   }
 
+  // Files after the providers: a failed rollback above leaves the files alone.
+  let filesRestored: { files: number; undoRef: string } | undefined;
+  if (filesTarget !== null) {
+    const restored = await restoreWorktreeTo(thread.env.path, filesTarget);
+    if (restored === null) {
+      throw new CliError("REVERT_FILES_FAILED", "The conversation was rolled back, but its files could not be restored.", {
+        exitCode: 1,
+        details: { threadId },
+      });
+    }
+    const undoRef = `${CHECKPOINT_REF_NAMESPACE}/${threadId.replace(/[^A-Za-z0-9._-]+/g, "-")}/revert-${Date.now()}`;
+    await runProcess("git", ["update-ref", undoRef, restored.before], { cwd: thread.env.path }).catch(() => undefined);
+    filesRestored = { files: restored.files, undoRef };
+  }
+
   const dropped = new Set(removed.map((turn) => turn.id));
   const keep = <T extends { turnId?: string | null }>(rows: readonly T[]) =>
     rows.filter((row) => row.turnId == null || !dropped.has(row.turnId));
@@ -440,7 +609,13 @@ export async function revertThread(ctx: OperationContext, rawThreadId: string, k
     if (record) await store.writeThreadRecord({ ...record, updatedAt: store.nowIso() });
   });
   store.emit(threadId, "reverted");
-  return { threadId, keptTurns: keepTurns, removedTurns: removed.length, providers: rolledBack };
+  return {
+    threadId,
+    keptTurns: keepTurns,
+    removedTurns: removed.length,
+    providers: rolledBack,
+    ...(filesRestored ? { filesRestored } : {}),
+  };
 }
 
 /** Resolves true when `run` settles first, false on timeout. */
@@ -889,9 +1064,145 @@ export interface DelegateRequest extends ModelRequest {
    * parent's, so two agents never edit the same files at once.
    */
   readonly isolation?: DelegateIsolation;
+  /**
+   * For a delegation not waited on: tell the parent thread when the task
+   * settles (default). False leaves it to `task_status`.
+   */
+  readonly notify?: boolean;
+  /**
+   * Start the task from a copy of the parent's conversation instead of an
+   * empty one: same provider, the parent's checkout (`shared`).
+   */
+  readonly fork?: boolean;
 }
 
 export type DelegateIsolation = "shared" | "worktree";
+
+/**
+ * Copy the parent's native session for a forked task: same provider only
+ * (a conversation cannot cross providers), on a driver that can fork, from
+ * a parent that has a conversation yet.
+ */
+async function forkParentSession(
+  ctx: OperationContext,
+  parentThreadId: string,
+  childSelection: ModelSelection,
+  workingDirectory: string,
+): Promise<{ key: string; cursor: string }> {
+  const parent = await ctx.store.readThreadRecord(parentThreadId);
+  const key = driverKey((parent?.modelSelection ?? childSelection).instanceId);
+  if (driverKey(childSelection.instanceId) !== key) {
+    throw new CliError("FORK_PROVIDER_MISMATCH", "A forked task runs on its parent's provider: a conversation cannot move between providers.", {
+      exitCode: 2,
+      details: { threadId: parentThreadId },
+    });
+  }
+  const driver = ctx.driverFor(childSelection.instanceId);
+  if (!driver.forkSession) {
+    throw new CliError("FORK_UNSUPPORTED", `${childSelection.instanceId} cannot fork a conversation; delegate without fork.`, {
+      exitCode: 4,
+      details: { threadId: parentThreadId },
+    });
+  }
+  const cursor = driver.resumeCursor?.(parentThreadId) ?? parent?.providerSessions?.[key] ?? null;
+  if (!cursor) {
+    throw new CliError("FORK_UNAVAILABLE", `Thread ${parentThreadId} has no conversation to fork yet.`, {
+      exitCode: 4,
+      details: { threadId: parentThreadId },
+    });
+  }
+  return { key, cursor: await driver.forkSession(cursor, workingDirectory) };
+}
+
+// -- task notifications -----------------------------------------------------------
+
+/** Tasks settling within this long of each other reach their parent as one message. */
+export const TASK_NOTIFICATION_BATCH_MS = 2_000;
+
+const pendingNotifications = new Map<string, { timer: ReturnType<typeof setTimeout>; taskIds: string[] }>();
+
+/** Note a settled task for its parent; the batch goes out once no other task settles for a moment. */
+export function queueTaskNotification(ctx: OperationContext, parentThreadId: string, childThreadId: string): void {
+  const pending = pendingNotifications.get(parentThreadId);
+  if (pending) clearTimeout(pending.timer);
+  const taskIds = [...(pending?.taskIds ?? []), childThreadId];
+  const timer = setTimeout(() => {
+    pendingNotifications.delete(parentThreadId);
+    void deliverTaskNotifications(ctx, parentThreadId, taskIds).catch(() => undefined);
+  }, TASK_NOTIFICATION_BATCH_MS);
+  timer.unref?.();
+  pendingNotifications.set(parentThreadId, { timer, taskIds });
+}
+
+/** One task's settled facts: status, time, model, branch, headline, and what it changed. */
+export async function taskNotificationOf(ctx: OperationContext, childThreadId: string): Promise<TaskNotification | null> {
+  const child = await threadWithLedger(ctx.store, childThreadId).catch(() => null);
+  if (!child) return null;
+  const record = await ctx.store.readThreadRecord(childThreadId);
+  const turns = await ctx.store.readTurns(childThreadId);
+  const first = turns[0] ?? null;
+  const last = [...turns].reverse().find((turn) => turn.completedAt !== null) ?? null;
+  const durationMs =
+    first && last?.completedAt ? Math.max(0, Date.parse(last.completedAt) - Date.parse(first.createdAt)) : null;
+  // What the task changed: its turns' checkpoints, first base to last head.
+  let changes: { files: number; additions: number; deletions: number } | null = null;
+  const checkpoints = (await ctx.store.readCheckpoints(childThreadId).catch(() => [])).filter((row) => row.status === "available");
+  const base = checkpoints[0]?.baseRef ?? null;
+  const head = checkpoints.at(-1)?.ref ?? null;
+  if (record && base && head) {
+    const stat = await diffCheckpointStat(record.env.path, base, head);
+    changes = {
+      files: stat.length,
+      additions: stat.reduce((sum, row) => sum + row.additions, 0),
+      deletions: stat.reduce((sum, row) => sum + row.deletions, 0),
+    };
+  }
+  const task = taskOf(child);
+  return {
+    taskId: childThreadId,
+    title: child.title,
+    status: task.status,
+    durationMs,
+    model: child.modelSelection ? `${child.modelSelection.instanceId}/${child.modelSelection.model}` : null,
+    branch: record?.env.mode === "worktree" ? record.env.branch : null,
+    headline: reportHeadline(task.summary),
+    filesChanged: changes?.files ?? null,
+    additions: changes?.additions ?? null,
+    deletions: changes?.deletions ?? null,
+  };
+}
+
+/**
+ * Send the parent its settled tasks: into its running turn when the
+ * provider takes input mid-turn (Claude, Codex, OpenCode) and this process
+ * holds that session; otherwise as a turn of its own, queued behind any
+ * running one. It wakes a settled parent — the work is the parent's own.
+ */
+async function deliverTaskNotifications(ctx: OperationContext, parentThreadId: string, childThreadIds: readonly string[]): Promise<void> {
+  const tasks = (await Promise.all(childThreadIds.map((id) => taskNotificationOf(ctx, id)))).filter(
+    (task): task is TaskNotification => task !== null,
+  );
+  if (tasks.length === 0) return;
+  const parent = await ctx.store.readThreadRecord(parentThreadId);
+  if (!parent || parent.archivedAt != null) return;
+  const running = openTurn(await ctx.store.readTurns(parentThreadId))?.status === "running";
+  const steerable = running && (await canSteer(ctx, parent));
+  await startTurn(ctx, {
+    threadId: parentThreadId,
+    prompt: taskNotificationText(tasks),
+    origin: "task-notification",
+    notification: { tasks },
+    delivery: steerable ? "steer" : "queue",
+    wakeSettled: true,
+  });
+}
+
+/** Whether a steer would reach the parent's live provider turn from this process. */
+async function canSteer(ctx: OperationContext, thread: StoredThread): Promise<boolean> {
+  const driver = ctx.driverFor(thread.modelSelection.instanceId);
+  if (!driver.steerTurn) return false;
+  return await Effect.runPromise(driver.hasSession(thread.id)).catch(() => false);
+}
 
 export interface TaskView {
   readonly taskId: string;
@@ -989,6 +1300,15 @@ export async function delegate(ctx: OperationContext, request: DelegateRequest):
     );
   }
   const shape = { project, parent, modelSelection, runtimeMode, interactionMode, branch: parent.branch ?? null };
+  if (request.fork === true && isolated) {
+    // A native session belongs to the directory it runs in (Claude keeps its
+    // transcripts per project directory, OpenCode per server), so a copy
+    // cannot move into a worktree of its own.
+    throw new CliError("FORK_NEEDS_SHARED", "A forked task runs in its parent's checkout: delegate it with isolation \"shared\".", {
+      exitCode: 2,
+      details: { threadId: parentThreadId },
+    });
+  }
 
   if (request.dryRun === true) {
     const childThreadId = randomUUID();
@@ -1008,6 +1328,10 @@ export async function delegate(ctx: OperationContext, request: DelegateRequest):
       messageId: null,
     };
   }
+
+  // A fork starts from a copy of the parent's own conversation, made before
+  // anything is created so a provider that cannot fork leaves nothing behind.
+  const forked = request.fork === true ? await forkParentSession(ctx, parentThreadId, modelSelection, parentEnv.path) : null;
 
   const childThreadId = randomUUID();
   // Cut from the parent's branch as the parent's checkout has it — not from
@@ -1038,6 +1362,11 @@ export async function delegate(ctx: OperationContext, request: DelegateRequest):
     }
     throw cause;
   }
+  if (forked !== null) {
+    // The child's session resumes the copy instead of starting empty.
+    created = { ...created, providerSessions: { ...created.providerSessions, [forked.key]: forked.cursor } };
+    await ctx.store.writeThreadRecord(created);
+  }
   // Recorded before the child's session starts: that start reads it to tell
   // the child it is a delegated task (`core/threads/instructions.ts`).
   const now = new Date().toISOString();
@@ -1060,6 +1389,12 @@ export async function delegate(ctx: OperationContext, request: DelegateRequest):
       { cause, details: { threadId: created.id } },
     );
   });
+
+  // A delegation nobody waits on reports back by itself once the task
+  // settles: the parent gets a message instead of having to poll for it.
+  if (request.wait === false && request.notify !== false && started.run !== null) {
+    void started.run.then(() => queueTaskNotification(ctx, parentThreadId, created.id)).catch(() => undefined);
+  }
 
   let waitTimedOut = false;
   if (request.wait ?? true) {

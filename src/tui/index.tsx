@@ -9,7 +9,7 @@ import { registerSyntaxParsers } from "./syntax/register.js";
 import { SURFACE } from "./theme.js";
 import { MinSizeGate } from "./ui/terminalgate.js";
 
-export async function runTui(config: CliConfig): Promise<void> {
+export async function runTui(config: CliConfig, configPath: string): Promise<void> {
   // Fail fast when there is no pty at all (piped output, `ssh` without
   // `-t`): the renderer cannot size or restore the screen, so a plain
   // error beats a garbled one. Real resizes — local, tmux, or over SSH —
@@ -24,7 +24,10 @@ export async function runTui(config: CliConfig): Promise<void> {
   await registerSyntaxParsers();
   // In-process unless a moxen server is running (or MOXEN_SERVER says
   // otherwise): with one, closing the TUI no longer ends its turns.
-  const connection = await openClient({ config });
+  // The path, not the loaded object: the TUI outlives any one edit, and
+  // the connection re-reads the file per operation so the settings page
+  // (and anything else that changes it) takes effect without a restart.
+  const connection = await openClient({ configPath });
   const renderer = await createCliRenderer({ exitOnCtrlC: false, backgroundColor: SURFACE.base });
   const root = createRoot(renderer);
 
@@ -37,6 +40,7 @@ export async function runTui(config: CliConfig): Promise<void> {
             onQuit={resolve}
             cwd={process.cwd()}
             setTerminalTitle={(title) => renderer.setTerminalTitle(title)}
+            {...(config.ui ? { ui: config.ui } : {})}
           />
         </MinSizeGate>,
       );

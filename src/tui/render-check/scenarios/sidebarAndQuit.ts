@@ -1,6 +1,8 @@
 import { act } from "react";
 import type { TestRendererSetup } from "@opentui/core/testing";
 
+import { fail } from "../helpers.js";
+
 /** Initial mount, the settled-section footer toggle, and the full-size
     Ctrl+C quit confirm. */
 export async function runSidebarAndQuit(setup: TestRendererSetup): Promise<void> {
@@ -38,9 +40,12 @@ export async function runSidebarAndQuit(setup: TestRendererSetup): Promise<void>
   await new Promise((resolve) => setTimeout(resolve, 200));
   await setup.flush();
 
-  // Sidebar geometry: border row, then three 3-line thread cards, then the
-  // settled header — clicking it is what a user does to expand the section.
-  await act(async () => setup.mockMouse.click(6, 24));
+  // The settled header — clicking it is what a user does to expand the
+  // section. Found by its text rather than a fixed row: the sidebar's
+  // footer (settings, panels) sits below it and moves it with the layout.
+  const settledRow = setup.captureCharFrame().split("\n").findIndex((line) => /│ Settled \d+/.test(line));
+  if (settledRow < 0) fail("sidebar shows no settled header to click");
+  await act(async () => setup.mockMouse.click(6, settledRow));
   await setup.flush();
   console.log("--- settled expanded (clicked footer header) ---");
   console.log(setup.captureCharFrame());

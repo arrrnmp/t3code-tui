@@ -18,7 +18,7 @@ import { serveMcp } from "./stdio.js";
 export const MOXEN_MCP_SERVER_NAME = "moxen";
 
 /** How a provider session launches the moxen tools for one thread. */
-export function moxenMcpServerSpec(threadId: string): McpServerSpec {
+export function moxenMcpServerSpec(threadId: string): Extract<McpServerSpec, { type: "stdio" }> {
   const entry = fileURLToPath(new URL("./main.ts", import.meta.url));
   // Bun runs the TypeScript directly: this runtime when it is Bun, else `bun` from PATH.
   const runtime = process.versions.bun ? process.execPath : "bun";
