@@ -5,5 +5,4 @@ coverage/
 .DS_Store
 /upstream/
 /reference/
-/docs/claude-code/
 /research-*.md
