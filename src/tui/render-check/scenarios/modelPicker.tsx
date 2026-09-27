@@ -105,6 +105,10 @@ export async function runModelPicker(setup: TestRendererSetup): Promise<void> {
     if (emptyFrame.includes("Claude Old")) fail("empty-workspace picker offered a hidden model");
     await act(async () => empty.mockInput.pressEscape());
     await empty.flush();
+    // The palette acts on a thread; the creating view has none yet.
+    await act(async () => empty.mockInput.pressKey("p", { ctrl: true }));
+    await empty.flush();
+    if (empty.captureCharFrame().includes("Export thread to markdown")) fail("the command palette opened in the new-thread view");
   } finally {
     empty.renderer.destroy();
   }

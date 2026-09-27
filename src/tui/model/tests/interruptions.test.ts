@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { ActivityEnvelope, MessageEnvelope } from "../../../core/types.js";
 import { describeActivity } from "../activity.js";
 import { USAGE_CONTINUE_PROMPT } from "../../../core/threads/views.js";
-import { applyThreadFrame, detectUsageLimit, emptyThreadState, isUsageContinue, promptSuggestion, retractedIds, taskNotifications, timeline, untilLabel, type ThreadState, queuedMessages } from "../thread.js";
+import { applyThreadFrame, detectUsageLimit, emptyThreadState, isUsageContinue, promptSuggestion, retractedIds, taskNotifications, timeline, untilLabel, type ThreadState, queuedMessages, queuedSummary } from "../thread.js";
 
 function activity(id: string, kind: string, payload: Record<string, unknown>, turnId = "turn-1"): ActivityEnvelope {
   return { id, tone: "info", kind, summary: kind, turnId, createdAt: `2026-09-25T10:00:0${id.length % 10}.000Z`, payload } as unknown as ActivityEnvelope;
@@ -101,7 +101,7 @@ describe("task notifications", () => {
       },
     } as unknown as MessageEnvelope;
     expect(taskNotifications(written)).toEqual([
-      { taskId: "t1", title: "scout routes", status: "completed", durationMs: 192_000, model: "codex/gpt-5.5", branch: "moxen/scout", headline: "2 missing auth checks", filesChanged: 0, additions: 0, deletions: 0 },
+      { taskId: "t1", source: "moxen", title: "scout routes", status: "completed", durationMs: 192_000, model: "codex/gpt-5.5", branch: "moxen/scout", headline: "2 missing auth checks", filesChanged: 0, additions: 0, deletions: 0 },
     ]);
     expect(taskNotifications(message("m", "hello"))).toBeNull();
     expect(taskNotifications(null)).toBeNull();
@@ -127,6 +127,31 @@ describe("waiting messages", () => {
     // They are the Queued panel's until sent — the moment the agent sees them.
     const ids = timeline(waiting()).map((entry) => entry.id);
     expect(ids).toEqual(["m-sent"]);
+  });
+
+  it("places a sent queued message where its turn started, not where it was queued", () => {
+    const at = (second: number) => `2026-09-25T10:00:${String(second).padStart(2, "0")}.000Z`;
+    const entries = timeline(
+      state({
+        messages: [
+          { ...user("m-first", "first"), turnId: "turn-1", createdAt: at(0) } as MessageEnvelope,
+          { ...message("r-early", "working on it"), createdAt: at(10) } as MessageEnvelope,
+          // Queued at 0:20 while turn-1 still ran; sent at 0:40 when it ended.
+          { ...user("m-queued", "while you work"), turnId: "turn-2", createdAt: at(20) } as MessageEnvelope,
+          { ...message("r-late", "done"), createdAt: at(30) } as MessageEnvelope,
+          // The closing reply is stamped as the turn completes — the same
+          // instant the queued turn is promoted.
+          { ...message("r-close", "all done"), id: "z-close", createdAt: at(40) } as MessageEnvelope,
+          { ...message("r-next", "on the queued one"), turnId: "turn-2", createdAt: at(45) } as MessageEnvelope,
+        ],
+        activities: [
+          { ...activity("q", "turn.queued", {}, "turn-2"), createdAt: at(20) },
+          { ...activity("p", "turn.promoted", {}, "turn-2"), createdAt: at(40) },
+        ],
+      }),
+    );
+    expect(entries.map((entry) => entry.id)).toEqual(["m-first", "r-early", "r-late", "z-close", "m-queued", "r-next"]);
+    expect(entries.find((entry) => entry.id === "m-queued")?.at).toBe(at(40));
   });
 
   it("lists them for the Queued panel in the order they will go out", () => {
@@ -286,5 +311,76 @@ describe("the provider's own limit reply", () => {
     const reply = message("m1", "You've hit your session limit · resets 4:40am (Europe/Madrid)");
     expect(timeline(state({ activities: [hit], messages: [reply] })).map((entry) => entry.id)).toEqual(["u1"]);
     expect(timeline(state({ messages: [reply] })).map((entry) => entry.id)).toEqual(["m1"]);
+  });
+});
+
+describe("background subagents in the transcript", () => {
+  it("folds the subagent's task rows into the Agent call that launched it", () => {
+    const agentCall = activity("a1", "tool-call.completed", {
+      itemType: "dynamic_tool_call",
+      toolCallId: "toolu_1",
+      status: "completed",
+      data: { tool: "Agent", state: { input: { subagent_type: "Explore", description: "List CLI commands" }, output: "Async agent launched" } },
+    });
+    const started = activity("b1", "background.started", { taskId: "ag", toolUseId: "toolu_1", status: "started", taskType: "local_agent" });
+    const shell = activity("b22", "background.started", { taskId: "sh", toolUseId: "toolu_2", status: "started", taskType: "local_bash" });
+    const done = activity("b333", "background.completed", { taskId: "ag", toolUseId: "toolu_1", status: "completed" });
+
+    const running = timeline(state({ activities: [agentCall, started, shell] }));
+    expect(running.map((entry) => entry.id)).toEqual(["a1", "b22"]);
+    expect(describeActivity(running[0]!.activity!)).toMatchObject({ kind: "agent", title: "Explore", subject: "List CLI commands", state: "working in the background", running: true });
+
+    const finished = timeline(state({ activities: [agentCall, started, shell, done] }));
+    expect(finished.map((entry) => entry.id)).toEqual(["a1", "b22"]);
+    expect(describeActivity(finished[0]!.activity!)).toMatchObject({ state: "finished", running: false });
+  });
+});
+
+describe("moxen task calls in the transcript", () => {
+  it("titles task_status with the task its delegate call started", () => {
+    const tool = (id: string, name: string, input: Record<string, unknown>, output: string) =>
+      activity(id, "tool-call.completed", { itemType: "dynamic_tool_call", toolCallId: id, status: "completed", data: { tool: name, state: { input, output } } });
+    const entries = timeline(
+      state({
+        activities: [
+          tool("d", "mcp__moxen__delegate", { task: "run it" }, JSON.stringify({ taskId: "task-1", title: "Run bun check", status: "running" })),
+          tool("s1", "mcp__moxen__task_status", { taskId: "task-1" }, JSON.stringify({ taskId: "task-1", status: "completed" })),
+        ],
+      }),
+    );
+    expect(describeActivity(entries.find((entry) => entry.id === "s1")!.activity!)).toMatchObject({ title: "task status", subject: "Run bun check", state: "finished" });
+  });
+});
+
+describe("native subagent notices", () => {
+  it("opens the turn a finished background subagent woke with its card", () => {
+    const at = (second: number) => `2026-09-25T10:00:${String(second).padStart(2, "0")}.000Z`;
+    const row = (id: string, kind: string, payload: Record<string, unknown>, second: number, turnId = "turn-1") =>
+      ({ ...activity(id, kind, payload, turnId), createdAt: at(second) }) as ActivityEnvelope;
+    const activities = [
+      row("a", "tool-call.completed", { toolCallId: "toolu_1", status: "completed", data: { tool: "Agent", state: { input: { subagent_type: "Explore", description: "Count TODOs" } } } }, 1),
+      row("b", "background.started", { taskId: "ag", toolUseId: "toolu_1", status: "started" }, 1),
+      row("c", "background.completed", { taskId: "ag", toolUseId: "toolu_1", status: "completed", summary: "Found 3.\n\n| table | rows |" }, 14),
+      row("w", "turn.background", {}, 15, "turn-2"),
+    ];
+    const notice = timeline(state({ activities })).find((entry) => entry.kind === "user");
+    expect(notice?.turnId).toBe("turn-2");
+    expect(taskNotifications(notice!.message)).toEqual([
+      { taskId: "ag", source: "native", title: "Explore · Count TODOs", status: "completed", durationMs: 13_000, model: null, branch: null, headline: "Found 3.", filesChanged: null, additions: null, deletions: null },
+    ]);
+    // The card explains the wake-up, so its "Woken by a background task" row goes.
+    expect(timeline(state({ activities })).some((entry) => entry.activityKind === "turn.background")).toBe(false);
+    // A wake-up nothing explains keeps it.
+    expect(timeline(state({ activities: [activities[3]!] })).some((entry) => entry.activityKind === "turn.background")).toBe(true);
+    // No wake-up after it: the Agent row says it finished, no card.
+    expect(timeline(state({ activities: activities.slice(0, 3) })).some((entry) => entry.kind === "user")).toBe(false);
+  });
+});
+
+describe("queuedSummary", () => {
+  it("counts held messages among the waiting ones, never on top of them", () => {
+    expect(queuedSummary(1, 1)).toBe("1 held for the reset");
+    expect(queuedSummary(2, 0)).toBe("2 not sent yet");
+    expect(queuedSummary(3, 1)).toBe("3 not sent yet, 1 of them held for the reset");
   });
 });

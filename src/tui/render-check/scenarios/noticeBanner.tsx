@@ -7,7 +7,9 @@ import { fail } from "../helpers.js";
 
 /**
  * Two notices over the composer share one slot: the first shows with a
- * "1/2" pager, and › moves to the second. One alone shows no pager.
+ * "1/2" pager, and › moves to the second. One alone shows no pager. In a
+ * narrow pane (sidebar and a side panel open) the actions drop to their own
+ * row instead of running off the edge, pager and all.
  */
 export async function runNoticeBanner(): Promise<void> {
   const notice = (key: string, title: string, action: string): Notice => ({
@@ -24,7 +26,7 @@ export async function runNoticeBanner(): Promise<void> {
     const [notices, set] = useState<Notice[]>(both);
     const [index, setIndex] = useState(0);
     setNotices = set;
-    return <NoticeBanner notices={notices} index={index} onPage={setIndex} />;
+    return <NoticeBanner notices={notices} index={index} onPage={setIndex} width={100} />;
   }
   const setup = await testRender(<Harness />, { width: 100, height: 5, exitOnCtrlC: false });
   await setup.flush();
@@ -43,5 +45,26 @@ export async function runNoticeBanner(): Promise<void> {
   await act(async () => setNotices?.([both[0]!]));
   await setup.flush();
   if (setup.captureCharFrame().includes("1/1")) fail("a lone notice shows a pager");
+
+  const usage: Notice = {
+    ...both[0]!,
+    tags: [{ text: "Session limit", color: COLOR.dim }],
+    actions: [
+      { label: "Continue at reset", fg: COLOR.accent, onClick: () => {} },
+      { label: "In a new thread", fg: COLOR.accent, onClick: () => {} },
+      { label: "Dismiss", fg: COLOR.dim, onClick: () => {} },
+    ],
+  };
+  function Narrow() {
+    const [index, setIndex] = useState(0);
+    return <NoticeBanner notices={[usage, both[1]!]} index={index} onPage={setIndex} width={60} />;
+  }
+  const narrow = await testRender(<Narrow />, { width: 60, height: 6, exitOnCtrlC: false });
+  await narrow.flush();
+  const tight = narrow.captureCharFrame();
+  console.log("--- notice banner: narrow pane ---");
+  console.log(tight);
+  if (!tight.includes("Dismiss") || !tight.includes("In a new thread") || !tight.includes("1/2")) fail("a narrow notice banner cut off its actions or pager");
+  if (tight.split("\n").some((line) => line.includes("Usage limit reached") && line.includes("Continue at reset"))) fail("a narrow notice banner kept its actions beside the title");
   // No destroy(), as in bootGate: tearing down a second renderer breaks the shared one.
 }

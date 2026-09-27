@@ -165,6 +165,42 @@ export async function runProviderInterruptions(setup: TestRendererSetup): Promis
   console.log(expanded);
   if (!expanded.includes("Comparing the cache layouts")) fail("clicking the reasoning row did not show its summary");
 
+  // Handing work to another agent gets its own row style: moxen's delegation
+  // `⇢`, the provider's native subagent `◇` — a short name, the work, the model.
+  await act(async () => {
+    emitLiveRef.current?.(
+      activityFrame("delegate-1", "tool-call.completed", "mcp__moxen__delegate", {
+        itemType: "dynamic_tool_call",
+        toolCallId: "call-delegate-1",
+        status: "completed",
+        data: {
+          tool: "mcp__moxen__delegate",
+          state: {
+            input: { task: "Run the threads test suite and report back.", title: "Run threads test suite" },
+            output: JSON.stringify({ taskId: "task-9", title: "Run threads test suite", status: "running", model: "claudeAgent/claude-sonnet-5" }),
+          },
+        },
+      }),
+    );
+    emitLiveRef.current?.(
+      activityFrame("agent-1", "tool-call.started", "Agent", {
+        itemType: "dynamic_tool_call",
+        toolCallId: "call-agent-1",
+        status: "inProgress",
+        data: { tool: "Agent", state: { input: { subagent_type: "Explore", description: "List CLI command definitions", prompt: "In the repo…" } } },
+      }),
+    );
+  });
+  await setup.flush();
+  await jumpToBottom();
+  const delegation = setup.captureCharFrame();
+  console.log("--- timeline: delegation rows ---");
+  console.log(delegation);
+  if (!delegation.includes("⇢ delegate") || !delegation.includes("Run threads test suite")) fail("a moxen delegate call did not render as a delegation row");
+  if (!delegation.includes("Claude Sonnet 5")) fail("the delegation row did not name its model");
+  if (!delegation.includes("◇ Explore") || !delegation.includes("List CLI command definitions")) fail("a native subagent call did not render as a subagent row");
+  if (delegation.includes("moxen: delegate") || delegation.includes("In the repo…")) fail("a delegation row fell back to the raw tool name or prompt");
+
   // A compaction the provider ran on its own: a titled row, the summary folded.
   await act(async () => {
     emitLiveRef.current?.(
@@ -209,7 +245,7 @@ export async function runProviderInterruptions(setup: TestRendererSetup): Promis
                   durationMs: 192_000,
                   model: "codex/gpt-5.5",
                   branch: "moxen/scout-routes",
-                  headline: "Audited 3 route files: 2 missing auth checks",
+                  headline: "Audited 3 route files: 2 missing auth checks in `users.ts`",
                   filesChanged: 2,
                   additions: 14,
                   deletions: 3,
@@ -226,10 +262,10 @@ export async function runProviderInterruptions(setup: TestRendererSetup): Promis
   const notified = setup.captureCharFrame();
   console.log("--- timeline: delegated task settled ---");
   console.log(notified);
-  if (!notified.includes('Agent "scout routes" finished') || !notified.includes("3m 12s")) {
+  if (!notified.includes("scout routes  ·  finished in 3m 12s")) {
     fail("task notification did not render as an agent card with its duration");
   }
-  if (!notified.includes("Audited 3 route files: 2 missing auth checks")) fail("task notification card did not show the headline");
+  if (!notified.includes("Audited 3 route files: 2 missing auth checks in users.ts")) fail("task notification card did not show the headline as markdown");
   if (!notified.includes("+14 −3 · 2 files") || !notified.includes("branch moxen/scout-routes")) {
     fail("task notification card did not show what the task changed and where");
   }

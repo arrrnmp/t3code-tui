@@ -26,6 +26,7 @@ import { runNoticeBanner } from "./render-check/scenarios/noticeBanner.js";
 import { runImageTokens } from "./render-check/scenarios/imageTokens.js";
 import { runSettingsAndGit } from "./render-check/scenarios/settingsAndGit.js";
 import { runQueueAndSide } from "./render-check/scenarios/queueAndSide.js";
+import { runSidebarTree } from "./render-check/scenarios/sidebarTree.js";
 import { registerSyntaxParsers } from "./syntax/register.js";
 
 /**
@@ -81,5 +82,6 @@ await runSettingsAndGit();
 await runQueueAndSide();
 await runNoticeBanner();
 await runImageTokens();
+await runSidebarTree();
 
 process.exit(0);

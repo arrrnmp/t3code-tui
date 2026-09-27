@@ -49,7 +49,8 @@ import {
   pinCheckpointRef,
   pruneCheckpointRefs,
 } from "../checkpoints/git.js";
-import { completeTurn, failTurn, holdPromotedTurn, interruptTurn, openTurn, startBackgroundTurn, updateThreadMeta } from "./threads.js";
+import { completeTurn, failTurn, holdPromotedTurn, interruptTurn, openTurn, startBackgroundTurn, turnPrompt, updateThreadMeta } from "./threads.js";
+import { recordNativeSubagent } from "./subagents.js";
 import { ThreadStore } from "./store.js";
 import { toolActivityRow, type ToolRuntimeEvent } from "./toolactivity.js";
 import { userInputActivityRow, type UserInputRuntimeEvent } from "./requestactivity.js";
@@ -349,16 +350,17 @@ async function runPromotedTurn(args: ExecuteTurnArgs): Promise<void> {
       if (await holdPromotedTurn(store, threadId, next.id, until)) armScheduledTurn(threadId, next.id, until);
       return;
     }
-    const message = (await store.readMessages(threadId)).find((candidate) => candidate.id === next.messageId);
-    if (!message?.text) return;
+    // One message, or several queued ones batched into this turn at promotion.
+    const prompt = turnPrompt(await store.readMessages(threadId), next);
+    if (prompt === null) return;
     // Its images were saved when it was queued; the bytes come off disk.
-    const images = await imagesOf(message.attachments ?? []);
+    const images = await imagesOf(prompt.attachments);
     void executeTurn({
       store,
       driver,
       threadId,
       storeTurnId: next.id,
-      prompt: message.text,
+      prompt: prompt.text,
       ...(images.length > 0 ? { images } : {}),
       modelSelection: selection,
       workingDirectory: thread.env.path,
@@ -420,6 +422,24 @@ export async function ensureDriverSession(
 const watching = new WeakMap<TurnDriver, Map<string, () => void>>();
 
 /**
+ * Threads whose events a turn run is recording right now, counted per
+ * thread. Checked synchronously by the session watcher, so an event is
+ * recorded by exactly one of the two listeners that both see it.
+ */
+const recordingTurns = new Map<string, number>();
+
+function subagentPayload(event: Extract<ProviderRuntimeEvent, { type: "subagent.updated" }>): Record<string, unknown> {
+  // Folds per agent (`toolCallId`) into one row that goes started → stopped.
+  return {
+    toolCallId: `subagent:${event.agentId}`,
+    agentId: event.agentId,
+    agentType: event.agentType,
+    status: event.status,
+    lastMessage: event.lastMessage,
+  };
+}
+
+/**
  * What a provider session does between our turns, recorded for as long as
  * the session lives in this process:
  *
@@ -444,6 +464,7 @@ export function watchDriverSession(store: ThreadStore, driver: TurnDriver, threa
   };
   const record = (kind: string, summary: string, payload: Record<string, unknown>): void => {
     chain = chain.then(async () => {
+      const createdAt = store.nowIso();
       await store
         .appendLedger(threadId, "activity", {
           id: store.newId(),
@@ -452,9 +473,12 @@ export function watchDriverSession(store: ThreadStore, driver: TurnDriver, threa
           kind,
           summary,
           payload,
-          createdAt: store.nowIso(),
+          createdAt,
         })
         .catch(() => undefined);
+      // Subagent and background-task rows also keep the thread record's
+      // subagent list current, for the sidebar.
+      await recordNativeSubagent(store, threadId, { kind, payload, createdAt });
       store.emit(threadId, "activity");
     });
   };
@@ -483,6 +507,14 @@ export function watchDriverSession(store: ThreadStore, driver: TurnDriver, threa
       record("background.tasks", `${event.tasks.length} background task${event.tasks.length === 1 ? "" : "s"} running`, {
         tasks: event.tasks,
       });
+      return;
+    }
+    if (event.type === "subagent.updated") {
+      // Mid-turn the turn runner records it. A background subagent can
+      // finish after its turn closed, when only this watcher is listening
+      // — without this its row stayed "running" for good.
+      if ((recordingTurns.get(threadId) ?? 0) > 0) return;
+      record("subagent", `${event.agentType} ${event.status}`, subagentPayload(event));
       return;
     }
     if (event.type === "prompt.suggested") {
@@ -634,14 +666,8 @@ function recordTurnActivity(
       return;
     }
     if (event.type === "subagent.updated") {
-      // Folds per agent (`toolCallId`) into one row that goes started → stopped.
-      append("subagent", `${event.agentType} ${event.status}`, {
-        toolCallId: `subagent:${event.agentId}`,
-        agentId: event.agentId,
-        agentType: event.agentType,
-        status: event.status,
-        lastMessage: event.lastMessage,
-      });
+      append("subagent", `${event.agentType} ${event.status}`, subagentPayload(event));
+      void recordNativeSubagent(store, threadId, { kind: "subagent", payload: subagentPayload(event), createdAt: store.nowIso() });
       return;
     }
     if (event.type === "model.changed") {
@@ -812,6 +838,7 @@ async function runExecuteTurn(args: ExecuteTurnArgs): Promise<void> {
     recordTools.onEvent(event);
     onEvent?.(event);
   });
+  recordingTurns.set(threadId, (recordingTurns.get(threadId) ?? 0) + 1);
   // Pre-turn capture first: the diff base must predate any provider write.
   const pre = cwd ? await captureWorktree(cwd, `moxen ${threadId}/${storeTurnId} pre`) : null;
   const controller = new AbortController();
@@ -877,6 +904,9 @@ async function runExecuteTurn(args: ExecuteTurnArgs): Promise<void> {
     controller.signal.removeEventListener("abort", onAbort);
     store.untrackRunning(storeTurnId);
     unsubscribe();
+    const recording = (recordingTurns.get(threadId) ?? 1) - 1;
+    if (recording > 0) recordingTurns.set(threadId, recording);
+    else recordingTurns.delete(threadId);
     // Drain queued tool rows before the run is considered over.
     await recordTools.flush();
     // Again at the end: some providers only report the handle once the

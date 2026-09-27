@@ -25,6 +25,12 @@ export interface TurnGroup {
   startedAt: string;
   /** Where the turn stood waiting on the user (a question, a permission prompt). */
   waits: readonly WaitSpan[];
+  /**
+   * A plan usage limit cut the turn off. Its last message is wherever the
+   * work stopped, not an answer, so the transcript keeps the work open in
+   * full instead of folding it under a closing reply.
+   */
+  limited: boolean;
 }
 
 function elapsed(entries: readonly TimelineEntry[], waits: readonly WaitSpan[]): { durationMs: number; startedAt: string } {
@@ -67,6 +73,7 @@ export function groupTurns(entries: readonly TimelineEntry[], waits: TurnWaits =
       durationMs: 0,
       startedAt: entry.at,
       waits: [],
+      limited: false,
     };
     if (pendingPrompts.length > 0) {
       group.prompts.unshift(...pendingPrompts);
@@ -179,6 +186,7 @@ export function groupTurns(entries: readonly TimelineEntry[], waits: TurnWaits =
       ...(group.reply === null ? [] : [group.reply]),
       ...(group.live === null ? [] : [group.live]),
     ];
+    group.limited = group.work.some((entry) => entry.kind === "activity" && entry.activityKind === "usage.limit");
     group.waits = group.turnId === null ? [] : (waits.get(group.turnId) ?? []);
     const timing = elapsed(all, group.waits);
     group.durationMs = timing.durationMs;

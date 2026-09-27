@@ -350,6 +350,229 @@ export async function viewRequest(cwd: string, detection: ForgeDetection, number
   return base ? { ...base, body: text(record?.description) ?? "" } : null;
 }
 
+// -- status: the branch's request and CI ---------------------------------------
+
+export type ForgeCheckState = "passed" | "failed" | "pending" | "skipped";
+
+/** One CI check (a GitHub check run or status, a GitLab pipeline). */
+export interface ForgeCheckRun {
+  readonly name: string;
+  readonly state: ForgeCheckState;
+  readonly url: string | null;
+}
+
+/**
+ * The request a branch has open (or had: a merged one still reads), with
+ * what a reviewer looks at first — CI, whether it can merge, how big it
+ * is. Fields a forge does not report are null, never guessed.
+ */
+export interface ForgeRequestStatus extends ForgeRequest {
+  readonly runs: readonly ForgeCheckRun[];
+  /** `mergeable`, `conflicting`, or null when the forge has not worked it out yet. */
+  readonly mergeable: "mergeable" | "conflicting" | null;
+  readonly additions: number | null;
+  readonly deletions: number | null;
+  readonly changedFiles: number | null;
+}
+
+function checkState(record: Record<string, unknown>): ForgeCheckState {
+  const conclusion = (text(record.conclusion) ?? text(record.state) ?? "").toUpperCase();
+  const status = (text(record.status) ?? "").toUpperCase();
+  if (conclusion === "SKIPPED" || conclusion === "NEUTRAL") return "skipped";
+  if (conclusion === "SUCCESS") return "passed";
+  if (["FAILURE", "TIMED_OUT", "CANCELLED", "ERROR", "ACTION_REQUIRED", "STARTUP_FAILURE"].includes(conclusion)) return "failed";
+  if (status === "COMPLETED") return "passed";
+  return "pending";
+}
+
+/** GitHub's rollup as named runs: check runs carry `name`, commit statuses `context`. */
+export function checkRuns(rollup: unknown): ForgeCheckRun[] {
+  if (!Array.isArray(rollup)) return [];
+  return rollup.flatMap((entry) => {
+    const record = asRecord(entry);
+    if (!record) return [];
+    return [
+      {
+        name: text(record.name) ?? text(record.context) ?? "check",
+        state: checkState(record),
+        url: text(record.detailsUrl) ?? text(record.targetUrl) ?? text(record.html_url) ?? text(record.details_url),
+      },
+    ];
+  });
+}
+
+/** GitLab pipeline statuses in the shared vocabulary. */
+function pipelineState(status: string | null): ForgeCheckState {
+  const lower = (status ?? "").toLowerCase();
+  if (lower === "success") return "passed";
+  if (lower === "failed" || lower === "canceled") return "failed";
+  if (lower === "skipped" || lower === "manual") return "skipped";
+  return "pending";
+}
+
+function count(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  const parsed = typeof value === "string" ? Number.parseInt(value, 10) : Number.NaN;
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+const GH_STATUS_FIELDS = `${GH_FIELDS},mergeable,additions,deletions,changedFiles`;
+
+/**
+ * The request for `branch` (the checked-out one when omitted): `gh pr view
+ * <branch>` / `glab mr view <branch>` resolve it the way the user would.
+ * Null when the branch has none.
+ */
+export async function requestStatus(cwd: string, detection: ForgeDetection, branch?: string): Promise<ForgeRequestStatus | null> {
+  const { kind, cli } = requireReady(detection);
+  const target = branch === undefined ? [] : [branch];
+  if (kind === "github") {
+    const result = await run(cli, ["pr", "view", ...target, "--json", GH_STATUS_FIELDS], cwd);
+    if (!result.ok) return null;
+    const record = asRecord(parseJson(result.stdout));
+    const base = record ? githubRequest(record) : null;
+    if (!record || !base) return null;
+    const mergeable = text(record.mergeable)?.toUpperCase();
+    return {
+      ...base,
+      runs: checkRuns(record.statusCheckRollup),
+      mergeable: mergeable === "MERGEABLE" ? "mergeable" : mergeable === "CONFLICTING" ? "conflicting" : null,
+      additions: count(record.additions),
+      deletions: count(record.deletions),
+      changedFiles: count(record.changedFiles),
+    };
+  }
+  const result = await run(cli, ["mr", "view", ...target, "--output", "json"], cwd);
+  if (!result.ok) return null;
+  const record = asRecord(parseJson(result.stdout));
+  const base = record ? gitlabRequest(record) : null;
+  if (!record || !base) return null;
+  const pipeline = asRecord(record.head_pipeline) ?? asRecord(record.pipeline);
+  const runs: ForgeCheckRun[] =
+    pipeline === null ? [] : [{ name: "pipeline", state: pipelineState(text(pipeline.status)), url: text(pipeline.web_url) }];
+  return {
+    ...base,
+    checks: runs.length === 0 ? null : tally(runs),
+    runs,
+    mergeable: record.has_conflicts === true ? "conflicting" : record.has_conflicts === false ? "mergeable" : null,
+    additions: null,
+    deletions: null,
+    changedFiles: count(record.changes_count),
+  };
+}
+
+export function tally(runs: readonly ForgeCheckRun[]): ForgeChecks {
+  return {
+    passed: runs.filter((entry) => entry.state === "passed" || entry.state === "skipped").length,
+    failed: runs.filter((entry) => entry.state === "failed").length,
+    pending: runs.filter((entry) => entry.state === "pending").length,
+  };
+}
+
+/** The GraphQL for a branch's recent commits and their CI counts, in one round trip. */
+const COMMIT_CHECKS_QUERY = `query($owner: String!, $name: String!, $ref: String!, $first: Int!) {
+  repository(owner: $owner, name: $name) {
+    ref(qualifiedName: $ref) {
+      target {
+        ... on Commit {
+          history(first: $first) {
+            nodes {
+              oid
+              statusCheckRollup {
+                contexts(first: 0) {
+                  checkRunCountsByState { state count }
+                  statusContextCountsByState { state count }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}`;
+
+const PASSED_STATES = new Set(["SUCCESS", "NEUTRAL", "SKIPPED", "COMPLETED"]);
+const FAILED_STATES = new Set(["FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE"]);
+
+/** GraphQL `{state, count}` pairs into the shared tally. */
+export function tallyCounts(pairs: unknown): ForgeChecks {
+  let passed = 0;
+  let failed = 0;
+  let pending = 0;
+  for (const entry of Array.isArray(pairs) ? pairs : []) {
+    const record = asRecord(entry);
+    const state = (text(record?.state) ?? "").toUpperCase();
+    const amount = count(record?.count) ?? 0;
+    if (PASSED_STATES.has(state)) passed += amount;
+    else if (FAILED_STATES.has(state)) failed += amount;
+    else pending += amount;
+  }
+  return { passed, failed, pending };
+}
+
+/**
+ * CI for a branch's most recent commits, keyed by full sha: what the
+ * commit list shows as "✓ 18/18". GitHub only (one GraphQL call); GitLab
+ * and a branch the forge has never seen read as no checks at all.
+ */
+export async function commitChecks(
+  cwd: string,
+  detection: ForgeDetection,
+  branch: string,
+  limit = 30,
+): Promise<Readonly<Record<string, ForgeChecks>>> {
+  const { kind, cli } = requireReady(detection);
+  const [owner, ...rest] = (detection.slug ?? "").split("/");
+  if (kind !== "github" || !owner || rest.length === 0) return {};
+  const result = await run(
+    cli,
+    [
+      "api",
+      "graphql",
+      "-f", `query=${COMMIT_CHECKS_QUERY}`,
+      "-f", `owner=${owner}`,
+      "-f", `name=${rest.join("/")}`,
+      "-f", `ref=refs/heads/${branch}`,
+      "-F", `first=${Math.max(1, Math.min(limit, 100))}`,
+    ],
+    cwd,
+  );
+  if (!result.ok) return {};
+  const nodes = asRecord(asRecord(asRecord(asRecord(asRecord(asRecord(parseJson(result.stdout))?.data)?.repository)?.ref)?.target)?.history)?.nodes;
+  const out: Record<string, ForgeChecks> = {};
+  for (const entry of Array.isArray(nodes) ? nodes : []) {
+    const node = asRecord(entry);
+    const oid = text(node?.oid);
+    const contexts = asRecord(asRecord(node?.statusCheckRollup)?.contexts);
+    if (oid === null || contexts === null) continue;
+    const runs = tallyCounts(contexts.checkRunCountsByState);
+    const statuses = tallyCounts(contexts.statusContextCountsByState);
+    const total = { passed: runs.passed + statuses.passed, failed: runs.failed + statuses.failed, pending: runs.pending + statuses.pending };
+    if (total.passed + total.failed + total.pending > 0) out[oid] = total;
+  }
+  return out;
+}
+
+/** One commit's CI runs, by name: the commit view's checks list. */
+export async function commitRuns(cwd: string, detection: ForgeDetection, sha: string): Promise<readonly ForgeCheckRun[]> {
+  const { kind, cli } = requireReady(detection);
+  if (!/^[0-9a-f]{7,64}$/i.test(sha)) return [];
+  if (kind === "github") {
+    const result = await run(cli, ["api", `repos/{owner}/{repo}/commits/${sha}/check-runs`, "--jq", ".check_runs"], cwd);
+    if (!result.ok) return [];
+    return checkRuns(parseJson(result.stdout));
+  }
+  const result = await run(cli, ["api", `projects/:id/repository/commits/${sha}/statuses`], cwd);
+  if (!result.ok) return [];
+  const parsed = parseJson(result.stdout);
+  return (Array.isArray(parsed) ? parsed : []).flatMap((entry) => {
+    const record = asRecord(entry);
+    if (!record) return [];
+    return [{ name: text(record.name) ?? "status", state: pipelineState(text(record.status)), url: text(record.target_url) }];
+  });
+}
+
 function forgeFailure(cli: string, what: string, stderr: string): CliError {
   const detail = stderr.trim().split("\n").slice(0, 3).join(" ").slice(0, 300);
   return new CliError("FORGE_COMMAND_FAILED", `\`${cli}\` could not ${what}.${detail ? ` ${detail}` : ""}`);

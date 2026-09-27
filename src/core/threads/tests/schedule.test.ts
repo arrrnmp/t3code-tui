@@ -9,7 +9,7 @@ import { MAX_USAGE_CONTINUES, scheduleUsageContinue, type OperationContext } fro
 import { toThreadEnvelope } from "../project.js";
 import { armScheduledTurn, armedScheduleCount, onScheduledTurnDue } from "../schedule.js";
 import { openThreadStore } from "../store.js";
-import { completeTurn, createThread, holdPromotedTurn, interruptTurn, isHeldTurn, promoteDueScheduledTurn, sendTurn } from "../threads.js";
+import { completeTurn, createThread, holdPromotedTurn, interruptTurn, isHeldTurn, promoteDueScheduledTurn, sendTurn, turnPrompt } from "../threads.js";
 import { USAGE_CONTINUE_PROMPT } from "../views.js";
 
 const MODEL = { instanceId: "claudeAgent", model: "claude-fable-5-1" };
@@ -62,6 +62,58 @@ describe("scheduled messages", () => {
     const again = await sendTurn(store, thread.id, { prompt: USAGE_CONTINUE_PROMPT, scheduledFor: at, scheduleReason: "usage-reset" });
     expect(again.turn.id).toBe(first.turn.id);
     expect((await store.readTurns(thread.id)).filter((turn) => turn.scheduleReason === "usage-reset")).toHaveLength(1);
+  });
+
+  it("hold a plain send behind a continue that waits out a usage limit, and run it after", async () => {
+    let now = Date.parse("2026-09-25T10:00:00.000Z");
+    const { store, thread } = await setup(() => now);
+    const at = "2026-09-25T12:00:00.000Z";
+    const continued = await sendTurn(store, thread.id, { prompt: USAGE_CONTINUE_PROMPT, scheduledFor: at, scheduleReason: "usage-reset" });
+    const queued = await sendTurn(store, thread.id, { prompt: "and then this" });
+    expect(queued.turn).toMatchObject({ status: "queued", delivery: "queued", scheduledFor: at, scheduleReason: "usage-hold" });
+
+    now = Date.parse("2026-09-25T12:00:01.000Z");
+    const started = await promoteDueScheduledTurn(store, thread.id);
+    expect(started).toMatchObject({ id: continued.turn.id });
+    // It goes out with the continue, in the same turn.
+    expect(turnPrompt(await store.readMessages(thread.id), started!)?.text).toContain("and then this");
+    expect((await store.readTurns(thread.id)).some((turn) => turn.id === queued.turn.id)).toBe(false);
+
+    // With nothing waiting out a limit, a send runs at once.
+    const other = await setup(() => now);
+    expect((await sendTurn(other.store, other.thread.id, { prompt: "now" })).turn.status).toBe("running");
+  });
+
+  it("send every message held for the reset together, with the continue, as one turn", async () => {
+    let now = Date.parse("2026-09-25T10:00:00.000Z");
+    const { store, thread } = await setup(() => now);
+    const at = "2026-09-25T12:00:00.000Z";
+    const continued = await sendTurn(store, thread.id, { prompt: USAGE_CONTINUE_PROMPT, scheduledFor: at, scheduleReason: "usage-reset" });
+    await sendTurn(store, thread.id, { prompt: "first thought" });
+    await sendTurn(store, thread.id, { prompt: "second thought" });
+
+    now = Date.parse("2026-09-25T12:00:01.000Z");
+    const started = await promoteDueScheduledTurn(store, thread.id);
+    expect(started?.id).toBe(continued.turn.id);
+    const turns = await store.readTurns(thread.id);
+    expect(turns.filter((turn) => turn.status === "queued")).toHaveLength(0);
+    expect(turns).toHaveLength(1);
+    expect(turnPrompt(await store.readMessages(thread.id), started!)?.text).toBe(`${USAGE_CONTINUE_PROMPT}\n\nfirst thought\n\nsecond thought`);
+    expect((await store.readActivities(thread.id)).some((row) => row.kind === "turn.batched")).toBe(true);
+  });
+
+  it("send messages queued behind a running turn together once it ends", async () => {
+    const { store, thread } = await setup();
+    const running = await sendTurn(store, thread.id, { prompt: "work" });
+    await sendTurn(store, thread.id, { prompt: "then a", delivery: "queue" });
+    await sendTurn(store, thread.id, { prompt: "then b", delivery: "queue" });
+    // One for another model keeps its own turn.
+    await sendTurn(store, thread.id, { prompt: "elsewhere", delivery: "queue", modelSelection: { instanceId: "codex", model: "gpt-6" } });
+    await completeTurn(store, thread.id, running.turn.id, { text: "done" });
+    const turns = await store.readTurns(thread.id);
+    const next = turns.find((turn) => turn.status === "running")!;
+    expect(turnPrompt(await store.readMessages(thread.id), next)?.text).toBe("then a\n\nthen b");
+    expect(turns.filter((turn) => turn.status === "queued")).toHaveLength(1);
   });
 
   it("run at once when the time has already passed, and never steer or restart", async () => {

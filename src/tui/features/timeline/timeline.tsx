@@ -287,6 +287,33 @@ function ActivityRow({ entry, now, turnFiles = [], onOpenUrl }: { entry: Timelin
     );
   }
 
+  if (view.kind === "agent") {
+    // Delegation reads like the other tool rows: a glyph of its own (moxen's
+    // threads `⇢`, the provider's subagents `◇`), a short name, the work
+    // itself, and where it stands.
+    const stateColor =
+      view.state === "failed"
+        ? COLOR.danger
+        : view.state === "finished"
+          ? COLOR.added
+          : view.running
+            ? COLOR.warn
+            : COLOR.faint;
+    return (
+      <ToolChip rail={view.running ? COLOR.warn : COLOR.diff} glyph={view.source === "moxen" ? "⇢" : "◇"} title={view.title} time={time} running={view.running}>
+        {view.subject.length === 0 ? null : <text fg={COLOR.tool}>{truncate(view.subject, 96)}</text>}
+        {view.state === null && view.facts.length === 0 ? null : (
+          <box style={{ flexDirection: "row", flexShrink: 0 }}>
+            {view.state === null ? null : <text fg={stateColor}>{view.state}</text>}
+            {view.facts.length === 0 ? null : (
+              <text fg={COLOR.faint}>{`${view.state === null ? "" : "  ·  "}${view.facts.join("  ·  ")}`}</text>
+            )}
+          </box>
+        )}
+      </ToolChip>
+    );
+  }
+
   if (view.kind === "task") {
     const meta = [view.taskType, view.model, view.running ? "running" : view.status]
       .filter((part): part is string => part !== null && part.length > 0)
@@ -542,8 +569,25 @@ function SpeakerHeader({
  * compact block per task instead of a "you" prompt holding the raw
  * notification text the agent reads.
  */
-function TaskNotificationBlock({ entry, tasks, now }: { entry: TimelineEntry; tasks: readonly TaskNotificationView[]; now: number }) {
-  const header = tasks.length === 1 ? null : `${tasks.length} agents settled`;
+function TaskNotificationBlock({
+  entry,
+  tasks,
+  now,
+  modelLabel,
+  width,
+}: {
+  entry: TimelineEntry;
+  tasks: readonly TaskNotificationView[];
+  now: number;
+  modelLabel: (model: string) => { name: string; color: string | null };
+  /** Chat pane width: the header folds its facts onto a line of their own when narrow. */
+  width: number;
+}) {
+  // Pane chrome (border, padding, scrollbar: 7) and the card's (left
+  // border, padding: 5).
+  const inner = Math.max(16, width - 12);
+  const native = tasks.every((task) => task.source === "native");
+  const header = tasks.length === 1 ? null : `${tasks.length} ${native ? "subagents" : "delegated tasks"} settled`;
   return (
     <box
       border={["left"]}
@@ -558,12 +602,30 @@ function TaskNotificationBlock({ entry, tasks, now }: { entry: TimelineEntry; ta
       {tasks.map((task, index) => {
         const glyph = task.status === "completed" ? "✓" : task.status === "failed" ? "✗" : task.status === "interrupted" ? "■" : "●";
         const glyphColor = task.status === "completed" ? COLOR.added : task.status === "failed" ? COLOR.danger : COLOR.warn;
-        const verb = task.status === "completed" ? "finished" : task.status === "failed" ? "failed" : task.status === "interrupted" ? "was stopped" : "is running";
-        const facts = [
-          task.durationMs === null ? null : formatDuration(Math.max(1000, task.durationMs)),
-          task.model,
-          header === null ? clockTime(entry.at, now) : null,
-        ].filter((fact): fact is string => fact !== null);
+        const verb = task.status === "completed" ? "finished" : task.status === "failed" ? "failed" : task.status === "interrupted" ? "stopped" : "running";
+        // "finished in 1m 32s": the outcome and how long it took read as one fact.
+        const outcome = task.durationMs === null ? verb : `${verb} ${task.status === "running" ? "for" : "in"} ${formatDuration(Math.max(1000, task.durationMs))}`;
+        const model = task.model === null ? null : modelLabel(task.model);
+        // A native subagent runs on the thread's own model; saying "subagent"
+        // is what tells it apart from a delegated thread.
+        const kind = task.source === "native" ? "subagent" : null;
+        const facts = [outcome, model?.name ?? kind, header === null ? clockTime(entry.at, now) : null].filter((fact): fact is string => fact !== null);
+        // One line when it all fits; beside an open panel the facts drop
+        // under the title rather than every segment shrinking mid-word.
+        const oneLine = 2 + task.title.length + facts.join("  ·  ").length + 5 <= inner;
+        const factRow = (lead: string) => (
+          <>
+            <text fg={task.status === "failed" ? COLOR.danger : COLOR.faint} bg={SURFACE.panel}>{`${lead}${outcome}`}</text>
+            {model === null ? null : (
+              <>
+                <text fg={COLOR.faint} bg={SURFACE.panel}>{"  ·  "}</text>
+                <text fg={model.color ?? COLOR.dim} bg={SURFACE.panel}>{model.name}</text>
+              </>
+            )}
+            {kind === null || model !== null ? null : <text fg={COLOR.diff} bg={SURFACE.panel}>{`  ·  ${kind}`}</text>}
+            {header === null ? <text fg={COLOR.faint} bg={SURFACE.panel}>{`  ·  ${clockTime(entry.at, now)}`}</text> : null}
+          </>
+        );
         const footer = [
           task.filesChanged === null || task.filesChanged === 0 ? null : `+${task.additions ?? 0} −${task.deletions ?? 0} · ${task.filesChanged} file${task.filesChanged === 1 ? "" : "s"}`,
           task.branch === null ? null : `branch ${task.branch}`,
@@ -572,11 +634,20 @@ function TaskNotificationBlock({ entry, tasks, now }: { entry: TimelineEntry; ta
           <box key={task.taskId} style={{ flexDirection: "column", flexShrink: 0, marginTop: index === 0 && header === null ? 0 : 1 }} backgroundColor={SURFACE.panel}>
             <box style={{ flexDirection: "row", height: 1, flexShrink: 0 }} backgroundColor={SURFACE.panel}>
               <text fg={glyphColor} bg={SURFACE.panel}>{`${glyph} `}</text>
-              <text fg={COLOR.bright} bg={SURFACE.panel} attributes={TextAttributes.BOLD}>{`Agent "${truncate(task.title, 60)}" ${verb}`}</text>
-              <text fg={COLOR.faint} bg={SURFACE.panel}>{facts.length === 0 ? "" : `  ·  ${facts.join("  ·  ")}`}</text>
+              <text fg={COLOR.bright} bg={SURFACE.panel} attributes={TextAttributes.BOLD}>{truncate(task.title, oneLine ? 60 : inner - 2)}</text>
+              {oneLine ? factRow("  ·  ") : null}
             </box>
+            {oneLine ? null : (
+              <box style={{ flexDirection: "row", height: 1, flexShrink: 0 }} backgroundColor={SURFACE.panel}>
+                {factRow("  ")}
+              </box>
+            )}
             {task.headline === null ? null : (
-              <text fg={COLOR.text} bg={SURFACE.panel} wrapMode="word">{`  ${task.headline}`}</text>
+              // The agent's own words, so markdown like the replies around it:
+              // `code` renders as code rather than as literal backticks.
+              <box style={{ flexDirection: "column", flexShrink: 0, paddingLeft: 2 }} backgroundColor={SURFACE.panel}>
+                <markdown content={task.headline} fg={COLOR.text} syntaxStyle={syntaxStyle()} selectable />
+              </box>
             )}
             {footer.length === 0 ? null : <text fg={COLOR.dim} bg={SURFACE.panel}>{`  ${footer.join("  ·  ")}`}</text>}
           </box>
@@ -644,7 +715,8 @@ function PromptBlock({
       {...handlers}
     >
       <SpeakerHeader
-        label="you"
+        // A native subagent's prompt came from the agent that spawned it.
+        label={entry.message?.origin === "subagent-prompt" ? "asked by the agent" : "you"}
         time={clockTime(entry.at, now)}
         color={hovered ? COLOR.bright : COLOR.user}
         background={SURFACE.user}
@@ -896,6 +968,7 @@ function WorkSegment({
 function TurnBlock({  group,
   model,
   modelColor,
+  modelLabel,
   homeDir,
   open,
   now,
@@ -911,6 +984,8 @@ function TurnBlock({  group,
   group: TurnGroup;
   model: string;
   modelColor?: string | null | undefined;
+  /** Names an `instance/model` reference, for delegated-task notices. */
+  modelLabel: (model: string) => { name: string; color: string | null };
   homeDir: string | undefined;
   /** The turn is still in flight on the server — the finished-signal gate. */
   open: boolean;
@@ -995,11 +1070,14 @@ function TurnBlock({  group,
   // A stale streaming fragment on a finished turn is its closing text. A
   // live turn has no closing reply yet: its latest message stays in line
   // with the work, where it was written, rather than pinned below it.
-  const closing = open ? null : (group.reply ?? group.live);
+  // A turn a usage limit cut off has no answer either: its last message is
+  // just where the work stopped, so it stays in line like a live turn's.
+  const inFlow = open || group.limited;
+  const closing = inFlow ? null : (group.reply ?? group.live);
   const live = open ? group.live : null;
   // A thought still running renders last; finished, it takes its place in line.
   const thought = open ? runningThought(group) : null;
-  const inLine = open && group.reply !== null ? [...group.work, group.reply].sort((left, right) => left.at.localeCompare(right.at)) : group.work;
+  const inLine = inFlow && group.reply !== null ? [...group.work, group.reply].sort((left, right) => left.at.localeCompare(right.at)) : group.work;
   const work = thought === null ? inLine : inLine.filter((entry) => entry !== thought);
 
   // Fold rule: the Worked fold always hides the work when collapsed. Once
@@ -1010,7 +1088,7 @@ function TurnBlock({  group,
   // force-expanded). While open, the closing reply is stale by definition
   // (newer tools already landed after it), so it must not bound the
   // trailing tools — the newest calls stay visible until the turn ends.
-  const segments = workExpanded ? segmentWork(work, open ? null : closing) : [];
+  const segments = workExpanded ? segmentWork(work, inFlow ? null : closing) : [];
 
   const renderToolRow = (entry: TimelineEntry) => (
     <box key={entry.id} style={{ flexDirection: "column", flexShrink: 0 }}>
@@ -1029,7 +1107,7 @@ function TurnBlock({  group,
         return tasks === null ? (
           <PromptBlock key={entry.id} entry={entry} homeDir={homeDir} now={now} onOpenActions={() => onOpenMessageActions(entry)} />
         ) : (
-          <TaskNotificationBlock key={entry.id} entry={entry} tasks={tasks} now={now} />
+          <TaskNotificationBlock key={entry.id} entry={entry} tasks={tasks} now={now} modelLabel={modelLabel} width={width} />
         );
       })}
 
@@ -1185,6 +1263,7 @@ export function Timeline({
   title,
   subtitle,
   modelForTurn,
+  modelLabel,
   homeDir,
   expandedTurn,
   expandedWork,
@@ -1208,13 +1287,15 @@ export function Timeline({
   /** The model that ran a given turn — each turn keeps its own, so a
       mid-thread model switch never relabels earlier replies. */
   modelForTurn: (turnId: string | null) => { name: string; color: string | null };
+  /** Names an `instance/model` reference (a delegated task's model). */
+  modelLabel: (model: string) => { name: string; color: string | null };
   homeDir: string | undefined;
   expandedTurn: number | null;
-  expandedWork: ReadonlySet<string>;
+  expandedWork: ReadonlyMap<string, boolean>;
   scrollRef: RefObject<ScrollBoxRenderable | null>;
   onFocus: () => void;
   onOpenDiff: (turnCount: number) => void;
-  onToggleWork: (id: string) => void;
+  onToggleWork: (id: string, expand: boolean) => void;
   onOpenMessageActions: (entry: TimelineEntry) => void;
   /** Opens a fetched URL in the browser (web rows render it clickable). */
   onOpenUrl: (url: string) => void;
@@ -1321,16 +1402,19 @@ export function Timeline({
               group={group}
               model={turnModel.name}
               modelColor={turnModel.color}
+              modelLabel={modelLabel}
               homeDir={homeDir}
               open={open}
               now={now}
               // The turn in flight stays open so live tool calls remain visible.
-              workExpanded={expandedWork.has(group.id) || open}
+              // So does one a usage limit cut off (it has no answer to fold
+              // under); there the toggle records a collapse instead.
+              workExpanded={open || (expandedWork.get(group.id) ?? group.limited)}
               expandedTurn={expandedTurn}
               turnFiles={checkpointFiles ?? (open ? gitFiles : EMPTY_PATCH_FILES)}
               onToggleWork={(id) => {
-                const willExpand = !expandedWork.has(id);
-                onToggleWork(id);
+                const willExpand = !(expandedWork.get(id) ?? group.limited);
+                onToggleWork(id, willExpand);
                 if (!willExpand) return;
                 // Expanding appends rows *below* the Worked toggle, pushing
                 // the reply down — pin the turn toward the top so the newly

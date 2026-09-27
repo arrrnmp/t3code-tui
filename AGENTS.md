@@ -49,7 +49,7 @@ exceptions.
   Each has its own `tests/` subfolder.
 - `src/tui/` — a client, the interactive app:
   - `app/` — the root component: `app.tsx` wires hooks together and holds root identity/picker-orchestration state, `hooks/` for cross-cutting hooks used by `app.tsx` but not owned by one feature (`useThreadCreation`, `useThreadOps`, `useQuitConfirm`), plus `utils.ts` / `constants.ts`.
-  - `features/` — one folder per feature pairing its component with its hook: `sidebar/`, `composer/`, `timeline/`, `diffpanel/`, `sidepanel/` (the tab strip and the Diff / Context / Agents / Background tabs, in that order), `gitpanel/` (the Git tab: history, branches, and PR/MR actions), `settings/` (the settings page, rendered from `core/configschema.ts`), `taskspanel/`, `answerpanel/`, `pickers/`.
+  - `features/` — one folder per feature pairing its component with its hook: `sidebar/`, `composer/`, `timeline/`, `diffpanel/`, `sidepanel/` (the tab strip and the Diff / Context / Agents / Background tabs, in that order), `gitpanel/` (the Git tab: the branch's PR/MR with CI, agent-opened PRs, branches, and history with a per-commit view), `settings/` (the settings page, rendered from `core/configschema.ts`), `taskspanel/`, `answerpanel/`, `pickers/`.
   - `ui/` — generic presentational primitives with no feature-specific state: `hoverbutton.tsx`, `modalshell.tsx`, `renamemodal.tsx`, `noticebanner.tsx`, `backdrop.tsx`, `theme.ts`.
   - `model/` — pure projection logic (`thread.ts`, `turns.ts`, `activity.ts`, …), genuinely cross-cutting across features.
   - `hooks/` — shared runtime hooks used across features (`useToasts`, `useClipboard`, `useHover`, `useAnimTick`).

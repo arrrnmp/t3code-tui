@@ -53,11 +53,24 @@ export interface SettingChoice {
 export type SettingKind =
   | { readonly type: "enum"; readonly choices: readonly SettingChoice[] }
   | { readonly type: "boolean" }
-  | { readonly type: "string"; readonly placeholder?: string; readonly multiline?: boolean }
-  /** `unit` is appended when the value is shown ("20" -> "20s"). */
-  | { readonly type: "integer"; readonly min: number; readonly max: number; readonly unit?: string }
-  /** A duration string the session layer parses (`"2m"`, `"45s"`). */
-  | { readonly type: "duration" };
+  | {
+      readonly type: "string";
+      readonly placeholder?: string;
+      readonly multiline?: boolean;
+      /**
+       * The value names something in the provider catalog (a provider
+       * instance, a model slug, an effort level). A client offers what the
+       * catalog lists rather than a text box; the file still holds the id.
+       */
+      readonly source?: "provider" | "model" | "effort";
+    }
+  /**
+   * `unit` is appended when the value is shown ("20" -> "20s"). `presets`
+   * are the values a client offers to pick from (any in range is accepted).
+   */
+  | { readonly type: "integer"; readonly min: number; readonly max: number; readonly unit?: string; readonly presets?: readonly number[] }
+  /** A duration string the session layer parses (`"2m"`, `"45s"`); `presets` as for integers. */
+  | { readonly type: "duration"; readonly presets?: readonly string[] };
 
 export type SettingValue = string | boolean | number | undefined;
 
@@ -183,7 +196,7 @@ export const SETTINGS: readonly SettingDescriptor[] = [
     label: "Idle session lifetime",
     description: "How long a provider session stays warm after its last turn.",
     section: "turns",
-    kind: { type: "duration" },
+    kind: { type: "duration", presets: ["30s", "1m", "2m", "5m", "10m", "30m", "1h"] },
     defaultValue: "2m",
   },
   {
@@ -210,7 +223,7 @@ export const SETTINGS: readonly SettingDescriptor[] = [
     label: "Default provider",
     description: "Which provider a new thread uses when nothing else names one.",
     section: "model",
-    kind: { type: "string", placeholder: "claude" },
+    kind: { type: "string", placeholder: "claude", source: "provider" },
     defaultValue: undefined,
     envOverride: "MOXEN_PROVIDER",
   },
@@ -219,7 +232,7 @@ export const SETTINGS: readonly SettingDescriptor[] = [
     label: "Default model",
     description: "Which model a new thread uses when nothing else names one.",
     section: "model",
-    kind: { type: "string", placeholder: "the provider's own default" },
+    kind: { type: "string", placeholder: "the provider's own default", source: "model" },
     defaultValue: undefined,
     envOverride: "MOXEN_MODEL",
   },
@@ -237,7 +250,7 @@ export const SETTINGS: readonly SettingDescriptor[] = [
     label: "Thinking effort",
     description: "The reasoning effort a session starts at, for providers that take one.",
     section: "model",
-    kind: { type: "string", placeholder: "the provider's own default" },
+    kind: { type: "string", placeholder: "the provider's own default", source: "effort" },
     defaultValue: undefined,
     envOverride: "MOXEN_THINKING_EFFORT",
   },
@@ -279,7 +292,7 @@ export const SETTINGS: readonly SettingDescriptor[] = [
     label: "Context refresh",
     description: "How often an open Context tab re-reads the live breakdown.",
     section: "interface",
-    kind: { type: "integer", min: 1, max: 600, unit: "s" },
+    kind: { type: "integer", min: 1, max: 600, unit: "s", presets: [1, 2, 5, 10, 30, 60] },
     defaultValue: 5,
   },
   {
@@ -287,7 +300,7 @@ export const SETTINGS: readonly SettingDescriptor[] = [
     label: "Usage refresh",
     description: "How often plan usage windows are re-read.",
     section: "interface",
-    kind: { type: "integer", min: 5, max: 3600, unit: "s" },
+    kind: { type: "integer", min: 5, max: 3600, unit: "s", presets: [10, 20, 60, 300, 900] },
     defaultValue: 20,
   },
 
@@ -297,7 +310,7 @@ export const SETTINGS: readonly SettingDescriptor[] = [
     label: "Commits to load",
     description: "How many commits the Git panel reads per branch.",
     section: "git",
-    kind: { type: "integer", min: 10, max: 1000 },
+    kind: { type: "integer", min: 10, max: 1000, presets: [50, 100, 200, 500, 1000] },
     defaultValue: 50,
   },
   {
@@ -433,6 +446,8 @@ export function readSetting(config: CliConfig, key: string): SettingValue {
 /** Parse one `config set` argument against its descriptor. */
 export function parseSettingValue(descriptor: SettingDescriptor, raw: string): SettingValue {
   const text = raw.trim();
+  // An optional key (no default) set to nothing is cleared, whatever its type.
+  if (text === "" && descriptor.defaultValue === undefined) return "";
   switch (descriptor.kind.type) {
     case "enum": {
       const match = descriptor.kind.choices.find((option) => option.value === text);

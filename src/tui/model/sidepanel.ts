@@ -18,7 +18,7 @@ export interface AgentThreadRow {
   threadId: string;
   title: string;
   status: ThreadStatus;
-  /** `instance/model` it runs on. */
+  /** The model it runs on: its catalog name where known, else `instance/model`. */
   model: string | null;
   /** When its latest turn started, for the running clock. */
   startedAt: string | null;
@@ -27,7 +27,12 @@ export interface AgentThreadRow {
 }
 
 /** The open thread's delegated tasks, newest first. */
-export function agentThreads(threads: readonly ThreadEnvelope[], parentThreadId: string | null, now: number = Date.now()): AgentThreadRow[] {
+export function agentThreads(
+  threads: readonly ThreadEnvelope[],
+  parentThreadId: string | null,
+  now: number = Date.now(),
+  modelName: (instanceId: string, model: string) => string | null = () => null,
+): AgentThreadRow[] {
   if (parentThreadId === null) return [];
   return threads
     .filter((thread) => thread.parentThreadId === parentThreadId && thread.archivedAt == null && thread.deletedAt == null)
@@ -38,7 +43,9 @@ export function agentThreads(threads: readonly ThreadEnvelope[], parentThreadId:
         threadId: thread.id,
         title: String(thread.title ?? thread.id),
         status: threadStatus(thread, now),
-        model: thread.modelSelection ? `${thread.modelSelection.instanceId}/${thread.modelSelection.model}` : null,
+        model: thread.modelSelection
+          ? (modelName(thread.modelSelection.instanceId, thread.modelSelection.model) ?? `${thread.modelSelection.instanceId}/${thread.modelSelection.model}`)
+          : null,
         startedAt: turn?.startedAt ?? turn?.requestedAt ?? null,
         outcome: turn === null || turn.state === "running" ? null : turn.state,
       };
@@ -48,26 +55,96 @@ export function agentThreads(threads: readonly ThreadEnvelope[], parentThreadId:
 export interface NativeSubagentRow {
   agentId: string;
   agentType: string;
+  /** What it was asked to do: the `description` of the Agent call that spawned it. */
+  description: string | null;
   running: boolean;
   lastMessage: string | null;
+  /** When it started. */
   at: string;
+  /** When it stopped, once it has. */
+  stoppedAt: string | null;
 }
 
-/** The provider's own subagents in this thread (Claude's Agent tool), latest state per agent, newest first. */
+const AGENT_TOOLS = new Set(["Agent", "Task"]);
+
+/**
+ * The provider's own subagents in this thread (Claude's Agent tool), latest
+ * state per agent, newest first.
+ *
+ * The start hook names the agent type but not the call that spawned it, so
+ * each subagent is paired with the Agent calls of its turn and type in
+ * order: the first Explore started in a turn is that turn's first Explore
+ * call. That is where its description comes from. A background subagent
+ * is also a background task under the same id, whose start names the call
+ * exactly and whose end is a second word on when it stopped — the stop
+ * hook's row was lost for any agent that outlived its turn before the
+ * session watcher recorded it.
+ */
 export function nativeSubagents(activities: readonly ActivityEnvelope[]): NativeSubagentRow[] {
   const byAgent = new Map<string, NativeSubagentRow>();
+  // Agent calls per `turn|type`, oldest first, by call id — a call writes a
+  // row as it starts and again as it ends, and counts once.
+  const calls = new Map<string, Map<string, string | null>>();
+  const claimed = new Map<string, number>();
+  const descriptions = new Map<string, string | null>();
+  const taskCalls = new Map<string, string>();
+  const taskEnds = new Map<string, { at: string; summary: string | null }>();
   for (const activity of activities) {
-    if (activity.kind !== "subagent") continue;
     const payload = (activity.payload ?? {}) as Record<string, unknown>;
+    if (activity.kind.startsWith("background.") && typeof payload.taskId === "string") {
+      if (activity.kind === "background.started" && typeof payload.toolUseId === "string") taskCalls.set(payload.taskId, payload.toolUseId);
+      if (activity.kind === "background.completed" || activity.kind === "background.failed" || activity.kind === "background.stopped") {
+        taskEnds.set(payload.taskId, { at: activity.createdAt, summary: typeof payload.summary === "string" && payload.summary.trim() ? payload.summary.trim() : null });
+      }
+      continue;
+    }
+    if (activity.kind !== "subagent") {
+      const data = (payload.data ?? {}) as Record<string, unknown>;
+      if (typeof data.tool !== "string" || !AGENT_TOOLS.has(data.tool) || typeof payload.toolCallId !== "string") continue;
+      const input = (((data.state ?? {}) as Record<string, unknown>).input ?? {}) as Record<string, unknown>;
+      const type = typeof input.subagent_type === "string" && input.subagent_type ? input.subagent_type : "general-purpose";
+      const key = `${activity.turnId ?? ""}|${type}`;
+      const byCall = calls.get(key) ?? new Map<string, string | null>();
+      const description = typeof input.description === "string" && input.description.trim() ? input.description.trim() : null;
+      byCall.set(payload.toolCallId, description);
+      calls.set(key, byCall);
+      descriptions.set(payload.toolCallId, description);
+      continue;
+    }
     const agentId = typeof payload.agentId === "string" ? payload.agentId : null;
     if (agentId === null) continue;
     const previous = byAgent.get(agentId);
+    // Every spawned subagent starts. A stop with no start is one of Claude
+    // Code's internal agents (a prompt suggestion, `/btw`), recorded before
+    // the driver learned to drop them.
+    if (previous === undefined && payload.status !== "started") continue;
+    const agentType = typeof payload.agentType === "string" ? payload.agentType : (previous?.agentType ?? "agent");
+    let description = previous?.description ?? null;
+    if (previous === undefined) {
+      const key = `${activity.turnId ?? ""}|${agentType}`;
+      const index = claimed.get(key) ?? 0;
+      claimed.set(key, index + 1);
+      description = [...(calls.get(key)?.values() ?? [])][index] ?? null;
+    }
+    const running = payload.status !== "stopped";
     byAgent.set(agentId, {
       agentId,
-      agentType: typeof payload.agentType === "string" ? payload.agentType : (previous?.agentType ?? "agent"),
-      running: payload.status !== "stopped",
+      agentType,
+      description,
+      running,
       lastMessage: typeof payload.lastMessage === "string" ? payload.lastMessage : (previous?.lastMessage ?? null),
       at: previous?.at ?? activity.createdAt,
+      stoppedAt: running ? null : activity.createdAt,
+    });
+  }
+  for (const [agentId, row] of byAgent) {
+    const call = taskCalls.get(agentId);
+    const exact = call === undefined ? undefined : descriptions.get(call);
+    const end = row.running ? taskEnds.get(agentId) : undefined;
+    byAgent.set(agentId, {
+      ...row,
+      ...(exact ? { description: exact } : {}),
+      ...(end === undefined ? {} : { running: false, stoppedAt: end.at, lastMessage: row.lastMessage ?? end.summary }),
     });
   }
   return [...byAgent.values()].sort((left, right) => right.at.localeCompare(left.at));

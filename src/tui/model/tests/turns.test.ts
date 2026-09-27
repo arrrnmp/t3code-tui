@@ -439,3 +439,21 @@ describe("thoughtTail", () => {
     expect(thoughtTail("alpha beta gamma delta epsilon", 14)).toBe("…delta epsilon");
   });
 });
+
+describe("groupTurns: a turn a usage limit cut off", () => {
+  it("is marked limited, so its work stays open instead of folding under the last message", () => {
+    const groups = groupTurns([
+      entry({ id: "u1", kind: "user", text: "go" }),
+      entry({ id: "a1", kind: "assistant", text: "Measuring exactly:", at: "2026-09-16T02:00:01.000Z" }),
+      entry({ id: "l1", kind: "activity", activityKind: "usage.limit", at: "2026-09-16T02:00:02.000Z" }),
+    ]);
+    expect(groups[0]?.limited).toBe(true);
+    // A wrap-up finishes the turn on a small allowance: it still has an answer.
+    const wrapped = groupTurns([
+      entry({ id: "u1", kind: "user", text: "go" }),
+      entry({ id: "w1", kind: "activity", activityKind: "usage.wrap-up" }),
+      entry({ id: "a1", kind: "assistant", text: "Done.", at: "2026-09-16T02:00:01.000Z" }),
+    ]);
+    expect(wrapped[0]?.limited).toBe(false);
+  });
+});

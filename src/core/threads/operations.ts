@@ -69,6 +69,7 @@ import {
   openTurn,
   promoteDueScheduledTurn,
   sendTurn,
+  turnPrompt,
   type SendTurnResult,
 } from "./threads.js";
 import { armScheduledTurn } from "./schedule.js";
@@ -197,8 +198,9 @@ async function runRecoveredTurn(ctx: OperationContext, threadId: string, turn: S
   const { store } = ctx;
   const thread = await store.readThreadRecord(threadId);
   if (!thread) return;
-  const message = (await store.readMessages(threadId)).find((candidate) => candidate.id === turn.messageId);
-  if (!message?.text) {
+  // One message, or several queued ones batched into this turn at promotion.
+  const message = turnPrompt(await store.readMessages(threadId), turn);
+  if (message === null) {
     await failTurn(store, threadId, turn.id, { error: "Its queued message is missing." }).catch(() => undefined);
     return;
   }
@@ -212,7 +214,7 @@ async function runRecoveredTurn(ctx: OperationContext, threadId: string, turn: S
     await failTurn(store, threadId, turn.id, { error: error.slice(0, 500) }).catch(() => undefined);
     return;
   }
-  const images = await imagesOf(message.attachments ?? []);
+  const images = await imagesOf(message.attachments);
   void executeTurn({
     store,
     driver,

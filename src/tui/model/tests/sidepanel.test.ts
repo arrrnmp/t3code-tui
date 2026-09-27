@@ -45,9 +45,76 @@ describe("nativeSubagents", () => {
       activity("3", { agentId: "b", agentType: "fork", status: "started" }, "2026-09-25T09:02:00.000Z"),
     ]);
     expect(rows).toEqual([
-      { agentId: "b", agentType: "fork", running: true, lastMessage: null, at: "2026-09-25T09:02:00.000Z" },
-      { agentId: "a", agentType: "Explore", running: false, lastMessage: "done", at: "2026-09-25T09:00:00.000Z" },
+      { agentId: "b", agentType: "fork", description: null, running: true, lastMessage: null, at: "2026-09-25T09:02:00.000Z", stoppedAt: null },
+      {
+        agentId: "a",
+        agentType: "Explore",
+        description: null,
+        running: false,
+        lastMessage: "done",
+        at: "2026-09-25T09:00:00.000Z",
+        stoppedAt: "2026-09-25T09:01:00.000Z",
+      },
     ]);
+  });
+
+  it("ignores Claude Code's internal agents: a stop with no start", () => {
+    const stopped = { id: "s", kind: "subagent", summary: "", tone: "info", turnId: "t", createdAt: "2026-09-25T09:00:00.000Z", payload: { agentId: "x", agentType: "agent", status: "stopped", lastMessage: "check the background tab" } };
+    expect(nativeSubagents([stopped as unknown as ActivityEnvelope])).toEqual([]);
+  });
+
+  it("takes a background subagent's task ending as its stop when the stop row is missing", () => {
+    const row = (id: string, kind: string, payload: Record<string, unknown>, createdAt: string) =>
+      ({ id, kind, summary: "", tone: "info", turnId: "t", createdAt, payload }) as unknown as ActivityEnvelope;
+    const rows = nativeSubagents([
+      row("1", "tool-call.completed", { toolCallId: "toolu_1", data: { tool: "Agent", state: { input: { subagent_type: "Explore", description: "Count TODOs" } } } }, "2026-09-25T09:00:00.000Z"),
+      row("2", "background.started", { taskId: "ag", toolUseId: "toolu_1", status: "started" }, "2026-09-25T09:00:00.000Z"),
+      row("3", "subagent", { agentId: "ag", agentType: "Explore", status: "started" }, "2026-09-25T09:00:00.000Z"),
+      row("4", "background.completed", { taskId: "ag", status: "completed", summary: "Found 3." }, "2026-09-25T09:00:14.000Z"),
+    ]);
+    expect(rows).toEqual([
+      {
+        agentId: "ag",
+        agentType: "Explore",
+        description: "Count TODOs",
+        running: false,
+        lastMessage: "Found 3.",
+        at: "2026-09-25T09:00:00.000Z",
+        stoppedAt: "2026-09-25T09:00:14.000Z",
+      },
+    ]);
+  });
+
+  it("names each subagent after the Agent call of its turn and type, in order", () => {
+    const at = "2026-09-25T09:00:00.000Z";
+    const call = (id: string, callId: string, type: string, description: string, turnId = "t") =>
+      ({
+        id,
+        kind: "tool-call.completed",
+        summary: "Agent",
+        tone: "tool",
+        turnId,
+        createdAt: at,
+        payload: { toolCallId: callId, data: { tool: "Agent", state: { input: { subagent_type: type, description } } } },
+      }) as unknown as ActivityEnvelope;
+    const started = (id: string, agentId: string, agentType: string, turnId = "t") =>
+      ({ id, kind: "subagent", summary: "", tone: "info", turnId, createdAt: at, payload: { agentId, agentType, status: "started" } }) as unknown as ActivityEnvelope;
+    const rows = nativeSubagents([
+      { ...call("0", "c1", "Explore", "Count TODOs"), kind: "tool-call.started" } as ActivityEnvelope,
+      call("1", "c1", "Explore", "Count TODOs"),
+      call("2", "c2", "Plan", "Plan the fix"),
+      call("3", "c3", "Explore", "Find call sites"),
+      started("4", "a1", "Explore"),
+      started("5", "a2", "Plan"),
+      started("6", "a3", "Explore"),
+      started("7", "a4", "Explore", "other-turn"),
+    ]);
+    expect(Object.fromEntries(rows.map((row) => [row.agentId, row.description]))).toEqual({
+      a1: "Count TODOs",
+      a2: "Plan the fix",
+      a3: "Find call sites",
+      a4: null,
+    });
   });
 });
 

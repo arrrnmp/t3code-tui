@@ -11,6 +11,7 @@ import {
 } from "../../model/externalEditor.js";
 import type { ImageAttachmentUpload } from "../../../core/attachments.js";
 import { COPY_TOAST_MS } from "../../app/constants.js";
+import { copiedToast, copyPrompt } from "../../model/copystash.js";
 
 /**
  * Composition is per thread: switching threads stashes the draft and
@@ -50,10 +51,11 @@ export function useComposer(
   const draft = drafts[draftKey] ?? "";
   const pending = pendings[draftKey] ?? [];
 
+  /** The draft with its pasted images: pasting it back into moxen attaches them again (see `model/copystash.ts`). */
   const copyDraft = () => {
     if (draft.trim().length === 0) return;
-    void clipboard.copyText(draft).then((ok) => {
-      if (ok) toasts.push("copy-draft", "info", "Copied to clipboard", COPY_TOAST_MS);
+    void copyPrompt(clipboard, draft, pending).then(({ ok, images }) => {
+      if (ok) toasts.push("copy-draft", "info", copiedToast(pending.length, images), COPY_TOAST_MS);
       else if (clipboard.isRemote()) setError("copy failed — terminal may block OSC 52");
     });
   };

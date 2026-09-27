@@ -225,6 +225,60 @@ describe("delegated threads in the sidebar", () => {
     ]);
   });
 
+  it("lists native subagents after the delegated threads, the connectors running through both", () => {
+    const native = (agentId: string, status: "running" | "completed", startedAgo: number, description: string | null = null) => ({
+      agentId,
+      agentType: "Explore",
+      description,
+      status,
+      startedAt: ago(startedAgo),
+      stoppedAt: status === "running" ? null : ago(startedAgo - 1_000),
+    });
+    const sections = buildSidebarSections(
+      shellWith([
+        thread("parent", {
+          latestUserMessageAt: ago(1_000),
+          // Running ones always show; of the finished, the latest 3.
+          nativeSubagents: [
+            native("old", "completed", 90_000),
+            native("f1", "completed", 80_000),
+            native("f2", "completed", 70_000, "Count TODOs"),
+            native("f3", "completed", 60_000),
+            native("live", "running", 50_000, "List commands"),
+          ],
+        }),
+        thread("task-a", { parentThreadId: "parent", createdAt: ago(30_000) }),
+        thread("task-b", { parentThreadId: "parent", createdAt: ago(20_000) }),
+      ]),
+      { settledExpanded: false, settledLimit: 10, now: NOW },
+    );
+    expect(sections.active.map((row) => [row.thread.id, row.last, row.natives.map((entry) => entry.agentId)])).toEqual([
+      ["parent", false, []],
+      ["task-a", false, []],
+      // Not last: its family's natives follow it.
+      ["task-b", false, ["f1", "f2", "f3", "live"]],
+    ]);
+    const natives = sections.active[2]!.natives;
+    expect(natives.map((entry) => [entry.label, entry.running, entry.last])).toEqual([
+      ["Explore", false, false],
+      ["Explore · Count TODOs", false, false],
+      ["Explore", false, false],
+      ["Explore · List commands", true, true],
+    ]);
+  });
+
+  it("closes a family on its last delegated thread when it has no subagents", () => {
+    const sections = buildSidebarSections(
+      shellWith([thread("parent", { latestUserMessageAt: ago(1_000) }), thread("a", { parentThreadId: "parent", createdAt: ago(3_000) }), thread("b", { parentThreadId: "parent", createdAt: ago(2_000) })]),
+      { settledExpanded: false, settledLimit: 10, now: NOW },
+    );
+    expect(sections.active.map((row) => [row.thread.id, row.last])).toEqual([
+      ["parent", false],
+      ["a", false],
+      ["b", true],
+    ]);
+  });
+
   it("keeps a task at the top level when its parent is not in the list", () => {
     const sections = buildSidebarSections(shellWith([thread("orphan", { parentThreadId: "gone" })]), {
       settledExpanded: false,

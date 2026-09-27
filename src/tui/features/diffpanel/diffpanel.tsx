@@ -28,7 +28,8 @@ function DiffLoading({ width }: { width: number }) {
 // token fell back to the default — white text on the red/green rows.
 const syntaxStyle = markdownSyntaxStyle;
 
-function FileSection({
+/** One file of a patch: a foldable header with its counts over the highlighted hunks. The Git tab's commit view reuses it. */
+export function FileSection({
   file,
   width,
   selected,

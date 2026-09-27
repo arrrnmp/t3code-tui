@@ -50,6 +50,20 @@ describe("settings schema", () => {
     );
   });
 
+  it("offers only presets the key itself would accept, its default among them", () => {
+    for (const descriptor of SETTINGS) {
+      const kind = descriptor.kind;
+      if ((kind.type !== "integer" && kind.type !== "duration") || kind.presets === undefined) continue;
+      for (const preset of kind.presets) expect(parseSettingValue(descriptor, String(preset))).toBe(preset);
+      expect(kind.presets as readonly unknown[]).toContain(descriptor.defaultValue);
+    }
+  });
+
+  it("clears an optional enum set to nothing, but refuses nothing for one with a default", () => {
+    expect(setConfigValue({ ...DEFAULT_CONFIG, speedMode: "fast" }, "speedMode", "").speedMode).toBeUndefined();
+    expect(() => parseSettingValue(settingDescriptor("ui.backdrop")!, "")).toThrow(/must be one of/);
+  });
+
   it("refuses a key it does not know", () => {
     expect(() => setConfigValue(DEFAULT_CONFIG, "git.historyLimitt", "20")).toThrow("Unknown config key");
   });

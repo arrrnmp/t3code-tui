@@ -882,3 +882,55 @@ describe("display paths", () => {
     expect(read(String.raw`D:\elsewhere\x.txt`)).toMatchObject({ path: "D:/elsewhere/x.txt" });
   });
 });
+
+describe("moxen and subagent tool rows", () => {
+  const call = (tool: string, status: string, input: Record<string, unknown>, output?: string, extra: Record<string, unknown> = {}) =>
+    describeActivity(
+      activity(status === "inProgress" ? "tool-call.started" : "tool-call.completed", {
+        itemType: "dynamic_tool_call",
+        toolCallId: "c1",
+        status,
+        title: tool,
+        data: { tool, state: { status, input, ...(output === undefined ? {} : { output }) } },
+        ...extra,
+      }),
+    );
+
+  it("says what was delegated and to which model", () => {
+    const input = { task: "In the repo, run the check.\nReport back.", title: "Run bun check" };
+    expect(call("mcp__moxen__delegate", "inProgress", input)).toEqual({
+      kind: "agent",
+      source: "moxen",
+      title: "delegate",
+      subject: "Run bun check",
+      state: "running",
+      facts: [],
+      running: true,
+    });
+    const done = JSON.stringify({ taskId: "t", title: "Run bun check", status: "running", model: "claudeAgent/claude-sonnet-5" }, null, 2);
+    expect(call("mcp__moxen__delegate", "completed", input, done)).toMatchObject({ title: "delegate", subject: "Run bun check", state: null, facts: ["Claude Sonnet 5"] });
+  });
+
+  it("reads a delegated task's status even from a report the ledger cut short, titled from its delegate call", () => {
+    const cut = `{\n  "taskId": "t",\n  "status": "completed",\n  "finished": true,\n  "report": "25 scenario files audited, read-o`;
+    expect(call("mcp__moxen__task_status", "completed", { taskId: "t" }, cut, { delegatedTitle: "Summarize scenarios" })).toMatchObject({
+      title: "task status",
+      subject: "Summarize scenarios",
+      state: "finished",
+    });
+    expect(call("moxen.task_cancel", "completed", { taskId: "t" })).toMatchObject({ title: "cancel task", state: "stopped" });
+  });
+
+  it("names a native subagent by type and description, not its prompt", () => {
+    const input = { subagent_type: "Explore", description: "List CLI commands", prompt: "In the repo at /Users/…, open src/cli/index.ts and list…" };
+    expect(call("Agent", "inProgress", input)).toEqual({
+      kind: "agent",
+      source: "native",
+      title: "Explore",
+      subject: "List CLI commands",
+      state: "starting",
+      facts: [],
+      running: true,
+    });
+  });
+});

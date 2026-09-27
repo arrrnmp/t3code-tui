@@ -9,6 +9,7 @@
  */
 import os from "node:os";
 
+import { imageSetError } from "../attachments.js";
 import { CliError } from "../errors.js";
 import type {
   InteractionMode,
@@ -22,7 +23,9 @@ import type {
   SendDelivery,
   SendIfBusy,
   SendTurnInput,
+  StoredAttachment,
   StoredDelegation,
+  StoredMessage,
   StoredThread,
   StoredTurn,
   ThreadReadResult,
@@ -252,6 +255,10 @@ export async function sendTurn(
   if (scheduledFor !== null && (input.delivery === "steer" || input.delivery === "restart")) {
     throw new CliError("INVALID_THREAD_OPTION", "A scheduled message cannot steer or restart a turn.", { exitCode: 2 });
   }
+  // The API's image limits, refused here in words rather than by the
+  // provider mid-turn — whichever client sent them.
+  const imageError = input.attachments?.length ? imageSetError(input.attachments) : null;
+  if (imageError !== null) throw new CliError("INVALID_ATTACHMENT", `Cannot send: ${imageError}.`, { exitCode: 2 });
   // Saved before the lock: bytes on disk are harmless if the send is then
   // refused, and the lock is held only for ledger writes.
   const attachments = input.attachments?.length
@@ -362,7 +369,12 @@ export async function sendTurn(
     }
 
     // Held for later only while that time is still ahead; a past time runs now.
-    const holdUntil = scheduledFor !== null && Date.parse(scheduledFor) > Date.parse(now) ? scheduledFor : null;
+    // A plain send while a continue waits out a usage limit queues behind
+    // it instead of running into the same wall: held to the same time, it
+    // goes out once the continue has run.
+    const waitingOut = scheduledFor === null && !running && delivery !== "restart" ? usageHoldUntil(turns, Date.parse(now)) : null;
+    const holdUntil = waitingOut ?? (scheduledFor !== null && Date.parse(scheduledFor) > Date.parse(now) ? scheduledFor : null);
+    const scheduleReason = waitingOut !== null ? ("usage-hold" as const) : (input.scheduleReason ?? "user");
     const status = holdUntil !== null || (delivery === "queue" && openTurn(await store.readTurns(threadId))) ? "queued" : "running";
     const turn: StoredTurn = {
       id: store.newId(),
@@ -370,7 +382,7 @@ export async function sendTurn(
       status,
       ...(status === "running" ? { owner: currentTurnOwner() } : {}),
       delivery:
-        delivery === "queue" ? (status === "queued" ? "queued" : "started")
+        delivery === "queue" || waitingOut !== null ? (status === "queued" ? "queued" : "started")
         : delivery === "restart" ? "restarted"
         : "started",
       messageId: store.newId(),
@@ -381,7 +393,7 @@ export async function sendTurn(
       ...(holdUntil !== null
         ? {
             scheduledFor: holdUntil,
-            scheduleReason: input.scheduleReason ?? "user",
+            scheduleReason,
             ...(input.continueAttempt !== undefined ? { continueAttempt: input.continueAttempt } : {}),
           }
         : {}),
@@ -408,7 +420,7 @@ export async function sendTurn(
       turnId: turn.id,
       kind: holdUntil !== null ? "turn.scheduled" : status === "queued" ? "turn.queued" : "turn.started",
       summary: prompt.slice(0, 120),
-      ...(holdUntil !== null ? { payload: { scheduledFor: holdUntil, reason: input.scheduleReason ?? "user" } } : {}),
+      ...(holdUntil !== null ? { payload: { scheduledFor: holdUntil, reason: scheduleReason } } : {}),
       createdAt: now,
     });
     if (input.handoffNote !== undefined && input.handoffNote.trim()) {
@@ -632,8 +644,76 @@ export async function holdPromotedTurn(
   });
 }
 
+/**
+ * When a message sent now should go out instead: the time a continue after
+ * a usage limit (or a message already held behind one) waits for, while it
+ * is still ahead. Null when nothing is waiting out a limit.
+ */
+export function usageHoldUntil(turns: readonly StoredTurn[], now: number): string | null {
+  let until: string | null = null;
+  for (const turn of turns) {
+    if (!isHeldTurn(turn, now)) continue;
+    if (turn.scheduleReason !== "usage-reset" && turn.scheduleReason !== "usage-hold") continue;
+    if (until === null || Date.parse(turn.scheduledFor!) > Date.parse(until)) until = turn.scheduledFor!;
+  }
+  return until;
+}
+
 export function isHeldTurn(turn: StoredTurn, now: number = Date.now()): boolean {
   return turn.status === "queued" && typeof turn.scheduledFor === "string" && Date.parse(turn.scheduledFor) > now;
+}
+
+function sameModel(left: StoredTurn, right: StoredTurn): boolean {
+  return left.modelSelection?.instanceId === right.modelSelection?.instanceId && left.modelSelection?.model === right.modelSelection?.model;
+}
+
+/**
+ * Fold every other queued message that could go now into `next`: queued
+ * behind the same turn, or held for the same reset, they are sent together
+ * as one turn — not one turn each, with the agent working through the first
+ * before it even sees the second. Their turns never ran, so they are dropped
+ * and their messages move onto `next`. A message for another model, or one
+ * still waiting for a later time, keeps its own turn.
+ */
+async function batchQueuedLocked(store: ThreadStore, threadId: string, next: StoredTurn, turns: readonly StoredTurn[], now: string): Promise<void> {
+  const batch = turns.filter(
+    (turn) =>
+      turn.id !== next.id &&
+      turn.status === "queued" &&
+      !isHeldTurn(turn, Date.parse(now)) &&
+      turn.scheduleReason !== "usage-reset" &&
+      sameModel(turn, next),
+  );
+  if (batch.length === 0) return;
+  const folded = new Set(batch.map((turn) => turn.id));
+  const messages = await store.readMessages(threadId);
+  await store.rewriteLedger(threadId, "messages", messages.map((message) => (folded.has(message.turnId) ? { ...message, turnId: next.id } : message)));
+  await store.rewriteLedger(threadId, "turns", turns.filter((turn) => !folded.has(turn.id)));
+  await store.appendLedger(threadId, "activity", {
+    id: store.newId(),
+    threadId,
+    turnId: next.id,
+    kind: "turn.batched",
+    summary: `${batch.length + 1} queued messages sent together`,
+    payload: { turnIds: [...folded] },
+    createdAt: now,
+  });
+}
+
+/**
+ * What a turn sends: every user message on it, in order — one, or several
+ * queued messages batched into it — with all their images.
+ */
+export function turnPrompt(messages: readonly StoredMessage[], turn: StoredTurn): { text: string; attachments: StoredAttachment[] } | null {
+  const own = messages.filter((message) => message.turnId === turn.id && message.role === "user" && message.text.trim().length > 0);
+  if (own.length === 0) {
+    const first = messages.find((message) => message.id === turn.messageId);
+    return first?.text ? { text: first.text, attachments: [...(first.attachments ?? [])] } : null;
+  }
+  return {
+    text: own.map((message) => message.text.trim()).join("\n\n"),
+    attachments: own.flatMap((message) => message.attachments ?? []),
+  };
 }
 
 async function promoteQueuedLocked(store: ThreadStore, threadId: string, now: string): Promise<void> {
@@ -642,6 +722,7 @@ async function promoteQueuedLocked(store: ThreadStore, threadId: string, now: st
   // A scheduled turn waits for its time; ordinary queued turns go ahead of it.
   const next = turns.find((turn) => turn.status === "queued" && !isHeldTurn(turn, Date.parse(now)));
   if (!next) return;
+  await batchQueuedLocked(store, threadId, next, turns, now);
   await store.updateTurn(threadId, next.id, { status: "running", owner: currentTurnOwner(), startedAt: now, updatedAt: now });
   await store.appendLedger(threadId, "activity", {
     id: store.newId(),

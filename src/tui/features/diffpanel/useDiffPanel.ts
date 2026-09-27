@@ -69,7 +69,8 @@ export function useDiffPanel(params: {
   const [, bumpTurnPatches] = useState(0);
   const [diffFileIndex, setDiffFileIndex] = useState(0);
   const [collapsedFiles, setCollapsedFiles] = useState<ReadonlySet<string>>(() => new Set());
-  const [expandedWork, setExpandedWork] = useState<ReadonlySet<string>>(() => new Set());
+  /** The Worked folds the user toggled, by turn group: open (true) or closed. Untoggled ones take the timeline's default. */
+  const [expandedWork, setExpandedWork] = useState<ReadonlyMap<string, boolean>>(() => new Map());
 
   /** Clears every per-thread cache — called when the open thread changes. */
   const resetCaches = () => {
@@ -215,15 +216,10 @@ export function useDiffPanel(params: {
    * message row that just shifted under the cursor. Same swallow window as a
    * modal dismiss.
    */
-  const toggleWork = (id: string) => {
+  const toggleWork = (id: string, expand: boolean) => {
     markModalDismissed();
     setFocus("chat");
-    setExpandedWork((current) => {
-      const next = new Set(current);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
+    setExpandedWork((current) => new Map(current).set(id, expand));
   };
 
   const patchFiles = useMemo(() => (patch === null ? [] : splitPatchByFile(patch)), [patch]);

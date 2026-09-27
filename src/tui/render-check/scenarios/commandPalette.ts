@@ -1,6 +1,8 @@
 import { act } from "react";
 import type { TestRendererSetup } from "@opentui/core/testing";
 
+import { fail } from "../helpers.js";
+
 /** The command palette's copy row, export row, filter-to-delete two-step
     confirm, rename, regenerate title, compact, settle, and archive. */
 export async function runCommandPalette(setup: TestRendererSetup): Promise<void> {
@@ -27,6 +29,29 @@ export async function runCommandPalette(setup: TestRendererSetup): Promise<void>
   console.log("--- palette export filtered ---");
   console.log(setup.captureCharFrame());
   await act(async () => setup.mockInput.pressEscape());
+  await setup.flush();
+  await act(async () => setup.mockInput.pressKey("p", { ctrl: true }));
+  await setup.flush();
+
+  // Schedule message sends what the composer holds, at a time it asks for
+  // next; with nothing written it says so instead of opening the prompt.
+  // (A bare ESC waits out the parser's escape-sequence timeout first.)
+  await act(async () => setup.mockInput.pressEscape());
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 150)));
+  await setup.flush();
+  await act(async () => setup.mockInput.pressKey("p", { ctrl: true }));
+  await setup.flush();
+  for (const char of ["s", "c", "h", "e", "d"]) {
+    await act(async () => setup.mockInput.pressKey(char));
+    await setup.flush();
+  }
+  const schedule = setup.captureCharFrame();
+  console.log("--- palette schedule filtered ---");
+  console.log(schedule);
+  if (!schedule.includes("Schedule message")) fail("the palette has no Schedule message row");
+  if (!schedule.includes("write it in the composer first")) fail("Schedule message with an empty composer did not say what it needs");
+  await act(async () => setup.mockInput.pressEscape());
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 150)));
   await setup.flush();
   await act(async () => setup.mockInput.pressKey("p", { ctrl: true }));
   await setup.flush();

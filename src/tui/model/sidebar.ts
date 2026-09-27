@@ -1,4 +1,4 @@
-import type { ProjectEnvelope, ThreadEnvelope } from "../../core/types.js";
+import type { NativeSubagentEnvelope, ProjectEnvelope, ThreadEnvelope } from "../../core/types.js";
 import { threadSortTime, threadStatus, type ShellState, type ThreadStatus } from "./shell.js";
 
 export interface SidebarThread {
@@ -15,6 +15,51 @@ export interface SidebarThread {
   waiting: boolean;
   /** 0 for a top-level thread; 1 for a delegated task shown under its parent. */
   depth: number;
+  /** A child that closes its family (`└`), rather than one with a sibling below (`├`). */
+  last: boolean;
+  /**
+   * The family's native subagents, drawn right after this row: set on the
+   * family's last row (the parent itself when it delegated nothing), so they
+   * sit below the delegated threads.
+   */
+  natives: SidebarNative[];
+}
+
+/** One of a thread's native subagents (Claude's Agent tool), as the sidebar lists it under the thread. */
+export interface SidebarNative {
+  agentId: string;
+  parentThreadId: string;
+  /** "Explore · Count TODO comments", or just the type. */
+  label: string;
+  running: boolean;
+  failed: boolean;
+  /** Since it started while running, since it stopped after. */
+  age: string;
+  last: boolean;
+}
+
+/** Finished native subagents listed per thread, newest; running ones are always listed. */
+const FINISHED_NATIVES = 3;
+
+function sidebarNatives(thread: ThreadEnvelope, now: number): SidebarNative[] {
+  const all: readonly NativeSubagentEnvelope[] = Array.isArray(thread.nativeSubagents) ? thread.nativeSubagents : [];
+  const finished = new Set(
+    all
+      .filter((entry) => entry.status !== "running")
+      .sort((left, right) => (right.stoppedAt ?? right.startedAt).localeCompare(left.stoppedAt ?? left.startedAt))
+      .slice(0, FINISHED_NATIVES)
+      .map((entry) => entry.agentId),
+  );
+  const shown = all.filter((entry) => entry.status === "running" || finished.has(entry.agentId)).sort((left, right) => left.startedAt.localeCompare(right.startedAt));
+  return shown.map((entry, index) => ({
+    agentId: entry.agentId,
+    parentThreadId: thread.id,
+    label: entry.description === null ? entry.agentType : `${entry.agentType} · ${entry.description}`,
+    running: entry.status === "running",
+    failed: entry.status === "failed",
+    age: relativeAge(entry.status === "running" ? entry.startedAt : (entry.stoppedAt ?? entry.startedAt), now),
+    last: index === shown.length - 1,
+  }));
 }
 
 export interface SidebarSections {
@@ -89,7 +134,14 @@ function threadTime(thread: ThreadEnvelope): number {
   return latest;
 }
 
-function toSidebarThread(thread: ThreadEnvelope, projects: Map<string, ProjectEnvelope>, now: number, depth = 0): SidebarThread {
+function toSidebarThread(
+  thread: ThreadEnvelope,
+  projects: Map<string, ProjectEnvelope>,
+  now: number,
+  depth = 0,
+  last = false,
+  natives: SidebarNative[] = [],
+): SidebarThread {
   const project = projects.get(thread.projectId);
   const projectTitle = project?.title ?? "unknown project";
   const branch = typeof thread.branch === "string" && thread.branch.length > 0 ? thread.branch : null;
@@ -105,6 +157,8 @@ function toSidebarThread(thread: ThreadEnvelope, projects: Map<string, ProjectEn
     status,
     waiting: thread.hasPendingUserInput === true || thread.hasPendingApprovals === true,
     depth,
+    last,
+    natives,
   };
 }
 
@@ -114,8 +168,14 @@ function toSidebarThread(thread: ThreadEnvelope, projects: Map<string, ProjectEn
  * list (settled apart, another project, archived) stays where it was, at
  * the top level. Nesting is one level deep: a task of a task sits beside
  * its sibling tasks, never deeper.
+ *
+ * With `now`, each family also gets its native subagents: they follow the
+ * delegated threads, so the connectors (`├` / `└`) run through both.
  */
-export function nestDelegated(threads: readonly ThreadEnvelope[]): Array<{ thread: ThreadEnvelope; depth: number }> {
+export function nestDelegated(
+  threads: readonly ThreadEnvelope[],
+  now?: number,
+): Array<{ thread: ThreadEnvelope; depth: number; last: boolean; natives: SidebarNative[] }> {
   const present = new Set(threads.map((thread) => thread.id));
   const rootOf = (thread: ThreadEnvelope): string | null => {
     let parent = typeof thread.parentThreadId === "string" && present.has(thread.parentThreadId) ? thread.parentThreadId : null;
@@ -136,12 +196,17 @@ export function nestDelegated(threads: readonly ThreadEnvelope[]): Array<{ threa
     if (root === null) top.push(thread);
     else children.set(root, [...(children.get(root) ?? []), thread]);
   }
-  return top.flatMap((thread) => [
-    { thread, depth: 0 },
-    ...[...(children.get(thread.id) ?? [])]
-      .sort((left, right) => Date.parse(left.createdAt ?? "") - Date.parse(right.createdAt ?? ""))
-      .map((child) => ({ thread: child, depth: 1 })),
-  ]);
+  return top.flatMap((thread) => {
+    const kids = [...(children.get(thread.id) ?? [])].sort((left, right) => Date.parse(left.createdAt ?? "") - Date.parse(right.createdAt ?? ""));
+    const natives = now === undefined ? [] : sidebarNatives(thread, now);
+    return [
+      { thread, depth: 0, last: false, natives: kids.length === 0 ? natives : [] },
+      ...kids.map((child, index) => {
+        const final = index === kids.length - 1;
+        return { thread: child, depth: 1, last: final && natives.length === 0, natives: final ? natives : [] };
+      }),
+    ];
+  });
 }
 
 /**
@@ -237,16 +302,17 @@ export function buildSidebarSections(state: ShellState, options: SidebarOptions)
           projectTitle,
           badge: projectBadge(projectTitle),
           badgeColor: badgeColor(id),
-          threads: nestDelegated(rows).map(({ thread, depth }) => toSidebarThread(thread, projects, options.now, depth)),
+          threads: nestDelegated(rows, options.now).map(({ thread, depth, last, natives }) => toSidebarThread(thread, projects, options.now, depth, last, natives)),
           collapsed: options.collapsedProjects?.has(id) ?? false,
         };
       });
   }
 
   return {
-    active: nestDelegated(visible).map(({ thread, depth }) => toSidebarThread(thread, projects, options.now, depth)),
-    settled: nestDelegated(options.settledExpanded ? visibleSettled.slice(0, options.settledLimit) : []).map(({ thread, depth }) =>
-      toSidebarThread(thread, projects, options.now, depth),
+    active: nestDelegated(visible, options.now).map(({ thread, depth, last, natives }) => toSidebarThread(thread, projects, options.now, depth, last, natives)),
+    // Settled threads list their delegated tasks only; their subagents are history.
+    settled: nestDelegated(options.settledExpanded ? visibleSettled.slice(0, options.settledLimit) : []).map(({ thread, depth, last }) =>
+      toSidebarThread(thread, projects, options.now, depth, last),
     ),
     settledTotal: visibleSettled.length,
     mode,

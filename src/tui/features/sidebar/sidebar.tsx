@@ -1,6 +1,6 @@
 import { useHover } from "../../hooks/useHover.js";
 import { MonitoringBackdrop } from "../../ui/backdrop.js";
-import type { SidebarGroup, SidebarMode, SidebarSections, SidebarThread } from "../../model/sidebar.js";
+import type { SidebarGroup, SidebarMode, SidebarNative, SidebarSections, SidebarThread } from "../../model/sidebar.js";
 import { threadSortTime } from "../../model/shell.js";
 import { COLOR, MARKER, pulseColor, rule, spread, STATUS_COLOR, SURFACE, truncate } from "../../theme.js";
 
@@ -48,6 +48,13 @@ const STATUS_GLYPH: Record<string, string> = {
   settled: "",
 };
 
+/** How a delegated task's last turn ended, for its idle row. */
+const DELEGATED_OUTCOME: Record<string, { glyph: string; color: string }> = {
+  completed: { glyph: "✓", color: COLOR.faint },
+  error: { glyph: "✗", color: COLOR.danger },
+  interrupted: { glyph: "■", color: COLOR.dim },
+};
+
 /** Needs the user: pending approval or question (answerable elsewhere). */
 const WAITING_GLYPH = "?";
 
@@ -59,10 +66,16 @@ function ActiveCard({
   compact,
   now,
   onOpen,
+  onOpenSubagents,
+  openSubagentId = null,
 }: {
   row: SidebarThread;
+  /** The native subagent open in the chat pane, if it is one of this row's. */
+  openSubagentId?: string | null;
   width: number;
   open: boolean;
+  /** Opens a native subagent's own conversation (in its thread). */
+  onOpenSubagents?: ((threadId: string, agentId: string) => void) | undefined;
   /** The thread holds an unsent draft or attachments — dot by the badge. */
   marked: boolean;
   /**
@@ -74,8 +87,12 @@ function ActiveCard({
   now: number;
   onOpen: () => void;
 }) {
-  const glyph = STATUS_GLYPH[row.status] ?? "";
-  const glyphColor = statusGlyphColor(row.status, now);
+  // A delegated task is done when its turn is: idle, it shows how that turn
+  // ended, like the native subagents beside it — not the ○ of a thread
+  // waiting on you. Running, blocked and snoozed keep their own marks.
+  const outcome = row.depth > 0 && row.status === "active" ? DELEGATED_OUTCOME[row.thread.latestTurn?.state ?? ""] : undefined;
+  const glyph = outcome?.glyph ?? STATUS_GLYPH[row.status] ?? "";
+  const glyphColor = outcome?.color ?? statusGlyphColor(row.status, now);
   const waitColor = waitingColor(row.waiting, now);
   // Live edge: running/blocked rows carry the accent marker even when they
   // aren't open, so live harnesses read at a glance. Open stays a steady
@@ -98,12 +115,29 @@ function ActiveCard({
   const { hovered, handlers } = useHover();
 
   // A delegated task sits under its parent as one indented line in every
-  // mode: the parent above already names the project.
+  // mode: the parent above already names the project. `⇢` marks it as
+  // moxen's (a thread you can open), as its transcript row does.
   const nested = row.depth > 0;
+  const natives =
+    row.natives.length === 0 || onOpenSubagents === undefined ? null : (
+      <>
+        {row.natives.map((native) => (
+          <NativeRow
+            key={native.agentId}
+            native={native}
+            width={width}
+            now={now}
+            open={native.agentId === openSubagentId}
+            onOpen={() => onOpenSubagents(native.parentThreadId, native.agentId)}
+          />
+        ))}
+      </>
+    );
   if (compact === true || nested) {
     const tail = `${row.age.length > 0 ? `${row.age} ` : ""}${glyph}${row.waiting ? " ?" : ""}${marked ? ` ${DRAFT_DOT}` : ""}`;
-    const lead = nested ? "  └ " : " ";
+    const lead = nested ? `  ${row.last ? "└" : "├"} ⇢ ` : " ";
     return (
+      <>
       <box
         style={{ flexDirection: "row", width, height: 1, flexShrink: 0 }}
         onMouseDown={onOpen}
@@ -112,21 +146,28 @@ function ActiveCard({
         {...handlers}
       >
         <text fg={showMarker ? markerFg : COLOR.faint} selectable={false}>{showMarker ? MARKER : " "}</text>
-        {nested ? <text fg={COLOR.faint} selectable={false}>{lead}</text> : null}
+        {nested ? <text fg={COLOR.faint} selectable={false}>{lead.slice(0, 4)}</text> : null}
+        {nested ? <text fg={COLOR.diff} selectable={false}>{lead.slice(4)}</text> : null}
         <text fg={titleFg} selectable={false}>
           {`${nested ? "" : lead}${truncate(row.title, Math.max(0, body - tail.length - lead.length - 1))}`.padEnd(
             Math.max(0, body - tail.length - (nested ? lead.length : 0)),
           )}
         </text>
-        <text fg={ageFg} selectable={false}>{row.age.length > 0 ? `${row.age} ` : ""}</text>
+        {/* Only texts with content: an empty <text> still takes a cell, and
+            two of them pushed the row one column past its width, squeezing
+            the marker column out and shifting the whole row left. */}
+        {row.age.length > 0 ? <text fg={ageFg} selectable={false}>{`${row.age} `}</text> : null}
         <text fg={glyphColor} selectable={false}>{glyph}</text>
-        <text fg={waitColor} selectable={false}>{row.waiting ? WAITING_GLYPH : ""}</text>
-        <text fg={marked ? COLOR.warn : COLOR.faint} selectable={false}>{marked ? DRAFT_DOT : ""}</text>
+        {row.waiting ? <text fg={waitColor} selectable={false}>{WAITING_GLYPH}</text> : null}
+        {marked ? <text fg={COLOR.warn} selectable={false}>{DRAFT_DOT}</text> : null}
       </box>
+      {natives}
+      </>
     );
   }
 
   return (
+    <>
     <box
       style={{ flexDirection: "column", width, flexShrink: 0 }}
       onMouseDown={onOpen}
@@ -144,8 +185,41 @@ function ActiveCard({
         <text fg={showMarker ? markerFg : COLOR.faint} selectable={false}>{showMarker ? MARKER : " "}</text>
         <text fg={titleFg} selectable={false}>{` ${truncate(row.title, body - 4)}`.padEnd(body - 1 - (row.waiting ? 1 : 0))}</text>
         <text fg={glyphColor} selectable={false}>{glyph}</text>
-        <text fg={waitColor} selectable={false}>{row.waiting ? WAITING_GLYPH : ""}</text>
+        {row.waiting ? <text fg={waitColor} selectable={false}>{WAITING_GLYPH}</text> : null}
       </box>
+    </box>
+    {natives}
+    </>
+  );
+}
+
+/**
+ * A native subagent (Claude's Agent tool) under its thread: `◇`, as in the
+ * transcript, where a delegated thread has `⇢`. A click opens its own
+ * conversation, read from the transcript the provider keeps for it.
+ */
+function NativeRow({ native, width, now, open, onOpen }: { native: SidebarNative; width: number; now: number; open: boolean; onOpen: () => void }) {
+  const { hovered, handlers } = useHover();
+  const body = width - 2;
+  const glyph = native.running ? "●" : native.failed ? "✗" : "✓";
+  const glyphColor = native.running ? pulseColor(now, COLOR.warn, COLOR.bright, 1800) : native.failed ? COLOR.danger : COLOR.faint;
+  const lead = `  ${native.last ? "└" : "├"} `;
+  const tail = `${native.age.length > 0 ? `${native.age} ` : ""}${glyph}`;
+  const labelWidth = Math.max(0, body - lead.length - 2 - tail.length);
+  return (
+    <box
+      style={{ flexDirection: "row", width, height: 1, flexShrink: 0 }}
+      onMouseDown={onOpen}
+      selectable={false}
+      backgroundColor={open ? SURFACE.user : hovered ? SURFACE.border : SURFACE.raised}
+      {...handlers}
+    >
+      <text fg={open ? COLOR.accent : COLOR.faint} selectable={false}>{open ? MARKER : " "}</text>
+      <text fg={COLOR.faint} selectable={false}>{lead}</text>
+      <text fg={COLOR.diff} selectable={false}>{"◇ "}</text>
+      <text fg={open ? COLOR.bright : native.running ? COLOR.text : COLOR.dim} selectable={false}>{truncate(native.label, labelWidth).padEnd(labelWidth)}</text>
+      {native.age.length > 0 ? <text fg={COLOR.dim} selectable={false}>{`${native.age} `}</text> : null}
+      <text fg={glyphColor} selectable={false}>{glyph}</text>
     </box>
   );
 }
@@ -180,9 +254,9 @@ function SettledRow({
       <text fg={COLOR.faint} selectable={false}>{row.badge}</text>
       <text fg={marked ? COLOR.warn : COLOR.faint} selectable={false}>{marked ? DRAFT_DOT : " "}</text>
       <text fg={open ? COLOR.text : COLOR.dim} selectable={false}>
-        {spread(`${row.depth > 0 ? "└ " : ""}${row.title}`, row.age, width - 4 - (row.waiting ? 1 : 0))}
+        {spread(`${row.depth > 0 ? (row.last ? "└ " : "├ ") : ""}${row.title}`, row.age, width - 4 - (row.waiting ? 1 : 0))}
       </text>
-      <text fg={waitColor} selectable={false}>{row.waiting ? WAITING_GLYPH : ""}</text>
+      {row.waiting ? <text fg={waitColor} selectable={false}>{WAITING_GLYPH}</text> : null}
     </box>
   );
 }
@@ -305,7 +379,10 @@ export function Sidebar({
   now,
   height,
   screenWidth,
+  backdrop = "animated",
   onOpenThread,
+  onOpenSubagents,
+  openSubagentId = null,
   onToggleSettled,
   onShowMore,
   onSelectMode,
@@ -327,8 +404,14 @@ export function Sidebar({
   height: number;
   /** Terminal width — the shared drifter field spans the whole screen. */
   screenWidth: number;
+  /** The `ui.backdrop` setting: the field here follows it like the new-thread view's does. */
+  backdrop?: "animated" | "static" | "off";
 
   onOpenThread: (threadId: string) => void;
+  /** A native subagent row: open its own conversation. */
+  onOpenSubagents?: (threadId: string, agentId: string) => void;
+  /** The native subagent open in the chat pane: its row is the open one, not its thread's. */
+  openSubagentId?: string | null;
   onToggleSettled: () => void;
   onShowMore: () => void;
   /** Jump straight to a view by clicking its label (`s` still cycles). */
@@ -361,11 +444,13 @@ export function Sidebar({
       key={row.thread.id}
       row={row}
       width={width - 2}
-      open={row.thread.id === openThreadId}
+      open={row.thread.id === openThreadId && openSubagentId === null}
+      openSubagentId={openSubagentId}
       marked={markedThreadIds.has(row.thread.id)}
       compact={compact}
       now={now}
       onOpen={() => onOpenThread(row.thread.id)}
+      onOpenSubagents={onOpenSubagents}
     />
   );
 
@@ -383,15 +468,18 @@ export function Sidebar({
           offsets are content-box relative, so 0 already means just inside
           the border (probed: top=1 double-shifted a row). Content siblings
           sit at zIndex 1 above it. */}
-      <MonitoringBackdrop
-        width={Math.max(0, width - 2)}
-        height={Math.max(0, height - 2)}
-        opacity={0.35}
-        offsetX={1}
-        offsetY={1}
-        fieldWidth={screenWidth}
-        fieldHeight={height}
-      />
+      {backdrop === "off" ? null : (
+        <MonitoringBackdrop
+          width={Math.max(0, width - 2)}
+          height={Math.max(0, height - 2)}
+          opacity={0.35}
+          offsetX={1}
+          offsetY={1}
+          fieldWidth={screenWidth}
+          fieldHeight={height}
+          motion={backdrop}
+        />
+      )}
       {/* View switcher, centered: each pill jumps straight to its view (`s`
           still cycles). Kept off the scroll list so thread clicks never
           bubble into it. The "+" sits as a normal trailing sibling now — a

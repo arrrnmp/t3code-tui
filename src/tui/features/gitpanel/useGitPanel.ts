@@ -2,11 +2,23 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import type {
   ClientApi,
+  ForgeCheckRun,
+  ForgeChecks,
   ForgeDetection,
   ForgeRequest,
+  ForgeRequestStatus,
+  GitCommitDetail,
   GitOverview,
   MergeStrategy,
 } from "../../../server/api.js";
+
+/** The commit open in the tab: its full record, then its CI once the forge answers. */
+export interface OpenCommit {
+  readonly sha: string;
+  readonly detail: GitCommitDetail | null;
+  readonly loading: boolean;
+  readonly runs: readonly ForgeCheckRun[] | null;
+}
 
 /**
  * The Git tab's state: local history on one side, the forge on the other.
@@ -26,6 +38,14 @@ export interface GitPanelState {
   readonly overview: GitOverview | null;
   readonly forge: ForgeDetection | null;
   readonly requests: readonly ForgeRequest[];
+  /** The checked-out branch's own request, with CI and mergeability; null when it has none. */
+  readonly status: ForgeRequestStatus | null;
+  /** CI tallies for the shown commits, by sha (GitHub only). */
+  readonly commitChecks: Readonly<Record<string, ForgeChecks>>;
+  /** The commit open in the tab, or null for the overview. */
+  readonly commit: OpenCommit | null;
+  readonly openCommit: (sha: string) => void;
+  readonly closeCommit: () => void;
   readonly loadingGit: boolean;
   readonly loadingForge: boolean;
   readonly error: string | null;
@@ -49,7 +69,11 @@ export function useGitPanel(client: ClientApi, threadId: string | null, active: 
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [branch, setBranch] = useState<string | null>(null);
+  const [status, setStatus] = useState<ForgeRequestStatus | null>(null);
+  const [commitChecks, setCommitChecks] = useState<Readonly<Record<string, ForgeChecks>>>({});
+  const [commit, setCommit] = useState<OpenCommit | null>(null);
   const generation = useRef(0);
+  const commitGeneration = useRef(0);
 
   // A different thread is a different checkout: drop everything rather
   // than showing the previous thread's branches while the new read runs.
@@ -57,6 +81,9 @@ export function useGitPanel(client: ClientApi, threadId: string | null, active: 
     setOverview(null);
     setForge(null);
     setRequests([]);
+    setStatus(null);
+    setCommitChecks({});
+    setCommit(null);
     setBranch(null);
     setError(null);
   }, [threadId]);
@@ -69,7 +96,18 @@ export function useGitPanel(client: ClientApi, threadId: string | null, active: 
     void client
       .query({ type: "git.overview", threadId, ...(branch !== null ? { branch } : {}) })
       .then((next) => {
-        if (generation.current === mine) setOverview(next);
+        if (generation.current !== mine) return;
+        setOverview(next);
+        // CI per commit rides on the forge and the network: after history
+        // has painted, never before it.
+        const shown = next.branch;
+        if (!next.isRepository || shown === null) return;
+        void client
+          .query({ type: "forge.commits.checks", threadId, branch: shown, limit: next.commits.length })
+          .then((result) => {
+            if (generation.current === mine) setCommitChecks(result.checks);
+          })
+          .catch(() => undefined);
       })
       .catch((cause: unknown) => {
         if (generation.current === mine) setError(messageOf(cause));
@@ -84,10 +122,16 @@ export function useGitPanel(client: ClientApi, threadId: string | null, active: 
         setForge(detection);
         if (detection.kind === null) {
           setRequests([]);
+          setStatus(null);
           return;
         }
-        const listed = await client.query({ type: "forge.requests.list", threadId, state: "open" });
-        if (generation.current === mine) setRequests(listed.requests);
+        const [listed, own] = await Promise.all([
+          client.query({ type: "forge.requests.list", threadId, state: "open" }),
+          client.query({ type: "forge.request.status", threadId }).catch(() => ({ request: null })),
+        ]);
+        if (generation.current !== mine) return;
+        setRequests(listed.requests);
+        setStatus(own.request);
       })
       .catch((cause: unknown) => {
         // A forge failure is not a panel failure: history still stands.
@@ -104,6 +148,35 @@ export function useGitPanel(client: ClientApi, threadId: string | null, active: 
   }, [active, threadId, read]);
 
   const selectBranch = useCallback((next: string | null) => setBranch(next), []);
+
+  const openCommit = useCallback(
+    (sha: string) => {
+      if (threadId === null) return;
+      const mine = (commitGeneration.current += 1);
+      setCommit({ sha, detail: null, loading: true, runs: null });
+      void client
+        .query({ type: "git.commit.detail", threadId, sha })
+        .then((result) => {
+          if (commitGeneration.current === mine) setCommit((current) => (current === null ? null : { ...current, detail: result.commit, loading: false }));
+        })
+        .catch((cause: unknown) => {
+          if (commitGeneration.current !== mine) return;
+          setError(messageOf(cause));
+          setCommit((current) => (current === null ? null : { ...current, loading: false }));
+        });
+      void client
+        .query({ type: "forge.commit.runs", threadId, sha })
+        .then((result) => {
+          if (commitGeneration.current === mine) setCommit((current) => (current === null ? null : { ...current, runs: result.runs }));
+        })
+        .catch(() => undefined);
+    },
+    [client, threadId],
+  );
+  const closeCommit = useCallback(() => {
+    commitGeneration.current += 1;
+    setCommit(null);
+  }, []);
 
   const write = useCallback(
     async <T,>(label: string, run: () => Promise<T>): Promise<T> => {
@@ -162,6 +235,11 @@ export function useGitPanel(client: ClientApi, threadId: string | null, active: 
     overview,
     forge,
     requests,
+    status,
+    commitChecks,
+    commit,
+    openCommit,
+    closeCommit,
     loadingGit,
     loadingForge,
     error,

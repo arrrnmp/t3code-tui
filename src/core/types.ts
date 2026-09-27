@@ -182,8 +182,19 @@ export interface ThreadEnvelope {
   queuedTurns?: QueuedTurnEnvelope[];
   /** The thread that delegated this one, for a delegated task; absent otherwise. */
   parentThreadId?: string;
+  /** The provider's own subagents (Claude's Agent tool): running ones and the latest finished. Absent when there are none. */
+  nativeSubagents?: NativeSubagentEnvelope[];
   deletedAt?: string | null;
   [key: string]: unknown;
+}
+
+export interface NativeSubagentEnvelope {
+  agentId: string;
+  agentType: string;
+  description: string | null;
+  status: "running" | "completed" | "failed" | "stopped";
+  startedAt: string;
+  stoppedAt: string | null;
 }
 
 export interface QueuedTurnEnvelope {

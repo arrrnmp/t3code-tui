@@ -27,11 +27,14 @@ import { defaultModelSelection, resolveModelSelection } from "../core/catalog/se
 import { defaultConfigPath, loadConfig, saveConfig, setConfigValue } from "../core/config.js";
 import { describeSettings } from "../core/configschema.js";
 import { buildHandoff, continuedTitle } from "../core/threads/handoff.js";
-import { readCommitDiff, readOverview } from "../core/git/history.js";
+import { readCommitDetail, readCommitDiff, readOverview } from "../core/git/history.js";
 import {
   commentOnRequest,
+  commitChecks,
+  commitRuns,
   createRequest,
   detectForge,
+  requestStatus,
   listRequests,
   mergeRequest,
   viewRequest,
@@ -88,6 +91,7 @@ import {
   type StartedTurn,
 } from "../core/threads/operations.js";
 import { toThreadEnvelope } from "../core/threads/project.js";
+import { backfillNativeSubagents, subagentTranscript } from "../core/threads/subagents.js";
 import { openThreadStore, resolveStoreRoot, type ThreadStore } from "../core/threads/store.js";
 import type { ProviderRuntimeEvent } from "../core/providers/spi.js";
 import type { CheckpointFileStat, StoredCheckpoint, TurnStatus } from "../core/threads/types.js";
@@ -341,6 +345,9 @@ export class DirectConnection implements ClientApi {
             if (turns.some((turn) => turn.status === "queued" && typeof turn.scheduledFor === "string" && Date.parse(turn.scheduledFor) <= now)) {
               void this.runDue(entry.id);
             }
+            // Threads from before the record kept its native subagents get
+            // the list folded from their ledger once; the next poll shows it.
+            if (entry.nativeSubagents === undefined) void backfillNativeSubagents(store, entry.id);
             return toThreadEnvelope(entry, turns, { parentThreadId: parents.get(entry.id) });
           }),
         );
@@ -950,6 +957,8 @@ export class DirectConnection implements ClientApi {
         const usage = driver.contextUsage ? await driver.contextUsage(query.threadId).catch(() => null) : null;
         return { live: true, breakdown: usage ? { ...usage, categories: [], estimated: false } : null };
       }
+      case "thread.subagent":
+        return await subagentTranscript(await this.store(), query.threadId, query.agentId);
       case "usage.limits":
         return { providers: usageLimitsSnapshot() };
       case "settings.read":
@@ -986,6 +995,28 @@ export class DirectConnection implements ClientApi {
         const detection = await this.forgeFor(query.threadId, ctx.config.forge);
         if (detection.kind === null) return { request: null };
         return { request: await viewRequest(cwd, detection, query.number) };
+      }
+      case "git.commit.detail": {
+        const cwd = await this.workspaceFor(query.threadId);
+        return { commit: await readCommitDetail(cwd, query.sha) };
+      }
+      case "forge.request.status": {
+        const cwd = await this.workspaceFor(query.threadId);
+        const detection = await detectForge(cwd, ctx.config.forge);
+        if (detection.kind === null || !detection.authenticated) return { request: null };
+        return { request: await requestStatus(cwd, detection, query.branch) };
+      }
+      case "forge.commits.checks": {
+        const cwd = await this.workspaceFor(query.threadId);
+        const detection = await detectForge(cwd, ctx.config.forge);
+        if (detection.kind === null || !detection.authenticated) return { checks: {} };
+        return { checks: await commitChecks(cwd, detection, query.branch, query.limit ?? 30) };
+      }
+      case "forge.commit.runs": {
+        const cwd = await this.workspaceFor(query.threadId);
+        const detection = await detectForge(cwd, ctx.config.forge);
+        if (detection.kind === null || !detection.authenticated) return { runs: [] };
+        return { runs: await commitRuns(cwd, detection, query.sha) };
       }
       case "thread.background.output": {
         const driver = await this.sessionDriver(query.threadId);

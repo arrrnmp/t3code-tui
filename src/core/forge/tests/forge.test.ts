@@ -4,7 +4,7 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { detectForge, listRequests, parseRemote } from "../forge.js";
+import { checkRuns, detectForge, listRequests, parseRemote, tally, tallyCounts } from "../forge.js";
 import type { ForgeDetection } from "../forge.js";
 
 const cleanup: Array<() => Promise<void>> = [];
@@ -90,5 +90,35 @@ describe("detectForge", () => {
       reason: "gh is installed but not logged in. Run `gh auth login`.",
     };
     await expect(listRequests(process.cwd(), signedOut)).rejects.toThrow(/not logged in/);
+  });
+});
+
+describe("CI checks", () => {
+  it("names GitHub's check runs and statuses, in the shared states", () => {
+    expect(
+      checkRuns([
+        { name: "build", status: "COMPLETED", conclusion: "SUCCESS", detailsUrl: "https://ci/1" },
+        { context: "lint", state: "FAILURE", targetUrl: "https://ci/2" },
+        { name: "e2e", status: "IN_PROGRESS", conclusion: null },
+        { name: "docs", status: "COMPLETED", conclusion: "SKIPPED" },
+      ]),
+    ).toEqual([
+      { name: "build", state: "passed", url: "https://ci/1" },
+      { name: "lint", state: "failed", url: "https://ci/2" },
+      { name: "e2e", state: "pending", url: null },
+      { name: "docs", state: "skipped", url: null },
+    ]);
+  });
+
+  it("tallies GraphQL counts by state, skipped counting as passed", () => {
+    expect(
+      tallyCounts([
+        { state: "SUCCESS", count: 16 },
+        { state: "SKIPPED", count: 2 },
+        { state: "FAILURE", count: 1 },
+        { state: "IN_PROGRESS", count: 3 },
+      ]),
+    ).toEqual({ passed: 18, failed: 1, pending: 3 });
+    expect(tally([{ name: "a", state: "skipped", url: null }, { name: "b", state: "failed", url: null }])).toEqual({ passed: 1, failed: 1, pending: 0 });
   });
 });

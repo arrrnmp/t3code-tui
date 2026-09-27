@@ -12,7 +12,10 @@ import { useSkillInventory } from "../features/composer/useSkillInventory.js";
 import { TasksPanel } from "../features/taskspanel/taskspanel.js";
 import { BackgroundTasksModal } from "../features/taskspanel/backgroundtasksmodal.js";
 import { SettingsModal } from "../features/settings/settingsmodal.js";
-import { GitTab } from "../features/gitpanel/gitpanel.js";
+import { GitFooter, GitTab } from "../features/gitpanel/gitpanel.js";
+import { SubagentBar } from "../features/subagentview/subagentbar.js";
+import { describeScheduled, formatScheduleInput, parseScheduleInput } from "../model/schedule.js";
+import { subagentState, subagentTitle, useSubagentView } from "../features/subagentview/useSubagentView.js";
 import { useGitPanel } from "../features/gitpanel/useGitPanel.js";
 import { uiFromSnapshot, useSettings } from "../features/settings/useSettings.js";
 import { PickerModal, type PickerBody } from "../features/pickers/pickermodal.js";
@@ -27,7 +30,9 @@ import {
   attachmentFromBytes,
   buildImageAttachments,
   extractMentions,
+  imageSetError,
   MAX_PENDING_ATTACHMENTS,
+  imageMimeForPath,
 } from "../../core/attachments.js";
 import type { ImageAttachmentUpload } from "../../core/attachments.js";
 import { clipboardFileName } from "../model/hostClipboard.js";
@@ -43,6 +48,9 @@ import { bootLoadingStage, isBootReady } from "../model/readiness.js";
 import { HoverButton } from "../ui/hoverbutton.js";
 import { openExternal } from "../../core/infra/platformOpen.js";
 import { formatDuration } from "../model/turns.js";
+import { handOffTarget, openRequestPrompt, requestNoun } from "../model/gitpanel.js";
+import { renderMessage } from "../model/message.js";
+import { copiedAttachments, copiedToast, copyPrompt, matchCopy, uniqueName } from "../model/copystash.js";
 import { COLOR, MARKER, pulseColor, SPINNER, SURFACE, truncate } from "../theme.js";
 import { useToasts, type ToastTone } from "../hooks/useToasts.js";
 import { useClipboard } from "../hooks/useClipboard.js";
@@ -360,6 +368,44 @@ export function App({
       else if (clipboard.isRemote()) setError("copy failed — terminal may block OSC 52");
     });
   };
+  /**
+   * A message, with the images it carried: the text goes to the clipboard
+   * last (after each image, for clipboard histories), and pasting it back
+   * into moxen attaches the images again onto its `[Image #N]` tokens.
+   */
+  const copyMessage = (entry: TimelineEntry) => {
+    const rendered = entry.message === null ? { text: entry.text, images: [] } : renderMessage(entry.message, homeDir);
+    const sources = rendered.images.flatMap((image) =>
+      image.filePath === null ? [] : [{ name: image.label, mimeType: imageMimeForPath(image.filePath), path: image.filePath }],
+    );
+    if (rendered.text.trim().length === 0) {
+      setError("nothing to copy");
+      return;
+    }
+    void copyPrompt(clipboard, rendered.text, sources).then(({ ok, images }) => {
+      if (ok) toasts.push("palette-copy", "info", copiedToast(sources.length, images), COPY_TOAST_MS);
+      else if (clipboard.isRemote()) setError("copy failed — terminal may block OSC 52");
+    });
+  };
+  /**
+   * A paste that is moxen's own copy of a prompt with images: attach those
+   * images again, under names no pending image already has. The composer
+   * puts the text in and pins each `[Image #N]` token to its image.
+   */
+  const claimPaste = (text: string): string[] | null => {
+    const copied = matchCopy(text);
+    if (copied === null || copied.images.length === 0) return null;
+    if (pending.length + copied.images.length > MAX_PENDING_ATTACHMENTS) {
+      toasts.push("attach-limit", "warn", `A message can carry ${MAX_PENDING_ATTACHMENTS} images — the pasted text came without its ${copied.images.length}`, COPY_TOAST_MS);
+      return null;
+    }
+    const taken = new Set(pending.map((attachment) => attachment.name));
+    const names = copied.images.map((image) => uniqueName(image.name, taken));
+    const uploads = copiedAttachments(copied, names);
+    if (uploads.length === 0) return null;
+    setPending((current) => [...current, ...uploads]);
+    return uploads.map((upload) => upload.name);
+  };
   /** Latest assistant reply text, for the palette's copy action. */
   const lastAssistantMessage = [...threadState.messages].reverse().find(
     (message) => message.role === "assistant" && message.text.length > 0,
@@ -422,6 +468,8 @@ export function App({
   });
   /** The right-hand panel: the Diff tab follows the diff panel, the others open here. */
   const sidePanel = useSidePanel(diffPanel.expandedTurn !== null);
+  /** A native subagent's own conversation, open in the chat pane in place of its thread's. */
+  const subagentView = useSubagentView(client, openThreadId);
   const {
     deleteThread,
     toggleSettleThread,
@@ -550,17 +598,30 @@ export function App({
    * Claude's `next` priority) or queues behind it (runs once it ends — its
    * `later`). Idle, it simply starts a turn.
    */
-  const dispatchTurn = (prompt: string, attachments: ImageAttachmentUpload[], busyDelivery: "steer" | "queue") => {
+  const dispatchTurn = (prompt: string, attachments: ImageAttachmentUpload[], busyDelivery: "steer" | "queue", scheduledFor?: Date) => {
     if (selected === null) return;
     void client
       .dispatch({
         type: "thread.turn.start",
         threadId: selected.id,
         message: { text: prompt, attachments },
-        ...(sessionRunningRef.current ? { delivery: busyDelivery } : {}),
+        // A scheduled message waits in the queue for its time (it cannot steer).
+        ...(scheduledFor !== undefined
+          ? { scheduledFor: scheduledFor.toISOString() }
+          : sessionRunningRef.current
+            ? { delivery: busyDelivery }
+            : {}),
       })
-      .then(() => {
-        if (sessionRunningRef.current && busyDelivery === "queue") toasts.push("queued", "info", "Queued: sent once this turn fully finishes (see Queued, above)", COPY_TOAST_MS);
+      .then((result) => {
+        const continueAt = usageBanner.banner?.continueAt ?? null;
+        if (scheduledFor === undefined && result.status === "queued" && !sessionRunningRef.current && continueAt !== null) {
+          toasts.push("queued", "info", `Queued: goes out after the continue at ${clock(continueAt)} (see Queued, above)`, COPY_TOAST_MS);
+        } else if (scheduledFor !== undefined) {
+          const when = describeScheduled(scheduledFor, new Date());
+          toasts.push("scheduled", "info", when === "now" ? "Scheduled: goes out now (see Queued, above)" : `Scheduled for ${when} (see Queued, above)`, COPY_TOAST_MS);
+        } else if (sessionRunningRef.current && busyDelivery === "queue") {
+          toasts.push("queued", "info", "Queued: sent once this turn fully finishes (see Queued, above)", COPY_TOAST_MS);
+        }
       })
       .catch((cause: unknown) => setError(String(cause).slice(0, 120)));
   };
@@ -570,7 +631,7 @@ export function App({
    * with anything pasted off the clipboard. The draft stays put when a file
    * cannot be read so the prompt is never eaten by a failed attach.
    */
-  const send = (text: string, busyDelivery: "steer" | "queue" = "steer") => {
+  const send = (text: string, busyDelivery: "steer" | "queue" = "steer", scheduledFor?: Date) => {
     const trimmed = text.trim();
     if (trimmed.length === 0 || selected === null) return;
     // `/btw` never reaches the thread: it is answered on a copy of the
@@ -595,7 +656,7 @@ export function App({
         .dispatch({ type: "thread.unsettle", threadId: id, reason: "user" as const })
         .then(() => {
           toasts.push("thread-unsettled", "info", "Thread unsettled", COPY_TOAST_MS);
-          send(text, busyDelivery);
+          send(text, busyDelivery, scheduledFor);
         })
         .catch((cause: unknown) => setError(String(cause).slice(0, 120)));
       return;
@@ -604,7 +665,7 @@ export function App({
     const parsed = extractMentions(trimmed);
     if (parsed.paths.length === 0 && pending.length === 0) {
       resetDraft(sourceId);
-      dispatchTurn(trimmed, [], busyDelivery);
+      dispatchTurn(trimmed, [], busyDelivery, scheduledFor);
       return;
     }
     void buildImageAttachments(parsed.paths, cwd ?? process.cwd()).then((built) => {
@@ -612,9 +673,16 @@ export function App({
         setError(built.error.slice(0, 120));
         return;
       }
+      // Pasted and @-mentioned together: the server refuses the same, but
+      // here the draft is kept and nothing is sent.
+      const imageError = imageSetError([...pending, ...built.attachments]);
+      if (imageError !== null) {
+        setError(`Cannot send: ${imageError}`.slice(0, 160));
+        return;
+      }
       resetDraft(sourceId);
       writePending(sourceId, []);
-      dispatchTurn(parsed.text, [...pending, ...built.attachments], busyDelivery);
+      dispatchTurn(parsed.text, [...pending, ...built.attachments], busyDelivery, scheduledFor);
     });
   };
 
@@ -631,6 +699,12 @@ export function App({
 
   const pasteImage = () => {
     setFocus("composer");
+    // Full: say so, and keep what is attached. Dropping the oldest to make
+    // room left its image token in the draft with nothing behind it.
+    if (pending.length >= MAX_PENDING_ATTACHMENTS) {
+      toasts.push("attach-limit", "warn", `A message can carry ${MAX_PENDING_ATTACHMENTS} images — delete an [Image #N] to attach another`, COPY_TOAST_MS);
+      return;
+    }
     const withRenderer = renderer as unknown as {
       subscribeOsc?: (handler: (sequence: string) => void) => () => void;
     } | null;
@@ -656,7 +730,15 @@ export function App({
         setError(built.error.slice(0, 120));
         return;
       }
-      setPending((current) => [...current, built.attachment].slice(-MAX_PENDING_ATTACHMENTS));
+      // Would it still fit the message (count, and the encoded total)? Said
+      // now, at the paste, instead of when the message is sent.
+      const imageError = imageSetError([...pending, built.attachment]);
+      if (imageError !== null) {
+        toasts.push("attach-limit", "warn", `Not attached: ${imageError}`, COPY_TOAST_MS);
+        return;
+      }
+      // Re-checked here: another paste may have landed while this one read the clipboard.
+      setPending((current) => (current.length >= MAX_PENDING_ATTACHMENTS ? current : [...current, built.attachment]));
     });
   };
 
@@ -787,8 +869,10 @@ export function App({
       scrollPane(sidePanel.tab === "diff" && diffPanel.expandedTurn !== null ? diffScrollRef.current : sidePanel.scrollRef.current, key.name);
       return;
     }
-    // Escape in the chat pane is a no-op: it must never kill a running turn.
+    // Escape in the chat pane never kills a running turn; it only closes
+    // a subagent's conversation, back to its thread.
     if (key.name === "escape") {
+      if (subagentView.target !== null) subagentView.close();
       return;
     }
     if (key.name === "i") {
@@ -894,6 +978,8 @@ export function App({
 
   /** Opens the command palette, remembering where esc should return focus. */
   const openCommandPalette = () => {
+    // Nothing in it applies to a thread that does not exist yet.
+    if (creating) return;
     setPaletteReturnFocus(focus);
     setDeleteArmed(false);
     setPickerFilter("");
@@ -965,7 +1051,18 @@ export function App({
     [contextBreakdown.breakdown, threadState.contextUsage, threadState.messages, threadState.activities],
   );
   const contextLive = contextBreakdown.live && (contextBreakdown.breakdown?.categories.length ?? 0) > 0;
-  const agentRows = useMemo(() => agentThreads(shell.threads, openThreadId, now), [shell.threads, openThreadId, now]);
+  // Delegated tasks name their model as `instance/model`; the catalog turns
+  // that into the name and brand colour the composer footer uses.
+  const modelLabelOf = (reference: string) => {
+    const slash = reference.indexOf("/");
+    return slash < 0 ? { name: reference, color: null } : labelFor({ instanceId: reference.slice(0, slash), model: reference.slice(slash + 1) });
+  };
+  const agentRows = useMemo(
+    () => agentThreads(shell.threads, openThreadId, now, (instanceId, model) => labelFor({ instanceId, model }).name),
+    // `labelFor` reads the provider catalog; recompute when it loads.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [shell.threads, openThreadId, now, providers],
+  );
   const subagentRows = useMemo(() => nativeSubagents(threadState.activities), [threadState.activities]);
   const diffTurns = threadState.checkpoints.filter((row) => row.files.length > 0);
   const runningAgents = agentRows.filter((agent) => agent.status === "running").length + subagentRows.filter((agent) => agent.running).length;
@@ -1008,6 +1105,14 @@ export function App({
     sidePanel.close();
     setFocus("chat");
   };
+  // The new-thread view starts clean: whatever panel the last thread had
+  // open closes rather than coming back over the thread this one creates.
+  useEffect(() => {
+    if (!creating) return;
+    if (diffPanel.expandedTurn !== null) diffPanel.closeDiff();
+    sidePanel.close();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [creating]);
   const toggleSideTab = (tab: SideTab) => {
     if (sidePanelOpen && sidePanel.tab === tab) closeSidePanel();
     else showSideTab(tab);
@@ -1017,25 +1122,6 @@ export function App({
     setPicker(null);
     setPickerFilter("");
     setOpenThreadId(threadId);
-  };
-  const submitNudge = (text: string) => {
-    const target = sidePanel.nudgeTarget;
-    const trimmed = text.trim();
-    setPicker(null);
-    sidePanel.setNudgeTarget(null);
-    if (target === null || trimmed.length === 0) return;
-    // A running agent takes the nudge at its next step; an idle one starts a turn on it.
-    const running = agentRows.some((agent) => agent.threadId === target.threadId && agent.status === "running");
-    void client
-      .dispatch({
-        type: "thread.turn.start",
-        threadId: target.threadId,
-        message: { text: trimmed },
-        wakeSettled: true,
-        ...(running ? { delivery: "steer" as const } : {}),
-      })
-      .then(() => toasts.push("agent-nudge", "info", `Nudged: ${truncate(target.title, 40)}`, COPY_TOAST_MS))
-      .catch((cause: unknown) => setError(String(cause).slice(0, 120)));
   };
 
   // Pane-OUTER width (borders included): the composer, tasks, and answer
@@ -1116,7 +1202,8 @@ export function App({
               ...(banner.resetsAt === null ? [] : [{ label: "Continue at reset", fg: COLOR.accent, onClick: usageBanner.scheduleContinue }]),
               // A fresh context instead of resuming a long one: the handoff
               // carries the work, and waits for the reset if it has not come.
-              { label: "In a new thread", fg: COLOR.accent, onClick: usageBanner.continueInNewThread },
+              // Only once the assistant has said something to hand over.
+              ...(lastAssistantMessage === null ? [] : [{ label: "In a new thread", fg: COLOR.accent, onClick: usageBanner.continueInNewThread }]),
               { label: "Dismiss", fg: COLOR.dim, hoverFg: COLOR.text, onClick: usageBanner.dismiss },
             ],
     });
@@ -1168,7 +1255,7 @@ export function App({
                 meta: `${entry.text.length} chars`,
                 onPick: () => {
                   closePicker("chat");
-                  copyPaletteText(entry.text, "nothing to copy");
+                  copyMessage(entry);
                 },
               },
               // A message still waiting can be taken back before it runs.
@@ -1327,6 +1414,20 @@ export function App({
                 onPick: archiveThread,
               },
               {
+                key: "message:schedule",
+                label: "Schedule message",
+                // What is in the composer goes, at a time asked for next.
+                ...(draft.trim().length === 0
+                  ? { meta: "write it in the composer first", disabled: true, onPick: () => {} }
+                  : {
+                      meta: truncate(draft.trim().replace(/\s+/gu, " "), 32),
+                      onPick: () => {
+                        setPickerFilter("");
+                        setPicker("schedule");
+                      },
+                    }),
+              },
+              {
                 key: "thread:compact",
                 label: "Compact session",
                 ...(entries.length === 0
@@ -1387,8 +1488,10 @@ export function App({
               {
                 key: "thread:export",
                 label: "Export thread to markdown",
-                ...(entries.length === 0
-                  ? { meta: "no turns yet", disabled: true, onPick: () => {} }
+                // A prompt alone (sent, then stopped by a limit) is not a
+                // thread worth exporting: the assistant has to have said something.
+                ...(lastAssistantMessage === null
+                  ? { meta: entries.length === 0 ? "no turns yet" : "no reply yet", disabled: true, onPick: () => {} }
                   : { meta: `${groups.length} turn${groups.length === 1 ? "" : "s"}`, onPick: exportThread }),
               },
               {
@@ -1396,8 +1499,9 @@ export function App({
                 label: "Continue in a new thread",
                 // Same project, model and checkout; a handoff written from
                 // this thread. Held for the reset while a usage limit stands.
-                ...(entries.length === 0
-                  ? { meta: "no turns yet", disabled: true, onPick: () => {} }
+                // Nothing to hand over until the assistant has replied.
+                ...(lastAssistantMessage === null
+                  ? { meta: entries.length === 0 ? "no turns yet" : "no reply yet", disabled: true, onPick: () => {} }
                   : {
                       meta: usageBanner.banner?.resetsAt ? "after the reset" : "fresh context",
                       onPick: () => {
@@ -1578,9 +1682,44 @@ export function App({
    * tab never dispatches one directly — it asks for this, and the answer
    * is what gets sent.
    */
-  const [forgePrompt, setForgePrompt] = useState<{ kind: "create" } | { kind: "comment"; number: number } | null>(null);
+  const [forgePrompt, setForgePrompt] = useState<{ kind: "create"; draft: boolean } | { kind: "comment"; number: number } | null>(null);
   // Local history and the forge, read only while the Git tab is showing.
   const gitPanel = useGitPanel(client, selected?.id ?? null, sidePanel.tab === "git");
+  /**
+   * Who opens a pull request when asked: the thread's own agent, which
+   * knows the work — or, while its provider is at a usage limit, another
+   * provider with usage left, delegated the task in this checkout (it starts
+   * cold, so its prompt says to read the branch first). Moxen drives agents;
+   * the user only types a title when they choose to open it by hand.
+   */
+  const threadLimited = usageBanner.banner !== null;
+  const handOff = threadLimited ? handOffTarget(providers, currentProvider?.instanceId ?? null, planUsage) : null;
+  const requestOpener = { label: !threadLimited ? "the agent" : (handOff?.label ?? null) };
+  const agentOpenRequest = (draft: boolean) => {
+    if (selected === null) return;
+    const kind = gitPanel.forge?.kind ?? null;
+    const noun = requestNoun(kind);
+    const branch = gitPanel.overview?.status?.branch ?? null;
+    if (!threadLimited) {
+      send(openRequestPrompt({ kind, draft, branch, cold: false }), "queue");
+      toasts.push("forge-agent", "info", `Asked the agent to open a ${draft ? "draft " : ""}${noun.short}`, COPY_TOAST_MS);
+      return;
+    }
+    if (handOff === null) return;
+    void client
+      .dispatch({
+        type: "thread.delegate",
+        parentThreadId: selected.id,
+        task: openRequestPrompt({ kind, draft, branch, cold: true }),
+        title: `Open a ${draft ? "draft " : ""}${noun.short}`,
+        provider: handOff.instanceId,
+        model: handOff.model,
+        wait: false,
+        isolation: "shared",
+      })
+      .then(() => toasts.push("forge-agent", "info", `${handOff.label} is opening the ${noun.short} (see Agents); it reports back here`, COPY_TOAST_MS))
+      .catch((cause: unknown) => setError(String(cause).slice(0, 120)));
+  };
   const backgroundGeometry = useMemo(() => {
     const panelWidth = Math.min(100, Math.max(30, width - 8));
     const panelHeight = Math.min(32, Math.max(10, height - 4));
@@ -1732,12 +1871,25 @@ export function App({
           now={now}
           height={height}
           screenWidth={width}
+          backdrop={ui?.backdrop === "off" ? "off" : ui?.backdrop === "static" ? "static" : "animated"}
+          openSubagentId={subagentView.target?.agentId ?? null}
           onOpenThread={(threadId) => {
+            // A thread row always shows the thread itself: clicking the
+            // parent of an open subagent goes back to the parent.
+            subagentView.close();
             setFocus("chat");
             setCreating(false);
             setPicker(null);
             setPickerFilter("");
             setOpenThreadId(threadId);
+          }}
+          onOpenSubagents={(threadId, agentId) => {
+            setFocus("chat");
+            setCreating(false);
+            setPicker(null);
+            setPickerFilter("");
+            setOpenThreadId(threadId);
+            subagentView.open(threadId, agentId);
           }}
           onToggleSettled={toggleSettledExpanded}
           onShowMore={showMoreSettled}
@@ -1746,7 +1898,12 @@ export function App({
           onCycleProject={cycleSidebarProject}
           onNewThread={startNewThread}
           panelsOpen={sidePanelOpen}
-          onTogglePanels={() => (sidePanelOpen ? closeSidePanel() : showSideTab(lastSideTab))}
+          onTogglePanels={() => {
+            // The new-thread view has no panels to show.
+            if (creating) return;
+            if (sidePanelOpen) closeSidePanel();
+            else showSideTab(lastSideTab);
+          }}
           onOpenSettings={() => {
             setPickerFilter("");
             setPicker("settings");
@@ -1818,6 +1975,7 @@ export function App({
                 permission={permission}
                 attachments={pending.map((attachment) => attachment.name)}
                 onAttachmentRemoved={detachImage}
+                onClaimPaste={claimPaste}
                 submitVerb="creates"
                 running={false}
                 width={Math.min(76, Math.max(40, width - SIDEBAR_WIDTH - 8))}
@@ -1847,9 +2005,15 @@ export function App({
               flashing an empty transcript that reads as "no messages". */}
           {threadState.synchronized ? (
           <Timeline
-            groups={groups}
-            title={selected === null ? "no thread" : String(selected.title ?? selected.id)}
-            subtitle={`${session?.status ?? "idle"}`}
+            groups={subagentView.target === null ? groups : subagentView.groups}
+            title={
+              subagentView.target !== null
+                ? `◇ ${subagentTitle(subagentView.transcript, subagentRows.find((row) => row.agentId === subagentView.target?.agentId)?.agentType ?? null)}`
+                : selected === null
+                  ? "no thread"
+                  : String(selected.title ?? selected.id)
+            }
+            subtitle={subagentView.target !== null ? "subagent" : `${session?.status ?? "idle"}`}
             modelForTurn={(turnId) =>
               labelFor(
                 turnModelSelection(
@@ -1861,6 +2025,7 @@ export function App({
                 ),
               )
             }
+            modelLabel={modelLabelOf}
             homeDir={homeDir}
             expandedTurn={diffPanel.expandedTurn}
             expandedWork={diffPanel.expandedWork}
@@ -1904,9 +2069,17 @@ export function App({
             notices={notices}
             index={noticePager.index}
             onPage={noticePager.setIndex}
+            width={chatWidth}
             {...(dockPane !== null ? { flushTop: true } : { tight: true })}
           />
-          {answerVisible ? (
+          {subagentView.target !== null ? (
+            <SubagentBar
+              title={subagentTitle(subagentView.transcript, subagentRows.find((row) => row.agentId === subagentView.target?.agentId)?.agentType ?? null)}
+              state={subagentState(subagentView.transcript, now)}
+              width={chatWidth}
+              onBack={subagentView.close}
+            />
+          ) : answerVisible ? (
             renderAnswerPanel(chatWidth)
           ) : (
           <Composer
@@ -1925,8 +2098,10 @@ export function App({
             permission={permission}
             attachments={pending.map((attachment) => attachment.name)}
             onAttachmentRemoved={detachImage}
+                onClaimPaste={claimPaste}
             submitVerb="sends"
             running={sessionRunning}
+            waitingOutLimit={!sessionRunning && usageBanner.banner?.continueAt != null}
             width={chatWidth}
             onModelClick={openModelPicker}
             onEffortClick={openEffortPicker}
@@ -1994,9 +2169,7 @@ export function App({
                 onFocus={() => setFocus("diff")}
                 footer={
                   sidePanel.tab === "git" ? (
-                    <text fg={COLOR.dim} selectable={false}>
-                      {gitPanel.forge?.slug ?? gitPanel.overview?.root ?? "no remote"}
-                    </text>
+                    <GitFooter overview={gitPanel.overview} forge={gitPanel.forge} width={diffPanel.diffWidth} />
                   ) : sidePanel.tab === "agents" ? (
                     <text fg={COLOR.dim} selectable={false}>{`${agentRows.length} delegated · ${subagentRows.length} subagents`}</text>
                   ) : sidePanel.tab === "context" && effectiveBreakdown !== null ? (
@@ -2021,6 +2194,14 @@ export function App({
                     overview={gitPanel.overview}
                     forge={gitPanel.forge}
                     requests={gitPanel.requests}
+                    status={gitPanel.status}
+                    commitChecks={gitPanel.commitChecks}
+                    commit={gitPanel.commit}
+                    opener={requestOpener}
+                    onAgentOpen={agentOpenRequest}
+                    onOpenCommit={gitPanel.openCommit}
+                    onCloseCommit={gitPanel.closeCommit}
+                    onOpenUrl={openFetchedUrl}
                     loadingGit={gitPanel.loadingGit}
                     loadingForge={gitPanel.loadingForge}
                     error={gitPanel.error}
@@ -2029,7 +2210,7 @@ export function App({
                     now={now}
                     onSelectBranch={gitPanel.selectBranch}
                     onRefresh={gitPanel.refresh}
-                    onCreate={() => setForgePrompt({ kind: "create" })}
+                    onCreate={(draft) => setForgePrompt({ kind: "create", draft })}
                     onComment={(request) => setForgePrompt({ kind: "comment", number: request.number })}
                     onMerge={(request, strategy) => {
                       void gitPanel
@@ -2042,13 +2223,13 @@ export function App({
                   <AgentsTab
                     threads={agentRows}
                     subagents={subagentRows}
-                    width={diffPanel.diffWidth}
+                    onOpenSubagent={(agentId) => {
+                      if (openThreadId === null) return;
+                      setFocus("chat");
+                      subagentView.open(openThreadId, agentId);
+                    }}
                     now={now}
                     onOpen={openThreadFromPanel}
-                    onNudge={(threadId, title) => {
-                      sidePanel.setNudgeTarget({ threadId, title });
-                      setPicker("agent-nudge");
-                    }}
                   />
                 ) : sidePanel.tab === "context" ? (
                   <ContextTab
@@ -2143,7 +2324,11 @@ export function App({
       {forgePrompt !== null ? (
         <RenameModal
           initialTitle=""
-          title={forgePrompt.kind === "create" ? "Open a request" : `Comment on #${forgePrompt.number}`}
+          title={
+            forgePrompt.kind === "create"
+              ? `Open a ${forgePrompt.draft ? "draft " : ""}${requestNoun(gitPanel.forge?.kind ?? null).long}`
+              : `Comment on #${forgePrompt.number}`
+          }
           placeholder={forgePrompt.kind === "create" ? "Title" : "Comment"}
           hint={
             forgePrompt.kind === "create"
@@ -2164,7 +2349,7 @@ export function App({
             if (text.length === 0 || prompt === null) return;
             if (prompt.kind === "create") {
               void gitPanel
-                .createRequest({ title: text })
+                .createRequest({ title: text, draft: prompt.draft })
                 .then((url) => toasts.push("forge-create", "info", url ?? "Request opened."))
                 .catch(() => undefined);
               return;
@@ -2239,24 +2424,29 @@ export function App({
             setPicker("project");
           }}
         />
-      ) : picker === "agent-nudge" ? (
+      ) : picker === "schedule" ? (
         <RenameModal
-          initialTitle=""
-          title={`Nudge "${truncate(sidePanel.nudgeTarget?.title ?? "agent", 40)}"`}
-          placeholder="Tell the agent something…"
-          hint="enter sends (steers a running turn) · esc cancels"
-          maxLength={2000}
+          initialTitle={formatScheduleInput(new Date())}
+          title="Schedule message"
+          placeholder="2026-09-27 14:30"
+          hint="enter schedules · a date and time, 14:30, tomorrow 9:00, in 30m · esc cancels"
+          maxLength={40}
           screenWidth={width}
           screenHeight={height}
           left={renameGeometry.left}
           top={renameGeometry.top}
           width={renameGeometry.width}
           height={renameGeometry.height}
-          onSubmit={submitNudge}
-          onClose={() => {
-            sidePanel.setNudgeTarget(null);
-            setPicker(null);
+          onSubmit={(text) => {
+            const parsed = parseScheduleInput(text, new Date());
+            if (parsed.at === null) {
+              toasts.push("schedule", "warn", parsed.error, COPY_TOAST_MS);
+              return;
+            }
+            closePicker("composer");
+            send(draft, "queue", parsed.at);
           }}
+          onClose={() => closePicker("composer")}
         />
       ) : picker === "settings" ? (
         <SettingsModal
@@ -2265,6 +2455,7 @@ export function App({
           saving={settings.saving}
           error={settings.error}
           onSet={settings.set}
+          providers={providers}
           screenWidth={width}
           screenHeight={height}
           left={backgroundGeometry.left}

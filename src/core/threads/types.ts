@@ -54,6 +54,20 @@ export interface StoredThread {
    * resumes rather than restarts. Absent on threads that never ran.
    */
   readonly providerSessions?: Readonly<Record<string, string>>;
+  /** The provider's own subagents, running and latest finished (`subagents.ts`). Absent until the first. */
+  readonly nativeSubagents?: readonly StoredNativeSubagent[];
+}
+
+/** One native subagent (Claude's Agent tool) as the thread record keeps it. */
+export interface StoredNativeSubagent {
+  readonly agentId: string;
+  /** "Explore", "Plan", … ; "subagent" until its start hook names it. */
+  readonly agentType: string;
+  /** What it was asked to do (its Agent call's description), when known. */
+  readonly description: string | null;
+  readonly status: "running" | "completed" | "failed" | "stopped";
+  readonly startedAt: string;
+  readonly stoppedAt: string | null;
 }
 
 export type TurnStatus = "queued" | "running" | "completed" | "interrupted" | "failed";

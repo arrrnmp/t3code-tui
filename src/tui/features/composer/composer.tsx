@@ -1,9 +1,9 @@
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { RefObject } from "react";
-import type { KeyEvent, ScrollBoxRenderable, TextareaRenderable } from "@opentui/core";
+import type { KeyEvent, PasteEvent, ScrollBoxRenderable, TextareaRenderable } from "@opentui/core";
 import { useRenderer } from "@opentui/react";
-import { SyntaxStyle, TextAttributes, bg, fg, italic, t } from "@opentui/core";
+import { SyntaxStyle, TextAttributes, bg, decodePasteBytes, fg, italic, stripAnsiSequences, t } from "@opentui/core";
 
 import { useHover } from "../../hooks/useHover.js";
 import { useAnimTick } from "../../hooks/useAnimTick.js";
@@ -14,7 +14,7 @@ import { detectSkillTrigger, filterSkills, insertSkillMention, marqueeWindow, ty
 import type { SkillSummary } from "../../../core/catalog/summary.js";
 import type { ContextUsageDisplay } from "../../model/turns.js";
 import type { PlanUsageGauge } from "../../model/sidepanel.js";
-import { nextImageLabel, pairImageTokens } from "../../model/imagetokens.js";
+import { nextImageLabel, pairImageTokens, relabelImageTokens } from "../../model/imagetokens.js";
 
 /** Rows visible at once before the list scrolls (wheel, not the arrow keys alone). */
 const SKILL_POPUP_ROWS = 6;
@@ -45,12 +45,23 @@ function HoverText({
 /**
  * The provider's guess at the next prompt, as the empty draft's placeholder:
  * the text itself in italics, then a key chip saying how to take it — one
- * line, cut short rather than wrapped under the chip.
+ * line, cut short rather than wrapped under the chip. A narrow composer
+ * (beside an open panel) sheds "to use it" before it cuts deep into the
+ * suggestion, and the chip itself only when even that leaves no room.
  */
 function suggestionPlaceholder(suggestion: string, width: number) {
-  const room = Math.max(12, width - 22);
-  const text = truncate(suggestion.replace(/\s+/gu, " ").trim(), room);
-  return t`${fg(COLOR.dim)(italic(text))}   ${bg(SURFACE.border)(fg(COLOR.bright)(" tab "))}${fg(COLOR.faint)(" to use it")}`;
+  // The textarea's own width: the left border, padding 2 + 1, and the
+  // scrollbar strip. Budgeting against more wrapped the tail onto a line
+  // of its own — a lone "…" with the chip under it.
+  const inner = Math.max(1, width - 5);
+  const flat = suggestion.replace(/\s+/gu, " ").trim();
+  const chip = bg(SURFACE.border)(fg(COLOR.bright)(" tab "));
+  const MIN_TEXT = 24;
+  if (inner - 18 >= Math.min(MIN_TEXT, flat.length)) {
+    return t`${fg(COLOR.dim)(italic(truncate(flat, inner - 18)))}   ${chip}${fg(COLOR.faint)(" to use it")}`;
+  }
+  if (inner - 7 >= Math.min(12, flat.length)) return t`${fg(COLOR.dim)(italic(truncate(flat, inner - 7)))}  ${chip}`;
+  return t`${fg(COLOR.dim)(italic(truncate(flat, inner)))}`;
 }
 
 /** The account's plan usage in the footer: one short gauge per window, coloured as it fills. */
@@ -72,7 +83,7 @@ function PlanUsageSegment({ gauges, onClick }: { gauges: readonly PlanUsageGauge
   );
 }
 
-/** How an `[Image N]` token reads in the draft: a filled chip, one unit to the cursor and to backspace. */
+/** How an `[Image #N]` token reads in the draft: a filled chip, one unit to the cursor and to backspace. */
 let tokenStyle: SyntaxStyle | null = null;
 function imageTokenStyle(): SyntaxStyle {
   tokenStyle ??= SyntaxStyle.fromStyles({ "extmark.image": { fg: PICK_FG, bg: PICK_BG, bold: true } });
@@ -187,6 +198,7 @@ export function Composer({
   editingExternally,
   submitVerb,
   running,
+  waitingOutLimit,
   width,
   hideHint,
   skills,
@@ -200,6 +212,7 @@ export function Composer({
   onQueue,
   attachments,
   onAttachmentRemoved,
+  onClaimPaste,
   suggestion,
 }: {
   draft: string;
@@ -244,6 +257,8 @@ export function Composer({
   submitVerb: "creates" | "sends";
   /** A turn is in flight, so escape stops it rather than just unfocusing. */
   running: boolean;
+  /** A continue waits for a usage limit to reset: a send queues behind it. */
+  waitingOutLimit?: boolean;
   /** Outer width of the composer, border included. */
   width: number;
   /** The "creating" view renders its own centered hint below the composer;
@@ -266,10 +281,16 @@ export function Composer({
   onQueue?: () => void;
   /**
    * The pending images, by name, in order. Each shows in the draft as an
-   * `[Image N]` token where it was pasted; deleting the token detaches it.
+   * `[Image #N]` token where it was pasted; deleting the token detaches it.
    */
   attachments?: readonly string[];
   onAttachmentRemoved?: (name: string) => void;
+  /**
+   * A paste arriving: when it is moxen's own copy of a prompt with images,
+   * the app attaches them again and returns their names (in token order);
+   * null leaves the paste as plain text.
+   */
+  onClaimPaste?: (text: string) => string[] | null;
   /** The provider's guess at the next prompt: shown in an empty draft, Tab takes it. */
   suggestion?: string | null;
 }) {
@@ -300,16 +321,20 @@ export function Composer({
   const fullHint =
     submitVerb === "creates"
       ? "enter creates · esc cancels"
+      : waitingOutLimit === true
+        ? "enter queues after the continue · shift+enter newline · esc unfocus"
       : running
         ? "enter steers · tab queues · ctrl+j newline · esc unfocus"
         : "enter sends · shift+enter newline · esc unfocus";
   const midHint =
     submitVerb === "creates"
       ? fullHint
+      : waitingOutLimit === true
+        ? "enter queues after the continue"
       : running
         ? "enter steers · tab queues"
         : "enter sends · shift+enter newline";
-  const shortHint = submitVerb === "creates" ? "enter creates" : running ? "enter steers" : "enter sends";
+  const shortHint = submitVerb === "creates" ? "enter creates" : waitingOutLimit === true ? "enter queues" : running ? "enter steers" : "enter sends";
   const hint =
     external
       ? "editing in external editor…"
@@ -327,7 +352,7 @@ export function Composer({
     if (node === null) return;
     localRef.current = draft;
     node.setText(draft);
-    // A restored draft reads "[Image 1]" as plain text: give each pending
+    // A restored draft reads "[Image #1]" as plain text: give each pending
     // image its token back (the rest are placed at the next attach pass).
     node.extmarks.clear();
     tokens.current.clear();
@@ -719,6 +744,20 @@ export function Composer({
           keyBindings={COMPOSER_KEY_BINDINGS}
           style={{ minHeight: MIN_COMPOSER_LINES, maxHeight: MAX_COMPOSER_LINES, backgroundColor: SURFACE.raised }}
           onContentChange={handleContentChange}
+          onPaste={(event: PasteEvent) => {
+            const node = areaRef.current;
+            if (node === null || onClaimPaste === undefined) return;
+            const text = stripAnsiSequences(decodePasteBytes(event.bytes)).replace(/\r\n?/g, "\n");
+            const names = onClaimPaste(text);
+            if (names === null) return;
+            // Our own insert: the tokens are pinned to their images before
+            // the attachments land, so none is placed a second time.
+            event.preventDefault();
+            const relabeled = relabelImageTokens(text, names, [...tokens.current.values()].map((token) => token.label));
+            const start = node.cursorOffset;
+            node.insertText(relabeled.text);
+            for (const span of relabeled.spans) markToken(node, span.name, span.label, start + span.start);
+          }}
           onSubmit={() => {
             if (!external) onSubmit();
           }}

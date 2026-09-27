@@ -221,6 +221,73 @@ export async function readCommitDiff(cwd: string, sha: string): Promise<string |
   return await git(cwd, ["show", "--format=", "--patch", sha]);
 }
 
+export interface GitCommitFile {
+  readonly path: string;
+  /** Null for a binary file, which git counts as `-`. */
+  readonly added: number | null;
+  readonly removed: number | null;
+}
+
+/** One commit in full: what the list shows plus the message body, who committed it, and its changes. */
+export interface GitCommitDetail extends GitCommit {
+  /** The message after the subject line, trimmed; empty when there is none. */
+  readonly body: string;
+  readonly committer: string;
+  readonly committerEmail: string;
+  readonly committerDate: string;
+  readonly parents: readonly string[];
+  readonly files: readonly GitCommitFile[];
+  /** The patch against the first parent; null when git could not produce it. */
+  readonly diff: string | null;
+}
+
+const DETAIL_FORMAT = ["%H", "%h", "%an", "%ae", "%aI", "%s", "%D", "%cn", "%ce", "%cI", "%P", "%b"].join(FIELD);
+
+/** `git show --numstat`'s lines: `added<TAB>removed<TAB>path`, `-` for binary. */
+export function parseNumstat(out: string): GitCommitFile[] {
+  return out
+    .split("\n")
+    .map((line) => line.split("\t"))
+    .filter((parts) => parts.length >= 3 && parts[2]!.length > 0)
+    .map(([added, removed, ...path]) => ({
+      path: path.join("\t"),
+      added: added === "-" ? null : Number(added),
+      removed: removed === "-" ? null : Number(removed),
+    }));
+}
+
+/** Everything the commit view draws for one commit; null when `sha` names none. */
+export async function readCommitDetail(cwd: string, sha: string): Promise<GitCommitDetail | null> {
+  // `--end-of-options` keeps a sha-shaped argument from ever reading as a flag.
+  const meta = await git(cwd, ["show", "--no-patch", `--format=${DETAIL_FORMAT}`, "--end-of-options", sha]);
+  if (meta === null) return null;
+  const [full, shortSha, author, authorEmail, date, subject, refs, committer, committerEmail, committerDate, parents, ...body] = meta.split(FIELD);
+  if (!full || !shortSha) return null;
+  const [numstat, diff] = await Promise.all([
+    git(cwd, ["show", "--format=", "--numstat", "--end-of-options", full]),
+    readCommitDiff(cwd, full),
+  ]);
+  return {
+    sha: full,
+    shortSha,
+    author: author ?? "",
+    authorEmail: authorEmail ?? "",
+    date: date ?? "",
+    subject: subject ?? "",
+    refs: (refs ?? "")
+      .split(",")
+      .map((ref) => ref.trim().replace(/^HEAD -> /, ""))
+      .filter((ref) => ref.length > 0),
+    body: body.join(FIELD).trim(),
+    committer: committer ?? "",
+    committerEmail: committerEmail ?? "",
+    committerDate: committerDate ?? "",
+    parents: (parents ?? "").split(" ").filter((parent) => parent.length > 0),
+    files: numstat === null ? [] : parseNumstat(numstat),
+    diff,
+  };
+}
+
 export interface GitOverviewOptions {
   readonly branch?: string;
   readonly limit?: number;

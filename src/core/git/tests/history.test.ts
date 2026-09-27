@@ -5,7 +5,7 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { gitRoot, readBranches, readCommits, readOverview, readStatus } from "../history.js";
+import { gitRoot, parseNumstat, readBranches, readCommitDetail, readCommits, readOverview, readStatus } from "../history.js";
 
 const GIT_AVAILABLE = (() => {
   try {
@@ -137,5 +137,32 @@ describe.runIf(GIT_AVAILABLE)("git history", () => {
     expect(overview.branch).toBe("main");
     expect(overview.commits).toHaveLength(1);
     expect(overview.branches.some((branch) => branch.name === "main")).toBe(true);
+  });
+
+  it("reads one commit in full: body, committer, parents, files and patch", async () => {
+    const dir = await initRepo();
+    await commit(dir, "a.txt", "one\n", "initial");
+    await writeFile(path.join(dir, "a.txt"), "one\ntwo\n", "utf8");
+    await writeFile(path.join(dir, "b.txt"), "new\n", "utf8");
+    git(dir, ["add", "--all"]);
+    git(dir, ["commit", "-m", "second\n\nWhy it changed,\nover two lines."]);
+    const detail = await readCommitDetail(dir, "HEAD");
+    expect(detail).toMatchObject({ subject: "second", body: "Why it changed,\nover two lines.", committer: "test", author: "test" });
+    expect(detail?.parents).toHaveLength(1);
+    expect(detail?.files).toEqual([
+      { path: "a.txt", added: 1, removed: 0 },
+      { path: "b.txt", added: 1, removed: 0 },
+    ]);
+    expect(detail?.diff).toContain("+two");
+    expect(await readCommitDetail(dir, "0000000000000000000000000000000000000000")).toBeNull();
+  });
+});
+
+describe("parseNumstat", () => {
+  it("reads binary files as unknown counts", () => {
+    expect(parseNumstat("3\t1\tsrc/a.ts\n-\t-\timg.png\n")).toEqual([
+      { path: "src/a.ts", added: 3, removed: 1 },
+      { path: "img.png", added: null, removed: null },
+    ]);
   });
 });

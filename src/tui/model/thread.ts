@@ -593,6 +593,142 @@ function isBookkeepingActivity(activity: ActivityEnvelope): boolean {
   );
 }
 
+const AGENT_TOOLS: ReadonlySet<string> = new Set(["Agent", "Task"]);
+
+/**
+ * A background subagent is also a background task (Claude Code reports it
+ * as one, `local_agent`), so the transcript showed it twice: the Agent call
+ * that launched it, and a "task" card for the same work. The task's rows
+ * fold into the Agent call's row as `backgroundStatus` — started, then
+ * completed / failed / stopped — and drop out on their own.
+ */
+function withSubagentState(activities: readonly ActivityEnvelope[]): ActivityEnvelope[] {
+  const agentCalls = new Set<string>();
+  const status = new Map<string, string>();
+  for (const activity of activities) {
+    const payload = asRecord(activity.payload);
+    const tool = asRecord(payload?.data)?.tool;
+    if (typeof tool === "string" && AGENT_TOOLS.has(tool) && typeof payload?.toolCallId === "string") agentCalls.add(payload.toolCallId);
+    if (activity.kind.startsWith("background.") && typeof payload?.toolUseId === "string" && typeof payload.status === "string") {
+      status.set(payload.toolUseId, payload.status);
+    }
+  }
+  if (agentCalls.size === 0) return [...activities];
+  return activities.flatMap((activity) => {
+    const payload = asRecord(activity.payload);
+    if (activity.kind.startsWith("background.") && typeof payload?.toolUseId === "string" && agentCalls.has(payload.toolUseId)) return [];
+    const callId = payload?.toolCallId;
+    if (typeof callId !== "string" || !agentCalls.has(callId) || !status.has(callId)) return [activity];
+    return [{ ...activity, payload: { ...payload, backgroundStatus: status.get(callId) } }];
+  });
+}
+
+/** A JSON string field from a tool result, even one the ledger cut short. */
+function resultField(text: string, key: string): string | null {
+  return new RegExp(`"${key}":\\s*"((?:[^"\\\\]|\\\\.)*)"`, "u").exec(text)?.[1] ?? null;
+}
+
+/**
+ * moxen's `task_status` / `task_cancel` name only a task id. The `delegate`
+ * call that started the task answered with its id and title, so the later
+ * calls carry that title (`delegatedTitle`) and read as what they are about.
+ */
+function withDelegatedTitles(activities: readonly ActivityEnvelope[]): ActivityEnvelope[] {
+  const titles = new Map<string, string>();
+  const tool = (activity: ActivityEnvelope): { name: string; payload: Record<string, unknown>; state: Record<string, unknown> } | null => {
+    const payload = asRecord(activity.payload);
+    const data = asRecord(payload?.data);
+    const name = data?.tool;
+    if (payload === null || typeof name !== "string" || !/^(?:mcp__moxen__|moxen[./:_]+)/u.test(name)) return null;
+    return { name: name.replace(/^(?:mcp__moxen__|moxen[./:_]+)/u, ""), payload, state: asRecord(data?.state) ?? {} };
+  };
+  for (const activity of activities) {
+    const call = tool(activity);
+    const output = call?.name === "delegate" ? stringOf(call.state.output) ?? stringOf(call.payload.detail) : null;
+    if (output === null) continue;
+    const taskId = resultField(output, "taskId");
+    const title = resultField(output, "title");
+    if (taskId !== null && title !== null) titles.set(taskId, title);
+  }
+  if (titles.size === 0) return [...activities];
+  return activities.map((activity) => {
+    const call = tool(activity);
+    if (call === null || (call.name !== "task_status" && call.name !== "task_cancel")) return activity;
+    const taskId = asRecord(call.state.input)?.taskId;
+    const title = typeof taskId === "string" ? titles.get(taskId) : undefined;
+    return title === undefined ? activity : { ...activity, payload: { ...call.payload, delegatedTitle: title } };
+  });
+}
+
+/** How long a wake-up may follow a subagent's end and still be the one it caused. */
+const WAKE_WINDOW_MS = 60_000;
+
+/**
+ * A native background subagent finishing wakes the provider (Claude Code
+ * starts a turn on its own: "Woken by a background task"), the way a
+ * delegated task's report wakes the thread with moxen's notice. Each such
+ * wake-up opens with the same card: one synthetic `task-notification`
+ * message on the woken turn, from the subagent's task rows — its type and
+ * description, how long it ran, the start of its report. A subagent that
+ * ends with no wake-up after it (mid-turn, or a foreground one) keeps just
+ * its Agent row.
+ */
+function nativeSubagentNotices(activities: readonly ActivityEnvelope[]): MessageEnvelope[] {
+  const agentCalls = new Map<string, { type: string | null; description: string | null }>();
+  const started = new Map<string, string>();
+  const types = new Map<string, string>();
+  const ends: { taskId: string; toolUseId: string; at: string; status: string; summary: string | null }[] = [];
+  const wakes: { turnId: string; at: string }[] = [];
+  for (const activity of activities) {
+    const payload = asRecord(activity.payload) ?? {};
+    const data = asRecord(payload.data);
+    if (typeof data?.tool === "string" && AGENT_TOOLS.has(data.tool) && typeof payload.toolCallId === "string") {
+      const input = asRecord(asRecord(data.state)?.input) ?? {};
+      agentCalls.set(payload.toolCallId, { type: stringOf(input.subagent_type), description: stringOf(input.description) });
+    }
+    if (activity.kind === "subagent" && typeof payload.agentId === "string" && typeof payload.agentType === "string") types.set(payload.agentId, payload.agentType);
+    if (activity.kind === "turn.background" && activity.turnId !== null) wakes.push({ turnId: activity.turnId, at: activity.createdAt });
+    const taskId = stringOf(payload.taskId);
+    const toolUseId = stringOf(payload.toolUseId);
+    if (taskId === null || toolUseId === null) continue;
+    if (activity.kind === "background.started") started.set(taskId, activity.createdAt);
+    if (activity.kind === "background.completed" || activity.kind === "background.failed" || activity.kind === "background.stopped") {
+      ends.push({ taskId, toolUseId, at: activity.createdAt, status: stringOf(payload.status) ?? "completed", summary: stringOf(payload.summary) });
+    }
+  }
+  const byWake = new Map<string, { at: string; tasks: Record<string, unknown>[] }>();
+  for (const end of ends) {
+    const call = agentCalls.get(end.toolUseId);
+    if (call === undefined) continue;
+    const wake = wakes.find((candidate) => candidate.at >= end.at && Date.parse(candidate.at) - Date.parse(end.at) <= WAKE_WINDOW_MS);
+    if (wake === undefined) continue;
+    const type = call.type ?? types.get(end.taskId) ?? "Subagent";
+    const since = started.get(end.taskId);
+    const report = end.summary?.split(/\n\s*\n/u)[0]?.trim() ?? null;
+    const notice = byWake.get(wake.turnId) ?? { at: wake.at, tasks: [] };
+    notice.tasks.push({
+      taskId: end.taskId,
+      source: "native",
+      title: call.description === null ? type : `${type} · ${call.description}`,
+      status: end.status === "stopped" ? "interrupted" : end.status,
+      durationMs: since === undefined ? null : Math.max(0, Date.parse(end.at) - Date.parse(since)),
+      headline: report === null ? null : report.length > 280 ? `${report.slice(0, 279)}…` : report,
+    });
+    byWake.set(wake.turnId, notice);
+  }
+  return [...byWake.entries()].map(([turnId, notice]) => ({
+    id: `native-notice:${turnId}`,
+    role: "user" as const,
+    text: "",
+    turnId,
+    streaming: false,
+    createdAt: notice.at,
+    updatedAt: notice.at,
+    origin: "task-notification",
+    notification: { tasks: notice.tasks },
+  }));
+}
+
 /** A tool call the provider took back with its refused attempt. */
 function isRetractedToolActivity(activity: ActivityEnvelope, retracted: ReadonlySet<string>): boolean {
   if (retracted.size === 0) return false;
@@ -693,6 +829,8 @@ const TURN_LIFECYCLE_KINDS: ReadonlySet<string> = new Set([
   // Held for a usage reset: the Queued panel says so, next to the message.
   "turn.held",
   "turn.promoted",
+  // Queued messages sent together: they read as the turn's prompts already.
+  "turn.batched",
   "turn.completed",
   "turn.interrupted",
   "turn.steered",
@@ -932,6 +1070,16 @@ export function queuedMessages(state: ThreadState): QueuedMessage[] {
   return [...ungated, ...timed];
 }
 
+/**
+ * The Queued panel's count. Held messages are some of the waiting ones,
+ * not more of them: "1 not sent yet, 1 held" read as two messages.
+ */
+export function queuedSummary(total: number, held: number): string {
+  if (held === 0) return `${total} not sent yet`;
+  if (held >= total) return `${total} held for the reset`;
+  return `${total} not sent yet, ${held} of them held for the reset`;
+}
+
 /** A running thought's rows carry no text yet: give them what has streamed so far. */
 function withLiveReasoning(activities: readonly ActivityEnvelope[], live: Record<string, string>): readonly ActivityEnvelope[] {
   if (Object.keys(live).length === 0) return activities;
@@ -946,6 +1094,10 @@ function withLiveReasoning(activities: readonly ActivityEnvelope[], live: Record
 /** The provider's own one-line "limit reached" reply: "You've hit your session limit · resets 4:40am (Europe/Madrid)". */
 const PROVIDER_LIMIT_TEXT = /^you['’]ve (hit|reached) your [^\n]*limit[^\n]*$/iu;
 
+function laterOf(at: string, other: string | undefined): string {
+  return other !== undefined && other > at ? other : at;
+}
+
 /** Messages and activities interleaved into the single chronological list the chat pane renders. */
 export function timeline(state: ThreadState): TimelineEntry[] {
   const checkpointsByTurn = new Map(state.checkpoints.map((checkpoint) => [checkpoint.turnId, checkpoint]));
@@ -955,13 +1107,24 @@ export function timeline(state: ThreadState): TimelineEntry[] {
   );
   // Taken back before running: gone from the transcript, prompt and all.
   const cancelled = cancelledBeforeStart(state.activities);
+  // When a queued or scheduled turn was actually sent. Its prompt was
+  // written when the user queued it — mid-way through the turn it waited
+  // behind — so placed by that time it landed inside the earlier turn, with
+  // that turn's remaining work after it. It goes where the agent saw it.
+  const promotedAt = new Map(
+    state.activities.flatMap((activity) => (activity.kind === "turn.promoted" && activity.turnId !== null ? [[activity.turnId, activity.createdAt] as const] : [])),
+  );
   const limitedTurns = new Set(
     state.activities.flatMap((activity) =>
       (activity.kind === "usage.limit" || activity.kind === "usage.wrap-up") && activity.turnId !== null ? [activity.turnId] : [],
     ),
   );
+  const nativeNotices = nativeSubagentNotices(state.activities);
+  // A wake-up the subagent card already explains: "Woken by a background
+  // task" under it would say the same thing again, less well.
+  const explainedWakes = new Set(nativeNotices.map((notice) => notice.turnId ?? ""));
   const entries: TimelineEntry[] = [
-    ...state.messages
+    ...[...state.messages, ...nativeNotices]
       .filter((message) => !retracted.messages.has(message.id) && !cancelled.has(message.turnId ?? ""))
       // A message the agent has not been sent yet — queued behind the
       // running turn, scheduled, or held for a usage reset — is the Queued
@@ -974,7 +1137,7 @@ export function timeline(state: ThreadState): TimelineEntry[] {
       .map((message) => ({
       ...(waiting.has(message.id) ? { queued: waiting.get(message.id) } : {}),
       id: message.id,
-      at: message.createdAt,
+      at: message.role === "user" ? laterOf(message.createdAt, promotedAt.get(message.turnId ?? "")) : message.createdAt,
       turnId: message.turnId,
       kind: message.role === "user" ? ("user" as const) : ("assistant" as const),
       text: message.text,
@@ -987,13 +1150,14 @@ export function timeline(state: ThreadState): TimelineEntry[] {
       editStats: null,
       proposedPlan: null,
     })),
-    ...collapseToolActivities(withLiveReasoning(state.activities, state.liveReasoning))
+    ...withDelegatedTitles(withSubagentState(collapseToolActivities(withLiveReasoning(state.activities, state.liveReasoning))))
       .filter(
         (activity) =>
           !isPlanActivity(activity) &&
           !isBookkeepingActivity(activity) &&
           !cancelled.has(activity.turnId ?? "") &&
           !isQuestionToolActivity(activity) &&
+          !(activity.kind === "turn.background" && explainedWakes.has(activity.turnId ?? "")) &&
           !isRetractedToolActivity(activity, retracted.toolCalls),
       )
       .map((activity) => ({
@@ -1064,6 +1228,11 @@ export function timeline(state: ThreadState): TimelineEntry[] {
   }
   return entries.sort((left, right) => {
     if (left.at !== right.at) return left.at.localeCompare(right.at);
+    // A prompt opens what follows it, so it sorts after another turn's rows
+    // at the same instant: a promoted turn's prompt shares its millisecond
+    // with the turn it waited behind completing, closing reply included.
+    if (left.kind === "user" && right.kind !== "user" && left.turnId !== right.turnId) return 1;
+    if (right.kind === "user" && left.kind !== "user" && left.turnId !== right.turnId) return -1;
     // A turn's diff summary closes the turn, so it sorts after its own rows.
     if (left.kind === "turn-diff" && right.kind !== "turn-diff") return 1;
     if (right.kind === "turn-diff" && left.kind !== "turn-diff") return -1;
@@ -1228,6 +1397,8 @@ export function resumeCompactionKey(state: ThreadState): string | null {
 /** One settled delegated task, as a task-notification message carries it. */
 export interface TaskNotificationView {
   taskId: string;
+  /** moxen's delegated thread, or the provider's own subagent (`nativeSubagentNotices`). */
+  source: "moxen" | "native";
   title: string;
   status: string;
   durationMs: number | null;
@@ -1256,6 +1427,7 @@ export function taskNotifications(message: MessageEnvelope | null): TaskNotifica
     return [
       {
         taskId,
+        source: task.source === "native" ? ("native" as const) : ("moxen" as const),
         title: text(task.title) ?? "Delegated task",
         status: text(task.status) ?? "completed",
         durationMs: count(task.durationMs),

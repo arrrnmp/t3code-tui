@@ -184,7 +184,8 @@ export function SidePanelFrame({
         <PanelWidth.Provider value={Math.max(10, width - 5)}>{children}</PanelWidth.Provider>
       </scrollbox>
       {footer === undefined || footer === null ? null : (
-        <box style={{ flexDirection: "row", height: 1, flexShrink: 0, paddingLeft: 1 }} backgroundColor={SURFACE.panel}>
+        // A column, so a tab can pin two lines (the Git tab: repo, then branch).
+        <box style={{ flexDirection: "column", flexShrink: 0, paddingLeft: 1 }} backgroundColor={SURFACE.panel}>
           {footer}
         </box>
       )}
@@ -263,44 +264,67 @@ export function DiffEmptyTab({ turns, onPick }: { turns: number; onPick: () => v
 
 const AGENT_GLYPH: Record<string, string> = { running: "●", blocked: "!", settled: "✓", active: "○", snoozed: "◌" };
 
+/**
+ * A row's left text padded so `right` sits flush against the panel edge.
+ * Two texts, not one string, so each keeps its own colour.
+ */
+function Split({ left, right, leftColor, rightColor, width }: { left: string; right: string; leftColor: string; rightColor: string; width: number }) {
+  const leftWidth = Math.max(4, width - (right ? right.length + 1 : 0));
+  return (
+    <box style={{ flexDirection: "row", height: 1, flexShrink: 0 }}>
+      <text fg={leftColor}>{truncate(left, leftWidth).padEnd(leftWidth)}</text>
+      {right ? <text fg={rightColor}>{` ${right}`}</text> : null}
+    </box>
+  );
+}
+
+const OUTCOME_LABEL: Record<string, string> = { completed: "done", error: "failed", interrupted: "stopped" };
+
 export function AgentsTab({
   threads,
   subagents,
-  width,
   now,
   onOpen,
-  onNudge,
+  onOpenSubagent,
 }: {
   threads: readonly AgentThreadRow[];
   subagents: readonly NativeSubagentRow[];
-  width: number;
   now: number;
   onOpen: (threadId: string) => void;
-  onNudge: (threadId: string, title: string) => void;
+  /** Opens a subagent's own conversation in the chat pane. */
+  onOpenSubagent?: (agentId: string) => void;
 }) {
-  const inner = Math.max(10, width - 4);
+  const inner = useContext(PanelWidth);
   return (
     <box style={{ flexDirection: "column", flexShrink: 0 }}>
       <Heading text="Delegated threads" meta={threads.length === 0 ? "none yet" : `${threads.length}`} />
       {threads.length === 0 ? (
-        <Empty glyph="○" text="Tasks this thread delegates appear here, each a thread you can open and nudge." />
+        <Empty glyph="○" text="Tasks this thread delegates appear here, each a thread you can open." />
       ) : (
         threads.map((agent) => {
           const running = agent.status === "running";
-          const glyph = running ? "●" : agent.outcome === "error" ? "✗" : agent.outcome === "interrupted" ? "■" : (AGENT_GLYPH[agent.status] ?? "○");
+          const glyph = running
+            ? "●"
+            : agent.outcome === "error"
+              ? "✗"
+              : agent.outcome === "interrupted"
+                ? "■"
+                : agent.outcome === "completed"
+                  ? "✓"
+                  : (AGENT_GLYPH[agent.status] ?? "○");
           const color = running ? COLOR.warn : agent.outcome === "error" ? COLOR.danger : agent.outcome === "completed" ? COLOR.added : COLOR.dim;
-          const elapsed = running && agent.startedAt !== null ? formatDuration(Math.max(1000, now - Date.parse(agent.startedAt))) : null;
+          // Right column: the running clock, or how it ended.
+          const state = running
+            ? agent.startedAt === null ? "running" : formatDuration(Math.max(1000, now - Date.parse(agent.startedAt)))
+            : agent.outcome === null ? agent.status : (OUTCOME_LABEL[agent.outcome] ?? agent.outcome);
           return (
             <Row key={agent.threadId} onClick={() => onOpen(agent.threadId)}>
               <box style={{ flexDirection: "row", height: 1, flexShrink: 0 }}>
                 <text fg={color}>{`${glyph} `}</text>
-                <text fg={COLOR.text}>{truncate(agent.title, Math.max(4, inner - 12))}</text>
-                {elapsed === null ? null : <text fg={COLOR.faint}>{`  ${elapsed}`}</text>}
+                <Split left={agent.title} right={state} leftColor={COLOR.text} rightColor={running ? COLOR.warn : color} width={inner - 2} />
               </box>
-              <box style={{ flexDirection: "row", height: 1, flexShrink: 0 }}>
-                <text fg={COLOR.faint}>{`  ${truncate(agent.model ?? "", Math.max(4, inner - 14))}  `}</text>
-                <ActionText label="nudge" onClick={() => onNudge(agent.threadId, agent.title)} />
-              </box>
+              {/* The row opens the thread: anything to tell it goes there. */}
+              <text fg={COLOR.faint}>{`  ${truncate(agent.model ?? "", Math.max(4, inner - 2))}`}</text>
             </Row>
           );
         })
@@ -309,16 +333,31 @@ export function AgentsTab({
       {subagents.length === 0 ? (
         <Empty glyph="○" text="The provider's own subagents (Claude's Agent tool) appear here." />
       ) : (
-        subagents.map((agent) => (
-          <Row key={agent.agentId}>
-            <box style={{ flexDirection: "row", height: 1, flexShrink: 0 }}>
-              <text fg={agent.running ? COLOR.warn : COLOR.added}>{agent.running ? "● " : "✓ "}</text>
-              <text fg={COLOR.text}>{agent.agentType}</text>
-              <text fg={COLOR.faint}>{agent.running ? "  running" : "  done"}</text>
-            </box>
-            {agent.lastMessage === null ? null : <text fg={COLOR.dim}>{`  ${truncate(agent.lastMessage.replace(/\s+/g, " "), inner * 2)}`}</text>}
-          </Row>
-        ))
+        subagents.map((agent) => {
+          const took = agent.stoppedAt === null ? null : Math.max(1000, Date.parse(agent.stoppedAt) - Date.parse(agent.at));
+          const state = agent.running ? formatDuration(Math.max(1000, now - Date.parse(agent.at))) : took === null || !Number.isFinite(took) ? "done" : `done in ${formatDuration(took)}`;
+          const typeWidth = Math.min(agent.agentType.length, Math.max(4, inner - state.length - 6));
+          return (
+            <Row key={agent.agentId} {...(onOpenSubagent === undefined ? {} : { onClick: () => onOpenSubagent(agent.agentId) })}>
+              <box style={{ flexDirection: "row", height: 1, flexShrink: 0 }}>
+                <text fg={agent.running ? COLOR.warn : COLOR.added}>{agent.running ? "● " : "✓ "}</text>
+                <text fg={COLOR.text}>{truncate(agent.agentType, typeWidth)}</text>
+                <Split
+                  left={agent.description === null ? "" : ` · ${agent.description}`}
+                  right={state}
+                  leftColor={COLOR.dim}
+                  rightColor={agent.running ? COLOR.warn : COLOR.faint}
+                  width={inner - 2 - typeWidth}
+                />
+              </box>
+              {agent.lastMessage === null ? null : (
+                <box style={{ flexDirection: "row", flexShrink: 0, paddingLeft: 2 }}>
+                  <text fg={COLOR.faint} wrapMode="word">{truncate(agent.lastMessage.replace(/\s+/g, " "), (inner - 2) * 2)}</text>
+                </box>
+              )}
+            </Row>
+          );
+        })
       )}
     </box>
   );
@@ -339,11 +378,10 @@ function meter(width: number, fraction: number): { filled: string; empty: string
 }
 
 /**
- * One full-width bar row: always spans `width` cells so every bar in the
- * tab (window, tools, plan) starts and ends on the same columns. Labels and
- * values live on the row above via `space-between`, never beside the bar —
- * beside-the-bar labels forced every group into its own label/bar/value
- * arithmetic and the right edges never lined up.
+ * A bar of exactly `width` cells. Inline rows (heaviest tools, plan usage)
+ * size label and value columns across the whole group first and give the
+ * bar what is left, so every bar in a group starts and ends on the same
+ * columns.
  */
 function BarRow({ width, fraction, filledColor }: { width: number; fraction: number; filledColor: string }) {
   const bar = meter(width, fraction);
@@ -496,25 +534,33 @@ export function ContextTab({
           {usageLimits?.unavailable?.message ?? "No subscription usage reported for this provider."}
         </text>
       ) : (
-        usageLimits.windows.map((window) => {
-          const fraction = window.usedPercent / 100;
-          const color = fraction >= 0.9 ? COLOR.danger : fraction >= 0.7 ? COLOR.warn : COLOR.accent;
-          const resets = window.resetsAt === null ? null : new Date(window.resetsAt);
-          const resetLabel =
-            resets === null || Number.isNaN(resets.getTime()) ? null : `↻ ${untilLabel(resets, now).replace(/^in /u, "")}`;
-          return (
-            <box key={window.id} style={{ flexDirection: "column", flexShrink: 0 }}>
-              <box style={{ width: inner, flexDirection: "row", height: 1, flexShrink: 0, justifyContent: "space-between" }}>
-                <text fg={COLOR.text}>{truncate(window.label, Math.max(4, inner - 20))}</text>
-                <box style={{ flexDirection: "row", height: 1, flexShrink: 0 }}>
-                  <text fg={COLOR.dim}>{`${Math.round(window.usedPercent)}%`}</text>
-                  {resetLabel === null ? null : <text fg={COLOR.faint}>{` · ${resetLabel}`}</text>}
-                </box>
+        (() => {
+          // Inline like the heaviest tools: label, bar, reading in columns
+          // shared by every window, so the bars start and end together.
+          const rows = usageLimits.windows.map((window) => {
+            const resets = window.resetsAt === null ? null : new Date(window.resetsAt);
+            const resetLabel =
+              resets === null || Number.isNaN(resets.getTime()) ? null : `↻ ${untilLabel(resets, now).replace(/^in /u, "")}`;
+            return { window, percent: `${Math.round(window.usedPercent)}%`, resetLabel };
+          });
+          const labelWidth = Math.min(Math.max(...rows.map((row) => row.window.label.length)), Math.max(6, Math.floor(inner * 0.3)));
+          const percentWidth = Math.max(...rows.map((row) => row.percent.length));
+          const resetWidth = Math.max(0, ...rows.map((row) => row.resetLabel?.length ?? 0));
+          const valueWidth = percentWidth + (resetWidth > 0 ? resetWidth + 1 : 0);
+          const barWidth = Math.max(4, inner - labelWidth - valueWidth - 2);
+          return rows.map(({ window, percent, resetLabel }) => {
+            const fraction = window.usedPercent / 100;
+            const color = fraction >= 0.9 ? COLOR.danger : fraction >= 0.7 ? COLOR.warn : COLOR.accent;
+            return (
+              <box key={window.id} style={{ flexDirection: "row", height: 1, flexShrink: 0 }}>
+                <text fg={COLOR.text}>{`${truncate(window.label, labelWidth).padEnd(labelWidth)} `}</text>
+                <BarRow width={barWidth} fraction={fraction} filledColor={color} />
+                <text fg={COLOR.dim}>{` ${percent.padStart(percentWidth)}`}</text>
+                {resetWidth > 0 ? <text fg={COLOR.faint}>{` ${(resetLabel ?? "").padEnd(resetWidth)}`}</text> : null}
               </box>
-              <BarRow width={inner} fraction={fraction} filledColor={color} />
-            </box>
-          );
-        })
+            );
+          });
+        })()
       )}
     </box>
   );

@@ -50,7 +50,7 @@ async function runQueued(): Promise<void> {
   console.log(frame);
   for (const expected of [
     "Queued",
-    "3 not sent yet, 1 held for the reset",
+    "3 not sent yet, 1 of them held for the reset",
     "1. Also update the changelog",
     "after this turn",
     "+1 image",

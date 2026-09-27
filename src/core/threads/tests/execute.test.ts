@@ -12,7 +12,7 @@ import { FakeOpencodeTransport } from "../../providers/opencode/tests/fakes.js";
 import type { ProviderRuntimeEvent } from "../../providers/spi.js";
 import { openThreadStore } from "../store.js";
 import { createThread, readThread } from "../threads.js";
-import { driverForInstance, ensureDriverSession, executeTurn, type TurnDriver } from "../execute.js";
+import { driverForInstance, ensureDriverSession, executeTurn, watchDriverSession, type TurnDriver } from "../execute.js";
 import { recordUsageWindows, resetUsageLimitsForTests } from "../../usage/limits.js";
 
 const cleanup: Array<() => Promise<void>> = [];
@@ -387,6 +387,8 @@ describe("provider-side interruptions", () => {
         return { status: "completed" as const, text: "done", usage: null, error: null };
       },
       streamEvents: Stream.fromQueue(queue),
+      // For events that arrive after the turn, when nothing is scripted.
+      queue,
     }));
   }
 
@@ -431,6 +433,41 @@ describe("provider-side interruptions", () => {
     const moved = { ...modelSelection, model: "claude-opus-5" };
     expect((await store.readTurns(thread.id))[0]?.modelSelection).toEqual(moved);
     expect((await store.readThreadRecord(thread.id))?.modelSelection).toEqual(moved);
+  });
+
+  it("records a background subagent that stops after its turn closed", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "moxen-subagent-"));
+    cleanup.push(() => rm(root, { recursive: true, force: true }));
+    const store = await openThreadStore(root);
+    const modelSelection = { instanceId: "claudeAgent", model: "claude-fable-5-1" };
+    const thread = await createThread(store, {
+      projectId: "project-1",
+      title: "Background subagent",
+      modelSelection,
+      env: { mode: "local", path: root, branch: null },
+    });
+    const { turn } = await (await import("../threads.js")).sendTurn(store, thread.id, { prompt: "go" });
+    const subagent = (status: "started" | "stopped"): ProviderRuntimeEvent => ({
+      type: "subagent.updated",
+      provider: "claude",
+      threadId: thread.id,
+      turnId: "d-1",
+      agentId: "ag-1",
+      agentType: "Explore",
+      status,
+      lastMessage: status === "stopped" ? "Found 3." : null,
+    });
+    const driver = await scriptedDriver(thread.id, [subagent("started")]);
+    watchDriverSession(store, driver, thread.id, root);
+    await executeTurn({ store, driver, threadId: thread.id, storeTurnId: turn.id, prompt: "go", modelSelection });
+    // The turn is over; only the session watcher still hears the stop.
+    await Effect.runPromise(Queue.offer((driver as unknown as { queue: Queue.Queue<ProviderRuntimeEvent> }).queue, subagent("stopped")));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const rows = (await store.readActivities(thread.id)).filter((row) => row.kind === "subagent");
+    // Once each: mid-turn the runner records it and the watcher stands aside.
+    expect(rows.map((row) => (row.payload as { status: string }).status)).toEqual(["started", "stopped"]);
+    expect(rows[1]?.payload).toMatchObject({ toolCallId: "subagent:ag-1", lastMessage: "Found 3." });
   });
 
   it("records notices and native subagents, and one model switch per move", async () => {

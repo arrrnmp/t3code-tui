@@ -1,0 +1,91 @@
+# OpenCode V2 Documentation
+
+> Official documentation for using, configuring, and building with OpenCode V2.
+
+## Docs
+
+- [Intro](https://opencode.ai/v2/docs/)
+- [Config](https://opencode.ai/v2/docs/config/)
+- [Migrate from V1](https://opencode.ai/v2/docs/migrate-v1/)
+- [Troubleshooting](https://opencode.ai/v2/docs/troubleshooting/)
+
+### Configure
+
+- [Agents](https://opencode.ai/v2/docs/agents/)
+- [Models](https://opencode.ai/v2/docs/models/)
+- [Skills](https://opencode.ai/v2/docs/skills/)
+- [Themes](https://opencode.ai/v2/docs/themes/)
+- [Commands](https://opencode.ai/v2/docs/commands/)
+- [Plugins](https://opencode.ai/v2/docs/plugins/)
+- [Providers](https://opencode.ai/v2/docs/providers/)
+- [Websearch](https://opencode.ai/v2/docs/websearch/)
+- [Network](https://opencode.ai/v2/docs/network/)
+- [Snapshots](https://opencode.ai/v2/docs/snapshots/)
+- [Compaction](https://opencode.ai/v2/docs/compaction/)
+- [Formatters](https://opencode.ai/v2/docs/formatters/)
+- [References](https://opencode.ai/v2/docs/references/)
+- [Attachments](https://opencode.ai/v2/docs/attachments/)
+- [Tools](https://opencode.ai/v2/docs/tools/)
+- [MCP servers](https://opencode.ai/v2/docs/mcp-servers/)
+- [Permissions](https://opencode.ai/v2/docs/permissions/)
+- [Policies](https://opencode.ai/v2/docs/policies/)
+- [Instructions](https://opencode.ai/v2/docs/instructions/)
+- [Sharing](https://opencode.ai/v2/docs/sharing/)
+- [Warming](https://opencode.ai/v2/docs/warming/)
+
+## CLI
+
+- [Intro](https://opencode.ai/v2/docs/cli/)
+- [TUI](https://opencode.ai/v2/docs/cli/tui/)
+- [Settings](https://opencode.ai/v2/docs/cli/config/)
+- [Web](https://opencode.ai/v2/docs/cli/web/)
+- [Providers](https://opencode.ai/v2/docs/cli/providers/)
+- [Commands](https://opencode.ai/v2/docs/cli/commands/)
+- [ACP](https://opencode.ai/v2/docs/cli/acp/)
+- [Theme](https://opencode.ai/v2/docs/cli/theme/)
+- [Plugins](https://opencode.ai/v2/docs/cli/plugins/)
+- [Keybinds](https://opencode.ai/v2/docs/cli/keybinds/)
+
+## Build
+
+- [Intro](https://opencode.ai/v2/docs/build/)
+
+### Plugins
+
+- [Overview](https://opencode.ai/v2/docs/build/plugins/)
+- [RPC](https://opencode.ai/v2/docs/build/plugins/rpc/)
+- [CLI](https://opencode.ai/v2/docs/build/plugins/cli/)
+- [Migrate from V1](https://opencode.ai/v2/docs/build/plugins/migrate-v1/)
+
+### Client
+
+- [JavaScript](https://opencode.ai/v2/docs/build/client/)
+
+### SDK
+
+- [Overview](https://opencode.ai/v2/docs/build/sdk/)
+- [Cloudflare](https://opencode.ai/v2/docs/build/sdk/cloudflare/)
+
+### Effect
+
+- [Plugins](https://opencode.ai/v2/docs/build/plugins/effect/)
+- [RPC](https://opencode.ai/v2/docs/build/plugins/effect/rpc/)
+- [Client](https://opencode.ai/v2/docs/build/client/effect/)
+- [SDK](https://opencode.ai/v2/docs/build/sdk/effect/)
+
+## API
+
+- [Overview](https://opencode.ai/v2/docs/api/)
+
+## Console
+
+- [Intro](https://opencode.ai/v2/docs/console/)
+- [Models](https://opencode.ai/v2/docs/console/models/)
+- [Websearch](https://opencode.ai/v2/docs/console/websearch/)
+- [Go](https://opencode.ai/v2/docs/console/go/)
+
+### API
+
+- [Inference](https://opencode.ai/v2/docs/console/inference/)
+- [BYOK](https://opencode.ai/v2/docs/console/byok/)
+- [Budgets](https://opencode.ai/v2/docs/console/budgets/)

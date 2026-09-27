@@ -4,7 +4,7 @@ import { useRef } from "react";
 
 import { useHover } from "../../hooks/useHover.js";
 import { clockTime } from "../../model/turns.js";
-import type { QueuedMessage } from "../../model/thread.js";
+import { queuedSummary, type QueuedMessage } from "../../model/thread.js";
 import { COLOR, SURFACE, truncate } from "../../theme.js";
 
 /** Rows shown at once; a longer queue scrolls inside the panel, like Tasks. */
@@ -89,7 +89,7 @@ export function QueuedPanel({
       <box style={{ flexDirection: "row", height: 1, flexShrink: 0 }} backgroundColor={SURFACE.panel}>
         <text fg={COLOR.accent} bg={SURFACE.panel} selectable={false}>{"Queued"}</text>
         <text fg={COLOR.dim} bg={SURFACE.panel} selectable={false}>
-          {` (${items.length} not sent yet${held > 0 ? `, ${held} held for the reset` : ""}) · × takes one back`}
+          {` (${queuedSummary(items.length, held)}) · × takes one back`}
         </text>
         <box style={{ flexGrow: 1 }} backgroundColor={SURFACE.panel} />
         {pager ?? null}

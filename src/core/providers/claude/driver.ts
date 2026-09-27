@@ -1944,6 +1944,10 @@ export class ClaudeDriver implements ProviderAdapter<CliError> {
   private publishSubagent(session: ClaudeSession, input: Record<string, unknown>, status: "started" | "stopped"): void {
     const agentId = typeof input["agent_id"] === "string" ? input["agent_id"] : null;
     if (!agentId) return;
+    // Claude Code's own internal agents (prompt suggestions, `/btw`) fire
+    // the stop hook too, typed as the session's agent — empty, since we
+    // run without one. They are not subagents anyone spawned.
+    if (typeof input["agent_type"] !== "string" || !input["agent_type"]) return;
     const lastMessage = typeof input["last_assistant_message"] === "string" && input["last_assistant_message"].trim()
       ? input["last_assistant_message"].trim()
       : null;
@@ -1953,7 +1957,7 @@ export class ClaudeDriver implements ProviderAdapter<CliError> {
       threadId: session.threadId,
       turnId: session.transcript.find((turn) => turn.status === "running")?.id ?? null,
       agentId,
-      agentType: typeof input["agent_type"] === "string" && input["agent_type"] ? input["agent_type"] : "agent",
+      agentType: input["agent_type"],
       status,
       lastMessage: status === "stopped" ? lastMessage : null,
     });

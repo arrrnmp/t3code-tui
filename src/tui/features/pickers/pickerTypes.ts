@@ -14,6 +14,6 @@ export type PickerName =
   | "project"
   | "project-new"
   | "background-tasks"
-  | "agent-nudge"
   | "settings"
+  | "schedule"
   | null;

@@ -12,14 +12,14 @@ import { fail } from "../helpers.js";
  * The side panel's Agents and Context tabs, and the composer's plan-usage
  * gauges, on their own render (the shared walkthrough covers opening the
  * panel from the app and the Background tab). Agents lists delegated
- * threads with their state and a nudge control, then the provider's own
+ * threads with their state (a click opens one), then the provider's own
  * subagents; Context shows the window as a stacked bar with its categories,
  * then the plan's usage windows with reset times.
  */
 export async function runSidePanelTabs(): Promise<void> {
   const now = Date.parse("2026-09-25T10:00:00.000Z");
   let showTab: ((tab: SideTab) => void) | null = null;
-  const nudged: string[] = [];
+  const opened: string[] = [];
   function Harness() {
     const [tab, setTab] = useState<SideTab>("agents");
     showTab = setTab;
@@ -35,17 +35,34 @@ export async function runSidePanelTabs(): Promise<void> {
                   threadId: "child-1",
                   title: "Audit the routes",
                   status: "running",
-                  model: "codex/gpt-5.5",
+                  model: "GPT-5.5",
                   startedAt: new Date(now - 125_000).toISOString(),
                   outcome: null,
                 },
-                { threadId: "child-2", title: "Scout the tests", status: "active", model: "claudeAgent/claude-sonnet-5", startedAt: null, outcome: "completed" },
+                { threadId: "child-2", title: "Scout the tests", status: "active", model: "Claude Sonnet 5", startedAt: null, outcome: "completed" },
               ]}
-              subagents={[{ agentId: "a1", agentType: "Explore", running: false, lastMessage: "Found 3 call sites", at: "2026-09-25T09:59:00.000Z" }]}
-              width={60}
+              subagents={[
+                {
+                  agentId: "a2",
+                  agentType: "Plan",
+                  description: "Plan the route audit fixes",
+                  running: true,
+                  lastMessage: null,
+                  at: new Date(now - 42_000).toISOString(),
+                  stoppedAt: null,
+                },
+                {
+                  agentId: "a1",
+                  agentType: "Explore",
+                  description: "Count TODO comments in src",
+                  running: false,
+                  lastMessage: "Found 3 call sites",
+                  at: "2026-09-25T09:59:00.000Z",
+                  stoppedAt: "2026-09-25T09:59:14.000Z",
+                },
+              ]}
               now={now}
-              onOpen={() => {}}
-              onNudge={(threadId) => nudged.push(threadId)}
+              onOpen={(threadId) => opened.push(threadId)}
             />
           ) : (
             <ContextTab
@@ -92,14 +109,14 @@ export async function runSidePanelTabs(): Promise<void> {
   const agents = setup.captureCharFrame();
   console.log("--- side panel: agents tab ---");
   console.log(agents);
-  for (const expected of ["Agents 1", "Context 42%", "Delegated threads", "Audit the routes", "2m 5s", "codex/gpt-5.5", "nudge", "Scout the tests", "Explore", "Found 3 call sites"]) {
+  for (const expected of ["Agents 1", "Context 42%", "Delegated threads", "Audit the routes", "2m 5s", "GPT-5.5", "Scout the tests", "done", "Explore · Count TODO comments in src", "done in 14s", "Plan · Plan the route audit fixes", "42s", "Found 3 call sites"]) {
     if (!agents.includes(expected)) fail(`agents tab is missing "${expected}"`);
   }
   const rows = agents.split("\n");
-  const nudgeRow = rows.findIndex((row) => row.includes("codex/gpt-5.5"));
-  await act(async () => setup.mockMouse.click(rows[nudgeRow]!.indexOf("nudge") + 1, nudgeRow));
+  const openRow = rows.findIndex((row) => row.includes("GPT-5.5"));
+  await act(async () => setup.mockMouse.click(rows[openRow]!.indexOf("GPT-5.5") + 1, openRow));
   await setup.flush();
-  if (nudged[0] !== "child-1") fail("nudge on a delegated thread did not target that thread");
+  if (opened[0] !== "child-1") fail("clicking a delegated thread did not open that thread");
 
   await act(async () => showTab?.("context"));
   await setup.flush();
@@ -118,7 +135,7 @@ export async function runSidePanelTabs(): Promise<void> {
 
   // The composer footer: gauges per window, shed before the model label
   // when the composer narrows (as it does beside an open panel).
-  function Footer({ width }: { width: number }) {
+  function Footer({ width, suggestion }: { width: number; suggestion?: string }) {
     return (
       <Composer
         draft=""
@@ -141,9 +158,27 @@ export async function runSidePanelTabs(): Promise<void> {
         ]}
         onCopyClick={() => {}}
         onExternalEditClick={() => {}}
+        {...(suggestion === undefined ? {} : { suggestion })}
       />
     );
   }
+
+  // A prompt suggestion is one line at any width: beside an open panel the
+  // composer is narrow, and the suggestion's tail must not wrap onto a line
+  // of its own (a lone "…" with the tab chip under it).
+  const suggestion = "kick off a couple more in parallel to stress-test the panels";
+  for (const [width, hint] of [[110, "tab  to use it"], [52, "tab  to use it"], [36, "tab"]] as const) {
+    const suggested = await testRender(<Footer width={width} suggestion={suggestion} />, { width: width + 2, height: 8, exitOnCtrlC: false });
+    await suggested.flush();
+    const frame = suggested.captureCharFrame();
+    console.log(`--- composer: prompt suggestion at ${width} ---`);
+    console.log(frame);
+    const rows = frame.split("\n");
+    const first = rows.findIndex((row) => row.includes("kick off"));
+    if (first < 0 || !rows[first]!.includes(hint)) fail(`a ${width}-wide suggestion does not end in "${hint}" on its own line`);
+    if (rows[first + 1]?.trim().startsWith("…") || rows[first + 1]?.includes("tab")) fail(`a ${width}-wide suggestion wrapped onto a second line`);
+  }
+
   const wide = await testRender(<Footer width={110} />, { width: 112, height: 8, exitOnCtrlC: false });
   await wide.flush();
   const wideFrame = wide.captureCharFrame();

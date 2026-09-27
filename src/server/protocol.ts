@@ -21,6 +21,7 @@
  * carries Effect's release churn as a standing risk; a discriminated union
  * plus these decoders costs less and breaks in more obvious ways.
  */
+import type { SubagentTranscript } from "../core/threads/subagents.js";
 import type { ImageAttachmentUpload } from "../core/attachments.js";
 import { CliError } from "../core/errors.js";
 import type {
@@ -39,11 +40,14 @@ import type {
 } from "../core/threads/operations.js";
 import type { ModelRequest } from "../core/catalog/selection.js";
 import type { SettingView } from "../core/configschema.js";
-import type { GitBranch, GitCommit, GitOverview, GitWorktreeStatus } from "../core/git/history.js";
+import type { GitBranch, GitCommit, GitCommitDetail, GitOverview, GitWorktreeStatus } from "../core/git/history.js";
 import type {
+  ForgeCheckRun,
+  ForgeChecks,
   ForgeDetection,
   ForgeRequest,
   ForgeRequestDetail,
+  ForgeRequestStatus,
   MergeStrategy,
 } from "../core/forge/forge.js";
 import type { Diagnosis } from "../core/diagnostics/doctor.js";
@@ -72,10 +76,15 @@ import type {
 export type {
   GitBranch,
   GitCommit,
+  GitCommitDetail,
+  GitCommitFile,
   GitOverview,
   GitWorktreeStatus,
 } from "../core/git/history.js";
 export type {
+  ForgeCheckRun,
+  ForgeCheckState,
+  ForgeRequestStatus,
   ForgeChecks,
   ForgeDetection,
   ForgeKind,
@@ -316,6 +325,12 @@ export type Query =
    */
   | { readonly type: "thread.context"; readonly threadId: string }
   /**
+   * One native subagent's own conversation (Claude's Agent tool), read from
+   * the transcript the provider keeps for it; `available: false` when it
+   * keeps none this machine can read.
+   */
+  | { readonly type: "thread.subagent"; readonly threadId: string; readonly agentId: string }
+  /**
    * The latest subscription usage windows each provider reported, keyed by
    * driver kind (`claude`, `codex`, …): the account's limits, shared by
    * every thread on it. Empty until a session reports.
@@ -355,7 +370,15 @@ export type Query =
       readonly state?: "open" | "closed" | "merged" | "all";
       readonly limit?: number;
     }
-  | { readonly type: "forge.request.view"; readonly threadId: string; readonly number: number };
+  | { readonly type: "forge.request.view"; readonly threadId: string; readonly number: number }
+  /** One commit in full for the commit view: message body, committer, parents, files, patch. */
+  | { readonly type: "git.commit.detail"; readonly threadId: string; readonly sha: string }
+  /** The request a branch has (the checked-out one by default), with its CI and mergeability. */
+  | { readonly type: "forge.request.status"; readonly threadId: string; readonly branch?: string }
+  /** CI tallies for a branch's recent commits, by sha (GitHub only; empty elsewhere). */
+  | { readonly type: "forge.commits.checks"; readonly threadId: string; readonly branch: string; readonly limit?: number }
+  /** One commit's CI runs, by name. */
+  | { readonly type: "forge.commit.runs"; readonly threadId: string; readonly sha: string };
 
 export type QueryType = Query["type"];
 
@@ -374,6 +397,7 @@ export interface QueryResults {
   "skills.list": SkillInventory;
   "thread.background.list": { readonly live: boolean; readonly tasks: readonly BackgroundTaskSummary[] };
   "thread.context": { readonly live: boolean; readonly breakdown: ContextBreakdown | null };
+  "thread.subagent": SubagentTranscript;
   "usage.limits": { readonly providers: Readonly<Record<string, ProviderUsageLimits>> };
   "thread.background.output": { readonly available: boolean; readonly lines: readonly string[] };
   "settings.read": SettingsSnapshot;
@@ -382,6 +406,10 @@ export interface QueryResults {
   "forge.detect": ForgeDetection;
   "forge.requests.list": { readonly requests: readonly ForgeRequest[] };
   "forge.request.view": { readonly request: ForgeRequestDetail | null };
+  "git.commit.detail": { readonly commit: GitCommitDetail | null };
+  "forge.request.status": { readonly request: ForgeRequestStatus | null };
+  "forge.commits.checks": { readonly checks: Readonly<Record<string, ForgeChecks>> };
+  "forge.commit.runs": { readonly runs: readonly ForgeCheckRun[] };
 }
 
 export type QueryResult<T extends QueryType = QueryType> = QueryResults[T];
@@ -971,6 +999,18 @@ export function decodeQuery(value: unknown): Query {
       };
     case "forge.request.view":
       return { type, threadId: requireThreadId(record.threadId), number: requireNumber(record.number, type, "number") };
+    case "git.commit.detail":
+    case "forge.commit.runs":
+      return { type, threadId: requireThreadId(record.threadId), sha: requireField(record.sha, type, "sha") };
+    case "forge.request.status":
+      return { type, threadId: requireThreadId(record.threadId), ...optionalString(record, "branch") };
+    case "forge.commits.checks":
+      return {
+        type,
+        threadId: requireThreadId(record.threadId),
+        branch: requireField(record.branch, type, "branch"),
+        ...optionalNumber(record, "limit", type),
+      };
     case "skills.list":
       return {
         type,
@@ -981,6 +1021,8 @@ export function decodeQuery(value: unknown): Query {
       return { type, threadId: requireThreadId(record.threadId) };
     case "thread.context":
       return { type, threadId: requireThreadId(record.threadId) };
+    case "thread.subagent":
+      return { type, threadId: requireThreadId(record.threadId), agentId: requireField(record.agentId, type, "agentId") };
     case "thread.background.output":
       return {
         type,

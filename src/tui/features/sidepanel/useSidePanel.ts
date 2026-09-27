@@ -11,8 +11,7 @@ import type { SideTab } from "../../model/sidepanel.js";
  * The side panel's open tab (null: closed). The Diff tab follows the diff
  * panel's own state — opening a turn's diff shows it, closing the diff
  * closes it — the other tabs are opened and closed here. Also holds the
- * non-diff tabs' scroll pane and the delegated thread a nudge is being
- * written for.
+ * non-diff tabs' scroll pane.
  */
 export function useSidePanel(diffOpen: boolean): {
   tab: SideTab | null;
@@ -20,11 +19,8 @@ export function useSidePanel(diffOpen: boolean): {
   toggle: (tab: SideTab) => void;
   close: () => void;
   scrollRef: MutableRefObject<ScrollBoxRenderable | null>;
-  nudgeTarget: { threadId: string; title: string } | null;
-  setNudgeTarget: (target: { threadId: string; title: string } | null) => void;
 } {
   const [tab, setTab] = useState<SideTab | null>(null);
-  const [nudgeTarget, setNudgeTarget] = useState<{ threadId: string; title: string } | null>(null);
   const scrollRef = useRef<ScrollBoxRenderable | null>(null);
   useEffect(() => {
     if (diffOpen) setTab("diff");
@@ -33,7 +29,7 @@ export function useSidePanel(diffOpen: boolean): {
   const open = useCallback((next: SideTab) => setTab(next), []);
   const toggle = useCallback((next: SideTab) => setTab((current) => (current === next ? null : next)), []);
   const close = useCallback(() => setTab(null), []);
-  return { tab, open, toggle, close, scrollRef, nudgeTarget, setNudgeTarget };
+  return { tab, open, toggle, close, scrollRef };
 }
 
 /** Default for `ui.contextRefreshSeconds`, when the config pins nothing. */

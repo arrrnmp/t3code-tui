@@ -173,6 +173,10 @@ export function toThreadEnvelope(thread: StoredThread, turns: StoredTurn[], inpu
     ),
     // Only when there are any, so envelopes of threads without a queue stay byte-for-byte as they were.
     ...(queued.length > 0 ? { queuedTurns: queued } : {}),
+    // Likewise: only threads that ever ran a native subagent carry the list.
+    ...(thread.nativeSubagents !== undefined && thread.nativeSubagents.length > 0
+      ? { nativeSubagents: thread.nativeSubagents.map((entry) => ({ ...entry })) }
+      : {}),
     ...(input.parentThreadId ? { parentThreadId: input.parentThreadId } : {}),
   };
 }

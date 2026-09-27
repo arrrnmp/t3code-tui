@@ -1,6 +1,7 @@
 import { createPatch } from "diff";
 
 import type { ActivityEnvelope } from "../../core/types.js";
+import { prettifyModelSlug } from "./display.js";
 import { detectFiletype } from "./patch.js";
 
 export interface CommandView {
@@ -158,7 +159,28 @@ export interface UsageLimitView {
   wrapUp: boolean;
 }
 
+/**
+ * Work handed to another agent: moxen's own delegation tools (`source:
+ * "moxen"`, each a thread you can open) or the provider's native subagent
+ * (`"native"`, Claude's Agent tool). Its own row style, like commands and
+ * tasks, instead of the generic tool bullet.
+ */
+export interface AgentView {
+  kind: "agent";
+  source: "moxen" | "native";
+  /** Short, like other rows' tool names: "delegate", "task status", "Explore". */
+  title: string;
+  /** What the work is: the task's title or the subagent's description. */
+  subject: string;
+  /** Where it stands, when known: "running", "finished", "failed", … */
+  state: string | null;
+  /** Quiet facts after the state: the model, "forked", the provider listed. */
+  facts: string[];
+  running: boolean;
+}
+
 export type ActivityView =
+  | AgentView
   | CommandView
   | FileChangeView
   | ReadView
@@ -518,6 +540,97 @@ function toolSearchView(input: Record<string, unknown>, running: boolean): Activ
   return { kind: "tool", tool: "Searching for tools", detail: terms.join(" ") || query, running };
 }
 
+/**
+ * moxen's own MCP tools (`delegate`, `task_status`, `task_cancel`,
+ * `models`), however the provider namespaces them: `mcp__moxen__delegate`
+ * (Claude), `moxen.delegate` / `moxen/delegate` elsewhere. Null for any
+ * other tool.
+ */
+function moxenToolName(name: string): string | null {
+  return /^(?:mcp__moxen__|moxen[./:_]+)([a-z_]+)$/iu.exec(name.trim())?.[1]?.toLowerCase() ?? null;
+}
+
+/** The tool's JSON result, when it came back as one (moxen's tools answer in JSON). */
+function jsonResult(state: Record<string, unknown>, payload: Record<string, unknown>): Record<string, unknown> | null {
+  for (const raw of [state.output, payload.detail]) {
+    const text = asString(raw)?.trim();
+    if (!text || !text.startsWith("{")) continue;
+    try {
+      return asRecord(JSON.parse(text));
+    } catch {
+      // The ledger caps details, so a long report arrives cut off and is no
+      // longer JSON — but the short fields ahead of it are still readable.
+      const fields = Object.fromEntries(
+        ["title", "status", "model"].flatMap((key) => {
+          const match = new RegExp(`"${key}":\\s*"((?:[^"\\\\]|\\\\.)*)"`, "u").exec(text);
+          return match?.[1] === undefined ? [] : [[key, match[1]]];
+        }),
+      );
+      if (Object.keys(fields).length > 0) return fields;
+    }
+  }
+  return null;
+}
+
+const DELEGATED_STATUS: Record<string, string> = {
+  completed: "finished",
+  failed: "failed",
+  interrupted: "stopped",
+  running: "still running",
+  queued: "queued",
+};
+
+/**
+ * A moxen tool call in words: what was delegated and to what, where a
+ * delegated task stands — instead of `moxen: delegate` over the title.
+ * `task_status` / `task_cancel` name only a task id; `timeline()` adds the
+ * delegated title as `delegatedTitle` from the `delegate` call it came from.
+ */
+function moxenToolView(
+  tool: string,
+  input: Record<string, unknown>,
+  result: Record<string, unknown> | null,
+  payload: Record<string, unknown>,
+  running: boolean,
+): AgentView {
+  const title = asString(result?.title) ?? asString(input.title) ?? asString(payload.delegatedTitle) ?? firstLine(asString(input.task)) ?? "";
+  // `instance/model` → its readable name; the row has no catalog to ask.
+  const slug = asString(result?.model) ?? asString(input.model);
+  const model = slug === null ? null : prettifyModelSlug(slug);
+  const status = asString(result?.status);
+  const said = status === null ? null : (DELEGATED_STATUS[status] ?? status);
+  const view = (name: string, state: string | null, facts: (string | null)[] = []): AgentView => ({
+    kind: "agent",
+    source: "moxen",
+    title: name,
+    subject: title,
+    state: running ? "running" : state,
+    facts: facts.filter((fact): fact is string => fact !== null && fact.length > 0),
+    running,
+  });
+  switch (tool) {
+    case "delegate":
+      // The call returns at launch: its "running" is the task's, not news.
+      return view(input.fork === true ? "fork" : "delegate", null, [model, input.isolation === "shared" ? "shared checkout" : null]);
+    case "task_status":
+      return view("task status", said);
+    case "task_cancel":
+      return view("cancel task", status === null ? "stopped" : said);
+    case "models":
+      return { ...view("models", null), subject: asString(input.provider) ?? "every provider" };
+    default:
+      return view(tool.replace(/_/gu, " "), said);
+  }
+}
+
+/** A background subagent's run, as its task reports it. */
+const SUBAGENT_OUTCOME: Record<string, string> = {
+  started: "working in the background",
+  completed: "finished",
+  failed: "failed",
+  stopped: "stopped",
+};
+
 /** `mcp__linear__create_issue` → `linear: create_issue` — the raw
     double-underscore server/tool encoding reads poorly verbatim. */
 function friendlyToolTitle(name: string): string {
@@ -657,6 +770,30 @@ export function describeActivity(activity: ActivityEnvelope): ActivityView {
   if (itemType === "dynamic_tool_call" || itemType === "collab_agent_tool_call") {
     const display = tool ?? "tool";
     const name = display.toLowerCase();
+    const moxenTool = moxenToolName(display);
+    if (moxenTool !== null) return moxenToolView(moxenTool, input, jsonResult(state, payload), payload, running);
+    // Claude's Agent tool: say which subagent and what for, not its whole
+    // prompt (the subagent reads that; the transcript needs the gist).
+    if (name === "agent" || name === "task") {
+      const type = asString(input.subagent_type);
+      const description = asString(input.description);
+      if (type !== null || description !== null) {
+        // A background subagent's own run, folded in from its task rows
+        // (`withSubagentState`): the call returns at launch, the work after.
+        const background = asString(payload.backgroundStatus);
+        const ended = background === null ? undefined : SUBAGENT_OUTCOME[background];
+        const busy = background === null ? running : background === "started";
+        return {
+          kind: "agent",
+          source: "native",
+          title: type ?? "subagent",
+          subject: description ?? firstLine(asString(input.prompt)) ?? "",
+          state: ended ?? (running ? "starting" : null),
+          facts: [],
+          running: busy,
+        };
+      }
+    }
     // Harnesses may namespace their tools (`default.bash`, `ns.read`) —
     // match branches on the trailing segment so namespaced calls get the
     // same mapped views instead of the raw generic fallback. Clean names

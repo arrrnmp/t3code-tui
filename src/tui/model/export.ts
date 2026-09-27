@@ -96,6 +96,11 @@ export function exportToolLine(entry: TimelineEntry): string | null {
     case "todos":
       // The live checklist renders once in "State to continue", never per row.
       return null;
+    case "agent": {
+      const who = view.source === "moxen" ? `moxen ${view.title}` : `${view.title} subagent`;
+      const tail = [view.state, ...view.facts].filter((part): part is string => part !== null).join(" · ");
+      return `${who}: ${full(view.subject)}${tail ? ` (${tail})` : ""}`;
+    }
     case "task": {
       const taskType = view.taskType === null ? "" : ` · ${view.taskType}`;
       const model = view.model === null ? "" : ` · ${view.model}`;
