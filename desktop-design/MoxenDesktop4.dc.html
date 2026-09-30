@@ -1,0 +1,1685 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="_ds/moxen-tui-6196c2e9-71df-4a89-8e58-594880d72fad/_ds_bundle.css">
+<link rel="stylesheet" href="_ds/moxen-tui-6196c2e9-71df-4a89-8e58-594880d72fad/styles.css">
+<script src="_ds/moxen-tui-6196c2e9-71df-4a89-8e58-594880d72fad/_ds_bundle.js"></script>
+<style>
+body{margin:0;background:#09090b;-webkit-font-smoothing:antialiased}
+a{color:#7dd3fc}a:hover{color:#eceef2}
+@keyframes mxPulse{0%,100%{opacity:1}50%{opacity:.35}}
+@keyframes mxSpin{to{transform:rotate(360deg)}}
+.mx-scroll::-webkit-scrollbar{width:8px}.mx-scroll::-webkit-scrollbar-thumb{background:#27272a;border-radius:4px}.mx-scroll::-webkit-scrollbar-track{background:transparent}
+textarea::placeholder,input::placeholder{color:#8b8f98}
+</style>
+</helmet>
+<div data-screen-label="Moxen desktop v3" style="width:1440px; height:900px; position:relative; overflow:hidden; display:flex; background:#09090b; font-family:-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif; font-size:13px; color:#dcdfe4; border-radius:10px; border:1px solid #27272a; box-sizing:border-box">
+
+  <!-- SIDEBAR -->
+  <aside style="width:280px; flex-shrink:0; display:flex; flex-direction:column; background:#09090b; border-right:1px solid #27272a">
+    <div style="height:44px; flex-shrink:0; display:flex; align-items:center; gap:8px; padding:0 10px 0 14px; border-bottom:1px solid #27272a">
+      <span style="width:12px; height:12px; border-radius:50%; background:#ff5f57"></span>
+      <span style="width:12px; height:12px; border-radius:50%; background:#febc2e"></span>
+      <span style="width:12px; height:12px; border-radius:50%; background:#28c840"></span>
+      <div style="flex:1"></div>
+      <button onClick="{{startNew}}" title="New thread (⌘N)" style="all:unset; width:28px; height:28px; display:flex; align-items:center; justify-content:center; border-radius:6px; color:#8b8f98" style-hover="background:#17171b; color:#eceef2"><span style="width:15px; height:15px; background:currentColor; mask:url(icons/square-pen.svg) center/contain no-repeat; -webkit-mask:url(icons/square-pen.svg) center/contain no-repeat"></span></button>
+    </div>
+    <div style="padding:10px 8px 6px">
+      <button onClick="{{openPalette}}" style="all:unset; box-sizing:border-box; width:100%; display:flex; align-items:center; gap:8px; height:30px; padding:0 10px 0 12px; border-radius:6px; background:#17171b; color:#8b8f98; font-size:12.5px" style-hover="background:#202027">
+        <span style="width:13px; height:13px; background:currentColor; mask:url(icons/search.svg) center/contain no-repeat; -webkit-mask:url(icons/search.svg) center/contain no-repeat"></span>
+        <span style="flex:1">Jump to thread or action</span>
+        <span style="font-size:11px; padding:0 5px; border:1px solid #27272a; border-radius:4px; line-height:16px">⌘K</span>
+      </button>
+    </div>
+    <div style="display:flex; align-items:center; gap:6px; padding:6px 8px 6px 20px">
+      <span style="flex:1; font-size:11.5px; font-weight:600; color:#8b8f98">Threads</span>
+      <div style="display:flex; gap:1px; padding:1px; border-radius:6px; background:#131316; border:1px solid #27272a">
+        <sc-for list="{{modes}}" as="m" hint-placeholder-count="3">
+          <button onClick="{{m.pick}}" style="all:unset; padding:1px 7px; border-radius:4px; font-size:11px; font-weight:500; background:{{m.bg}}; color:{{m.fg}}" style-hover="color:#eceef2">{{m.label}}</button>
+        </sc-for>
+      </div>
+    </div>
+    <sc-if value="{{isProjectMode}}" hint-placeholder-val="{{false}}">
+      <div style="display:flex; align-items:center; gap:6px; margin:2px 8px 4px; padding:4px; border-radius:6px; background:#131316">
+        <button onClick="{{prevProject}}" style="all:unset; width:22px; height:22px; display:flex; align-items:center; justify-content:center; border-radius:4px; color:#8b8f98; transform:rotate(180deg)" style-hover="background:#202027; color:#eceef2"><span style="width:12px; height:12px; background:currentColor; mask:url(icons/chevron-right.svg) center/contain no-repeat; -webkit-mask:url(icons/chevron-right.svg) center/contain no-repeat"></span></button>
+        <div style="flex:1; display:flex; justify-content:center; align-items:center; gap:7px"><span style="font-family:var(--mx-font); font-size:9.5px; font-weight:700; line-height:15px; padding:0 4px; border-radius:3px; color:#09090b; background:{{curProject.color}}">{{curProject.badge}}</span><span style="font-size:12.5px; font-weight:500; color:#eceef2">{{curProject.name}}</span></div>
+        <button onClick="{{nextProject}}" style="all:unset; width:22px; height:22px; display:flex; align-items:center; justify-content:center; border-radius:4px; color:#8b8f98" style-hover="background:#202027; color:#eceef2"><span style="width:12px; height:12px; background:currentColor; mask:url(icons/chevron-right.svg) center/contain no-repeat; -webkit-mask:url(icons/chevron-right.svg) center/contain no-repeat"></span></button>
+      </div>
+    </sc-if>
+    <div class="mx-scroll" style="flex:1; overflow-y:auto; padding:2px 8px 8px">
+      <sc-for list="{{groups}}" as="g" hint-placeholder-count="3">
+        <div style="display:flex; flex-direction:column; gap:1px; margin-bottom:8px">
+          <sc-if value="{{g.showHeader}}" hint-placeholder-val="{{true}}">
+            <button onClick="{{g.toggle}}" style="all:unset; display:flex; align-items:center; gap:8px; height:28px; padding:0 10px 0 12px; margin-top:6px; border-radius:6px; color:#8b8f98" style-hover="color:#dcdfe4">
+              <span style="font-family:var(--mx-font); font-size:9.5px; font-weight:700; line-height:15px; padding:0 4px; border-radius:3px; color:#09090b; background:{{g.color}}">{{g.badge}}</span>
+              <span style="flex:1; font-size:12px; font-weight:600">{{g.name}}</span>
+              <span style="font-size:11px; font-variant-numeric:tabular-nums">{{g.count}}</span>
+              <span style="width:14px; display:flex; justify-content:center"><span style="width:10px; height:10px; background:currentColor; transform:{{g.chevRot}}; mask:url(icons/chevron-down.svg) center/contain no-repeat; -webkit-mask:url(icons/chevron-down.svg) center/contain no-repeat"></span></span>
+            </button>
+          </sc-if>
+          <sc-for list="{{g.rows}}" as="r" hint-placeholder-count="2">
+            <div style="display:flex; flex-direction:column">
+              <div onClick="{{r.open}}" style="position:relative; display:flex; align-items:center; gap:8px; height:32px; padding:0 10px 0 12px; border-radius:6px; background:{{r.bg}}; cursor:default" style-hover="background:{{r.hoverBg}}">
+                <span style="position:absolute; left:0; top:8px; bottom:8px; width:2px; border-radius:1px; background:{{r.marker}}"></span>
+                <sc-if value="{{r.showProject}}" hint-placeholder-val="{{false}}"><span style="font-family:var(--mx-font); font-size:9.5px; font-weight:700; line-height:15px; padding:0 4px; border-radius:3px; color:#09090b; background:{{r.projectColor}}; flex-shrink:0">{{r.projectBadge}}</span></sc-if>
+                <span style="flex:1; min-width:0; font-size:13px; font-weight:{{r.titleWeight}}; color:{{r.titleColor}}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">{{r.title}}</span>
+                <span style="font-size:11px; color:#8b8f98; flex-shrink:0; font-variant-numeric:tabular-nums">{{r.age}}</span>
+                <span style="width:14px; height:14px; flex-shrink:0; display:flex; align-items:center; justify-content:center">
+                  <sc-if value="{{r.spin}}" hint-placeholder-val="{{false}}"><span style="width:11px; height:11px; box-sizing:border-box; border-radius:50%; border:1.5px solid #27272a; border-top-color:#7dd3fc; animation:mxSpin .9s linear infinite"></span></sc-if>
+                  <sc-if value="{{r.hasIcon}}" hint-placeholder-val="{{false}}"><span title="{{r.iconTitle}}" style="width:13px; height:13px; background:{{r.iconColor}}; mask:{{r.icon}} center/contain no-repeat; -webkit-mask:{{r.icon}} center/contain no-repeat; animation:{{r.anim}}"></span></sc-if>
+                </span>
+              </div>
+              <sc-if value="{{r.hasChildren}}" hint-placeholder-val="{{false}}">
+                <div style="display:flex; flex-direction:column; margin:0 0 4px 17px; padding-left:6px; border-left:1px solid #202027">
+                  <sc-for list="{{r.children}}" as="c" hint-placeholder-count="0">
+                    <div onClick="{{c.open}}" style="display:flex; align-items:center; gap:8px; height:26px; padding:0 10px 0 8px; border-radius:5px; font-size:12px; cursor:default; background:{{c.bg}}" style-hover="background:#131316">
+                      <span style="width:12px; height:12px; flex-shrink:0; background:{{c.iconColor}}; mask:{{c.icon}} center/contain no-repeat; -webkit-mask:{{c.icon}} center/contain no-repeat"></span>
+                      <span style="flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:{{c.color}}">{{c.label}}</span>
+                      <sc-if value="{{c.done}}" hint-placeholder-val="{{true}}"><span style="font-size:11px; color:#8b8f98; font-variant-numeric:tabular-nums">{{c.age}}</span></sc-if>
+                      <span style="width:14px; display:flex; justify-content:center">
+                        <sc-if value="{{c.running}}" hint-placeholder-val="{{false}}"><span style="width:10px; height:10px; box-sizing:border-box; border-radius:50%; border:1.5px solid #27272a; border-top-color:#fbbf24; animation:mxSpin .9s linear infinite"></span></sc-if>
+                      </span>
+                    </div>
+                  </sc-for>
+                </div>
+              </sc-if>
+            </div>
+          </sc-for>
+        </div>
+      </sc-for>
+    </div>
+    <div style="flex-shrink:0; border-top:1px solid #27272a; padding:6px 8px 8px; display:flex; flex-direction:column; gap:3px">
+      <button onClick="{{toggleSettled}}" style="all:unset; display:flex; align-items:center; gap:8px; height:28px; padding:0 10px 0 12px; border-radius:6px; color:#8b8f98" style-hover="color:#dcdfe4">
+        <span style="width:13px; height:13px; background:currentColor; mask:url(icons/circle-check.svg) center/contain no-repeat; -webkit-mask:url(icons/circle-check.svg) center/contain no-repeat"></span>
+        <span style="flex:1; font-size:12px; font-weight:600">Settled</span><span style="font-size:11px; font-variant-numeric:tabular-nums">{{settledTotal}}</span>
+        <span style="width:14px; display:flex; justify-content:center"><span style="width:10px; height:10px; background:currentColor; transform:{{settledRot}}; mask:url(icons/chevron-down.svg) center/contain no-repeat; -webkit-mask:url(icons/chevron-down.svg) center/contain no-repeat"></span></span>
+      </button>
+      <sc-if value="{{settledOpen}}" hint-placeholder-val="{{false}}">
+        <div class="mx-scroll" style="max-height:190px; overflow-y:auto; display:flex; flex-direction:column; gap:1px">
+          <sc-for list="{{settled}}" as="s" hint-placeholder-count="4">
+            <div onClick="{{s.open}}" style="display:flex; align-items:center; gap:8px; height:30px; padding:0 32px 0 12px; border-radius:6px; background:{{s.bg}}; font-size:12.5px; color:#8b8f98; cursor:default" style-hover="background:#17171b; color:#dcdfe4">
+              <span style="font-family:var(--mx-font); font-size:9.5px; font-weight:700; line-height:13px; padding:0 3px; border-radius:3px; color:#8b8f98; box-shadow:inset 0 0 0 1px #3f3f46">{{s.badge}}</span>
+              <span style="flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">{{s.title}}</span><span style="font-size:11px">{{s.age}}</span>
+            </div>
+          </sc-for>
+          <button onClick="{{noop}}" style="all:unset; padding:4px 12px; font-size:11.5px; color:#8b8f98" style-hover="color:#eceef2">Show 9 more</button>
+        </div>
+      </sc-if>
+      <button onClick="{{noop}}" style="all:unset; display:flex; align-items:center; gap:8px; height:32px; padding:0 10px 0 12px; margin-top:2px; border-radius:6px; font-size:12.5px; color:#dcdfe4" style-hover="background:#17171b; color:#eceef2">
+        <span style="width:15px; height:15px; background:#8b8f98; mask:url(icons/settings.svg) center/contain no-repeat; -webkit-mask:url(icons/settings.svg) center/contain no-repeat"></span>
+        <span style="flex:1">Settings</span>
+        <span style="font-size:11px; color:#8b8f98; padding:0 5px; border:1px solid #27272a; border-radius:4px; line-height:16px">⌘,</span>
+      </button>
+    </div>
+  </aside>
+
+  <!-- CHAT -->
+  <main style="flex:1; min-width:0; display:flex; flex-direction:column; background:#0f0f12; position:relative">
+    <header style="position:relative; height:44px; flex-shrink:0; display:flex; align-items:center; gap:10px; padding:0 12px 0 20px; border-bottom:1px solid #27272a">
+      <span style="font-family:var(--mx-font); font-size:9.5px; font-weight:700; line-height:15px; padding:0 4px; border-radius:3px; color:#09090b; background:{{thread.projectColor}}; flex-shrink:0">{{thread.projectBadge}}</span>
+      <span style="font-size:13px; color:#8b8f98; white-space:nowrap">{{thread.projectName}}</span>
+      <span style="color:#3f3f46">/</span>
+      <sc-if value="{{showTitle}}" hint-placeholder-val="{{true}}">
+        <span onClick="{{crumbTitle}}" onDoubleClick="{{startRename}}" title="Double-click to rename" style="min-width:0; font-size:13px; font-weight:{{crumbTitleWeight}}; color:{{crumbTitleColor}}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; cursor:default" style-hover="color:#eceef2">{{thread.title}}</span>
+      </sc-if>
+      <sc-if value="{{renaming}}" hint-placeholder-val="{{false}}">
+        <input autoFocus="{{true}}" value="{{renameVal}}" onChange="{{renameChange}}" onKeyDown="{{renameKey}}" onBlur="{{renameCommit}}" style="all:unset; box-sizing:border-box; flex:0 1 460px; min-width:120px; height:28px; padding:0 8px; margin-left:-8px; border-radius:5px; background:#17171b; box-shadow:inset 0 0 0 1px #7dd3fc; font-size:13px; font-weight:600; color:#eceef2">
+      </sc-if>
+      <sc-if value="{{inSubagent}}" hint-placeholder-val="{{false}}">
+        <div style="display:flex; align-items:center; gap:8px; min-width:0">
+          <span style="color:#3f3f46">/</span>
+          <span style="width:13px; height:13px; flex-shrink:0; background:#c4b5fd; mask:url(icons/bot.svg) center/contain no-repeat; -webkit-mask:url(icons/bot.svg) center/contain no-repeat;"></span>
+          <span style="font-size:13px; font-weight:600; color:#eceef2; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">{{sub.title}}</span>
+        </div>
+      </sc-if>
+      <div style="flex:1"></div>
+      <sc-if value="{{statusPill.show}}" hint-placeholder-val="{{false}}">
+        <div style="display:flex; align-items:center; gap:7px; font-size:12px; color:{{statusPill.color}}; white-space:nowrap; margin-right:4px">
+          <sc-if value="{{statusPill.spin}}" hint-placeholder-val="{{false}}"><span style="width:11px; height:11px; flex-shrink:0; box-sizing:border-box; border-radius:50%; border:1.5px solid #27272a; border-top-color:#7dd3fc; animation:mxSpin .9s linear infinite"></span></sc-if>
+          <sc-if value="{{statusPill.hasIcon}}" hint-placeholder-val="{{false}}"><span style="width:13px; height:13px; flex-shrink:0; background:currentColor; mask:{{statusPill.icon}} center/contain no-repeat; -webkit-mask:{{statusPill.icon}} center/contain no-repeat;"></span></sc-if>
+          <span>{{statusPill.label}}</span>
+        </div>
+      </sc-if>
+      <sc-if value="{{hasMenu}}" hint-placeholder-val="{{true}}">
+        <button onClick="{{toggleMenu}}" title="Thread actions" style="all:unset; width:28px; height:28px; display:flex; align-items:center; justify-content:center; border-radius:6px; color:#8b8f98; background:{{menuBtnBg}}" style-hover="background:#17171b; color:#eceef2"><span style="width:15px; height:15px; flex-shrink:0; background:currentColor; mask:url(icons/ellipsis.svg) center/contain no-repeat; -webkit-mask:url(icons/ellipsis.svg) center/contain no-repeat;"></span></button>
+      </sc-if>
+      <button onClick="{{togglePanel}}" title="Toggle side panel (⌘⌥B)" style="all:unset; width:28px; height:28px; display:flex; align-items:center; justify-content:center; border-radius:6px; color:{{panelBtnColor}}; background:{{panelBtnBg}}" style-hover="background:#17171b; color:#eceef2"><span style="width:15px; height:15px; flex-shrink:0; background:currentColor; mask:url(icons/panel-right.svg) center/contain no-repeat; -webkit-mask:url(icons/panel-right.svg) center/contain no-repeat;"></span></button>
+    </header>
+
+    <div ref="{{chatRef}}" onScroll="{{onChatScroll}}" class="mx-scroll" style="flex:1; overflow-y:auto; padding:28px 32px 20px">
+      <div style="max-width:720px; margin:0 auto; display:flex; flex-direction:column; gap:14px">
+        <sc-if value="{{isNew}}" hint-placeholder-val="{{false}}">
+          <div style="min-height:560px; display:flex; flex-direction:column; justify-content:flex-end; gap:14px; padding-bottom:8px">
+            <span style="font-size:22px; font-weight:600; letter-spacing:-0.01em; color:#eceef2">New thread</span>
+            <div style="position:relative; display:flex; align-items:center; gap:8px; flex-wrap:wrap">
+              <button onClick="{{toggleProjPop}}" style="all:unset; display:flex; align-items:center; gap:8px; height:30px; padding:0 10px; border-radius:6px; background:#17171b; box-shadow:inset 0 0 0 1px #27272a; font-size:13px; color:#eceef2" style-hover="background:#202027">
+                <span style="font-family:var(--mx-font); font-size:9.5px; font-weight:700; line-height:15px; padding:0 4px; border-radius:3px; color:#09090b; background:{{newProject.color}}">{{newProject.badge}}</span>{{newProject.name}}<span style="width:10px; height:10px; flex-shrink:0; background:#8b8f98; mask:url(icons/chevron-down.svg) center/contain no-repeat; -webkit-mask:url(icons/chevron-down.svg) center/contain no-repeat;"></span>
+              </button>
+              <div style="display:flex; gap:1px; padding:2px; border-radius:6px; background:#131316; box-shadow:inset 0 0 0 1px #27272a">
+                <sc-for list="{{checkoutSeg}}" as="c" hint-placeholder-count="2">
+                  <button onClick="{{c.pick}}" style="all:unset; height:26px; line-height:26px; padding:0 10px; border-radius:4px; font-size:12.5px; font-weight:500; background:{{c.bg}}; color:{{c.fg}}" style-hover="color:#eceef2">{{c.label}}</button>
+                </sc-for>
+              </div>
+              <span style="display:flex; align-items:center; gap:6px; font-size:12px; color:#8b8f98"><span style="width:12px; height:12px; flex-shrink:0; background:currentColor; mask:url(icons/git-branch.svg) center/contain no-repeat; -webkit-mask:url(icons/git-branch.svg) center/contain no-repeat;"></span><span style="font-family:var(--mx-font); font-size:11.5px">main</span></span>
+              <sc-if value="{{projPop}}" hint-placeholder-val="{{false}}">
+                <div onClick="{{stop}}" style="position:absolute; top:36px; left:0; width:320px; display:flex; flex-direction:column; padding:4px; background:#17171b; border:1px solid #27272a; border-radius:8px; box-shadow:0 16px 40px rgba(0,0,0,0.5); z-index:11">
+                  <sc-for list="{{projRows}}" as="p" hint-placeholder-count="3">
+                    <div onClick="{{p.pick}}" style="display:flex; align-items:center; gap:10px; padding:6px 8px; border-radius:5px; cursor:default" style-hover="background:#202027">
+                      <span style="font-family:var(--mx-font); font-size:9.5px; font-weight:700; line-height:15px; padding:0 4px; border-radius:3px; color:#09090b; background:{{p.color}}">{{p.badge}}</span>
+                      <div style="flex:1; display:flex; flex-direction:column; gap:1px"><span style="font-size:13px; color:#eceef2">{{p.name}}</span><span style="font-family:var(--mx-font); font-size:11px; color:#8b8f98">{{p.path}}</span></div>
+                      <span style="width:13px; height:13px; flex-shrink:0; background:{{p.check}}; mask:url(icons/check.svg) center/contain no-repeat; -webkit-mask:url(icons/check.svg) center/contain no-repeat;"></span>
+                    </div>
+                  </sc-for>
+                  <div style="height:1px; background:#27272a; margin:4px 0"></div>
+                  <div onClick="{{newFolder}}" style="display:flex; align-items:center; gap:10px; height:30px; padding:0 8px; border-radius:5px; font-size:12.5px; color:#dcdfe4; cursor:default" style-hover="background:#202027"><span style="width:13px; height:13px; flex-shrink:0; background:#8b8f98; mask:url(icons/plus.svg) center/contain no-repeat; -webkit-mask:url(icons/plus.svg) center/contain no-repeat;"></span>New project from local folder…</div>
+                </div>
+              </sc-if>
+            </div>
+            <span style="font-size:12.5px; line-height:1.55; color:#8b8f98; text-wrap:pretty">{{newCheckoutHint}}</span>
+          </div>
+        </sc-if>
+        <sc-for list="{{timeline}}" as="it" hint-placeholder-count="4">
+          <div onMouseEnter="{{it.enter}}" onMouseLeave="{{it.leave}}" style="display:flex; flex-direction:column">
+            <sc-if value="{{it.isBrief}}" hint-placeholder-val="{{false}}">
+              <div style="display:flex; flex-direction:column; gap:8px; padding:12px 14px; border-radius:8px; background:#131316; border:1px solid #27272a">
+                <div style="display:flex; align-items:center; gap:7px; font-size:11.5px; color:#8b8f98"><span style="width:13px; height:13px; flex-shrink:0; background:#c4b5fd; mask:{{it.icon}} center/contain no-repeat; -webkit-mask:{{it.icon}} center/contain no-repeat;"></span><span style="color:#c4b5fd; font-weight:500">{{it.label}}</span><span>{{it.meta}}</span></div>
+                <div style="font-size:13.5px; line-height:1.55; color:#dcdfe4; text-wrap:pretty">{{it.text}}</div>
+              </div>
+            </sc-if>
+            <sc-if value="{{it.isStarting}}" hint-placeholder-val="{{false}}">
+              <div style="display:flex; align-items:center; gap:8px; height:24px; font-size:12.5px; color:#8b8f98"><span style="width:11px; height:11px; flex-shrink:0; box-sizing:border-box; border-radius:50%; border:1.5px solid #27272a; border-top-color:#7dd3fc; animation:mxSpin .9s linear infinite"></span><span style="color:#7dd3fc; font-weight:500">Starting</span><span>{{it.text}}</span></div>
+            </sc-if>
+            <sc-if value="{{it.isUser}}" hint-placeholder-val="{{false}}">
+              <div style="align-self:flex-end; max-width:82%; display:flex; flex-direction:column; align-items:flex-end; gap:6px">
+                <sc-for list="{{it.attachments}}" as="a" hint-placeholder-count="0">
+                  <div style="width:220px; height:132px; border-radius:8px; overflow:hidden; background:#17171b; box-shadow:inset 0 0 0 1px #27272a; cursor:zoom-in">
+                    <div role="img" aria-label="{{a.name}}" style="width:100%; height:100%; background:{{a.bg}}; opacity:0.92"></div>
+                  </div>
+                </sc-for>
+                <div style="padding:10px 14px; background:#17171b; border-radius:8px; font-size:14px; line-height:1.55; color:#eceef2; text-wrap:pretty">{{it.text}}</div>
+                <div style="display:flex; align-items:center; gap:2px; height:22px; font-size:11.5px; color:#8b8f98; opacity:{{it.metaOpacity}}; transition:opacity .12s">
+                  <span style="margin-right:6px">{{it.time}}</span>
+                  <button onClick="{{noop}}" title="Copy" style="all:unset; width:22px; height:22px; display:flex; align-items:center; justify-content:center; border-radius:4px" style-hover="background:#17171b; color:#eceef2"><span style="width:12px; height:12px; background:currentColor; mask:url(icons/copy.svg) center/contain no-repeat; -webkit-mask:url(icons/copy.svg) center/contain no-repeat"></span></button>
+                  <button onClick="{{noop}}" title="Revert to here" style="all:unset; width:22px; height:22px; display:flex; align-items:center; justify-content:center; border-radius:4px" style-hover="background:#17171b; color:#f87171"><span style="width:12px; height:12px; background:currentColor; mask:url(icons/undo-2.svg) center/contain no-repeat; -webkit-mask:url(icons/undo-2.svg) center/contain no-repeat"></span></button>
+                </div>
+              </div>
+            </sc-if>
+            <sc-if value="{{it.isWork}}" hint-placeholder-val="{{false}}">
+              <div style="display:flex; flex-direction:column">
+                <div onClick="{{it.toggle}}" style="align-self:flex-start; display:flex; align-items:center; gap:7px; height:24px; padding:0 8px; margin-left:-8px; border-radius:6px; font-size:12.5px; color:#8b8f98; cursor:default; white-space:nowrap" style-hover="background:#17171b; color:#dcdfe4">
+                  <span style="width:11px; height:11px; background:currentColor; transform:{{it.chevRot}}; mask:url(icons/chevron-down.svg) center/contain no-repeat; -webkit-mask:url(icons/chevron-down.svg) center/contain no-repeat"></span>
+                  <span>Worked for {{it.duration}}</span><span style="color:#3f3f46">·</span><span>{{it.steps}} steps</span>
+                </div>
+                <sc-if value="{{it.expanded}}" hint-placeholder-val="{{false}}">
+                  <div style="display:flex; flex-direction:column; margin:6px 0 0 5px; padding-left:14px; border-left:1px solid #27272a">
+                    <sc-for list="{{it.stepsList}}" as="s" hint-placeholder-count="3">
+                      <div style="display:flex; align-items:center; gap:9px; height:24px; font-size:12.5px">
+                        <span style="width:13px; height:13px; flex-shrink:0; background:{{s.iconColor}}; mask:{{s.icon}} center/contain no-repeat; -webkit-mask:{{s.icon}} center/contain no-repeat"></span>
+                        <span style="color:#a1a1aa; width:54px; flex-shrink:0">{{s.tool}}</span>
+                        <span style="flex:1; min-width:0; font-family:var(--mx-font); font-size:11.5px; color:#8b8f98; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">{{s.detail}}</span>
+                        <span style="font-size:11.5px; color:#8b8f98; font-variant-numeric:tabular-nums">{{s.dur}}</span>
+                      </div>
+                    </sc-for>
+                  </div>
+                </sc-if>
+              </div>
+            </sc-if>
+            <sc-if value="{{it.isLive}}" hint-placeholder-val="{{false}}">
+              <div style="display:flex; flex-direction:column">
+                <div style="display:flex; align-items:center; gap:8px; height:24px; font-size:12.5px; white-space:nowrap">
+                  <span style="width:11px; height:11px; box-sizing:border-box; border-radius:50%; border:1.5px solid #27272a; border-top-color:#7dd3fc; animation:mxSpin .9s linear infinite"></span>
+                  <span style="color:#7dd3fc; font-weight:500">Working</span><span style="color:#8b8f98">{{it.duration}}</span><span style="color:#3f3f46">·</span><span style="color:#8b8f98">{{it.steps}} steps</span>
+                </div>
+                <div style="display:flex; flex-direction:column; margin:6px 0 0 5px; padding-left:14px; border-left:1px solid #7dd3fc33">
+                  <sc-for list="{{it.stepsList}}" as="s" hint-placeholder-count="4">
+                    <div style="display:flex; align-items:center; gap:9px; height:24px; font-size:12.5px">
+                      <span style="width:13px; height:13px; flex-shrink:0; background:{{s.iconColor}}; mask:{{s.icon}} center/contain no-repeat; -webkit-mask:{{s.icon}} center/contain no-repeat"></span>
+                      <span style="color:{{s.toolColor}}; width:54px; flex-shrink:0">{{s.tool}}</span>
+                      <span style="flex:1; min-width:0; font-family:var(--mx-font); font-size:11.5px; color:{{s.detailColor}}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">{{s.detail}}</span>
+                      <sc-if value="{{s.running}}" hint-placeholder-val="{{false}}"><span style="width:10px; height:10px; box-sizing:border-box; border-radius:50%; border:1.5px solid #27272a; border-top-color:{{s.spinColor}}; animation:mxSpin .9s linear infinite"></span></sc-if>
+                      <span style="font-size:11.5px; color:#8b8f98; font-variant-numeric:tabular-nums; width:44px; text-align:right">{{s.dur}}</span>
+                    </div>
+                  </sc-for>
+                </div>
+              </div>
+            </sc-if>
+            <sc-if value="{{it.isAgent}}" hint-placeholder-val="{{false}}">
+              <div style="display:flex; flex-direction:column; gap:10px">
+                <sc-for list="{{it.paras}}" as="p" hint-placeholder-count="1">
+                  <p style="margin:0; font-size:14px; line-height:1.6; color:#dcdfe4; text-wrap:pretty">{{p.text}}</p>
+                </sc-for>
+                <sc-if value="{{it.hasBullets}}" hint-placeholder-val="{{false}}">
+                  <ul style="margin:0; padding-left:18px; display:flex; flex-direction:column; gap:6px">
+                    <sc-for list="{{it.bullets}}" as="b" hint-placeholder-count="2">
+                      <li style="font-size:14px; line-height:1.6; color:#dcdfe4; text-wrap:pretty"><strong style="color:#eceef2; font-weight:600">{{b.lead}}</strong> {{b.text}}</li>
+                    </sc-for>
+                  </ul>
+                </sc-if>
+                <sc-if value="{{it.hasCode}}" hint-placeholder-val="{{false}}">
+                  <pre style="margin:0; padding:10px 14px; border-radius:6px; background:#09090b; border:1px solid #27272a; font-family:var(--mx-font); font-size:12.5px; line-height:1.6; color:#e5e7eb; white-space:pre-wrap">{{it.code}}</pre>
+                </sc-if>
+                <div style="display:flex; align-items:center; gap:2px; height:22px; margin-top:-4px; margin-left:-4px; font-size:11.5px; color:#8b8f98; opacity:{{it.metaOpacity}}; transition:opacity .12s">
+                  <button onClick="{{noop}}" title="Copy" style="all:unset; width:22px; height:22px; display:flex; align-items:center; justify-content:center; border-radius:4px" style-hover="background:#17171b; color:#eceef2"><span style="width:12px; height:12px; background:currentColor; mask:url(icons/copy.svg) center/contain no-repeat; -webkit-mask:url(icons/copy.svg) center/contain no-repeat"></span></button>
+                  <span style="margin-left:6px; display:flex; align-items:center; gap:6px"><span style="width:6px; height:6px; border-radius:50%; background:#DE7356"></span>{{it.model}}</span><span style="color:#3f3f46; margin:0 4px">·</span><span>{{it.time}}</span>
+                </div>
+              </div>
+            </sc-if>
+            <sc-if value="{{it.isDiff}}" hint-placeholder-val="{{false}}">
+              <div onClick="{{it.open}}" style="display:flex; align-items:center; gap:10px; height:34px; padding:0 8px 0 12px; border-radius:6px; background:#131316; border:1px solid #27272a; font-size:12.5px; white-space:nowrap; cursor:default" style-hover="background:#17171b">
+                <span style="width:13px; height:13px; background:#c4b5fd; mask:url(icons/diff.svg) center/contain no-repeat; -webkit-mask:url(icons/diff.svg) center/contain no-repeat"></span>
+                <span style="color:#dcdfe4">{{it.files}} files changed</span>
+                <span style="font-family:var(--mx-font); font-size:11.5px; color:#4ade80">+{{it.add}}</span><span style="font-family:var(--mx-font); font-size:11.5px; color:#f87171">−{{it.del}}</span>
+                <div style="flex:1"></div>
+                <span style="color:#8b8f98; font-size:12px">Turn {{it.turn}}</span>
+                <span style="display:flex; align-items:center; gap:5px; padding:0 8px; height:24px; border-radius:4px; color:#dcdfe4">Open diff<span style="width:11px; height:11px; background:currentColor; mask:url(icons/chevron-right.svg) center/contain no-repeat; -webkit-mask:url(icons/chevron-right.svg) center/contain no-repeat"></span></span>
+              </div>
+            </sc-if>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+
+    <!-- DOCK -->
+    <div style="flex-shrink:0; padding:0 32px 14px">
+      <div style="max-width:720px; margin:0 auto; display:flex; flex-direction:column; gap:8px; position:relative">
+        <sc-if value="{{showJump}}" hint-placeholder-val="{{false}}">
+          <button onClick="{{jumpBottom}}" style="all:unset; position:absolute; top:-40px; left:50%; transform:translateX(-50%); display:flex; align-items:center; gap:6px; height:28px; padding:0 12px; border-radius:14px; background:#202027; box-shadow:0 4px 14px rgba(0,0,0,0.4), inset 0 0 0 1px #3f3f46; font-size:12px; color:#dcdfe4; white-space:nowrap; z-index:5" style-hover="color:#eceef2; background:#27272a"><span style="width:12px; height:12px; flex-shrink:0; background:currentColor; mask:url(icons/arrow-up.svg) center/contain no-repeat; -webkit-mask:url(icons/arrow-up.svg) center/contain no-repeat; transform:rotate(180deg);"></span>Jump to bottom</button>
+        </sc-if>
+        <sc-if value="{{modelPopOpen}}" hint-placeholder-val="{{false}}">
+          <div onClick="{{stop}}" style="position:absolute; left:8px; bottom:66px; width:480px; display:flex; background:#17171b; border:1px solid #27272a; border-radius:8px; box-shadow:0 16px 40px rgba(0,0,0,0.5); overflow:hidden; z-index:11">
+            <div style="width:44px; flex-shrink:0; display:flex; flex-direction:column; align-items:center; gap:2px; padding:6px 0; background:#131316; border-right:1px solid #27272a">
+              <sc-for list="{{providerRail}}" as="p" hint-placeholder-count="4">
+                <button onClick="{{p.pick}}" aria-label="{{p.label}}" style="all:unset; position:relative; width:32px; height:32px; display:flex; align-items:center; justify-content:center; border-radius:6px; background:{{p.bg}}" style-hover="background:#202027">
+                  <span style="position:absolute; left:-6px; top:8px; bottom:8px; width:2px; border-radius:1px; background:{{p.bar}}"></span>
+                  <sc-if value="{{p.isAll}}" hint-placeholder-val="{{false}}"><span style="width:14px; height:14px; background:{{p.fg}}; mask:url(icons/layers.svg) center/contain no-repeat; -webkit-mask:url(icons/layers.svg) center/contain no-repeat"></span></sc-if>
+                  <sc-if value="{{p.isProvider}}" hint-placeholder-val="{{true}}"><span style="width:9px; height:9px; border-radius:50%; background:{{p.color}}; opacity:{{p.opacity}}"></span></sc-if>
+                </button>
+              </sc-for>
+            </div>
+            <div style="flex:1; min-width:0; display:flex; flex-direction:column">
+              <div style="display:flex; align-items:center; gap:9px; height:40px; padding:0 12px; border-bottom:1px solid #27272a">
+                <span style="width:13px; height:13px; background:#8b8f98; mask:url(icons/search.svg) center/contain no-repeat; -webkit-mask:url(icons/search.svg) center/contain no-repeat"></span>
+                <input placeholder="{{searchPlaceholder}}" style="all:unset; flex:1; font-size:13px; color:#eceef2" value="{{pickerFilter}}" onChange="{{setFilter}}">
+              </div>
+              <div class="mx-scroll" style="max-height:268px; overflow-y:auto; padding:4px">
+                <sc-for list="{{modelRows}}" as="r" hint-placeholder-count="5">
+                  <div onClick="{{r.pick}}" onMouseEnter="{{r.hover}}" style="display:flex; align-items:center; gap:10px; padding:6px 8px; border-radius:5px; background:{{r.bg}}; cursor:default; opacity:{{r.opacity}}">
+                    <div style="flex:1; min-width:0; display:flex; flex-direction:column; gap:1px">
+                      <span style="font-size:13px; font-weight:500; color:{{r.fg}}; white-space:nowrap">{{r.label}}</span>
+                      <span style="display:flex; align-items:center; gap:6px; font-size:11.5px; color:{{r.metaFg}}; white-space:nowrap"><span style="width:6px; height:6px; border-radius:50%; background:{{r.color}}"></span>{{r.provider}}<span style="opacity:.6">·</span>{{r.meta}}</span>
+                    </div>
+                    <span style="width:13px; height:13px; background:{{r.checkColor}}; mask:url(icons/check.svg) center/contain no-repeat; -webkit-mask:url(icons/check.svg) center/contain no-repeat"></span>
+                    <span style="font-size:11px; color:{{r.metaFg}}; padding:0 5px; border-radius:4px; background:{{r.kbdBg}}; line-height:18px; min-width:18px; text-align:center">{{r.kbd}}</span>
+                  </div>
+                </sc-for>
+                <sc-if value="{{noModels}}" hint-placeholder-val="{{false}}"><div style="padding:14px 8px; font-size:12.5px; color:#8b8f98">No models match.</div></sc-if>
+              </div>
+              <div style="display:flex; flex-direction:column; gap:10px; padding:12px 14px 12px; border-top:1px solid #27272a">
+                <div style="display:flex; align-items:center; gap:7px; font-size:11.5px; color:#8b8f98">
+                  <span style="width:12px; height:12px; background:{{effort.color}}; mask:url(icons/gauge.svg) center/contain no-repeat; -webkit-mask:url(icons/gauge.svg) center/contain no-repeat"></span>
+                  <span style="font-weight:600">Thinking effort</span>
+                  <span style="font-size:12.5px; font-weight:600; color:{{effort.color}}; margin-left:2px">{{effort.label}}</span>
+                  <div style="flex:1"></div><span>{{effortFor}}</span>
+                  <button onClick="{{resetEffort}}" title="Reset to default (Medium)" style="all:unset; width:20px; height:20px; display:flex; align-items:center; justify-content:center; border-radius:4px; color:#8b8f98; opacity:{{effort.resetOpacity}}" style-hover="background:#202027; color:#eceef2"><span style="width:12px; height:12px; background:currentColor; mask:url(icons/undo-2.svg) center/contain no-repeat; -webkit-mask:url(icons/undo-2.svg) center/contain no-repeat"></span></button>
+                </div>
+                <div style="position:relative; height:24px; border-radius:12px; background:#0f0f12; box-shadow:inset 0 0 0 1px #27272a">
+                  <div style="position:absolute; left:0; top:0; bottom:0; width:{{effort.fillW}}; border-radius:12px; background:{{effort.fill}}; transition:width .15s, background .15s"></div>
+                  <sc-for list="{{effortStops}}" as="e" hint-placeholder-count="5">
+                    <button onClick="{{e.pick}}" aria-label="{{e.label}}" style="all:unset; position:absolute; top:0; bottom:0; left:{{e.left}}; width:36px; margin-left:-18px; display:flex; align-items:center; justify-content:center; cursor:pointer">
+                      <span style="width:4px; height:4px; border-radius:50%; background:{{e.dot}}"></span>
+                    </button>
+                  </sc-for>
+                  <div style="position:absolute; top:2px; left:{{effort.knobLeft}}; width:20px; height:20px; margin-left:-10px; border-radius:50%; background:#eceef2; box-shadow:0 1px 4px rgba(0,0,0,.5); pointer-events:none; transition:left .15s"></div>
+                </div>
+                <div style="position:relative; height:14px; margin:-4px 0 0">
+                  <sc-for list="{{effortStops}}" as="e" hint-placeholder-count="5">
+                    <button onClick="{{e.pick}}" style="all:unset; position:absolute; top:0; left:{{e.left}}; transform:{{e.shift}}; font-size:11px; font-weight:{{e.weight}}; color:{{e.fg}}; white-space:nowrap; cursor:pointer" style-hover="color:#eceef2">{{e.label}}</button>
+                  </sc-for>
+                </div>
+              </div>
+              <div style="display:flex; gap:14px; padding:7px 12px; border-top:1px solid #27272a; font-size:11px; color:#8b8f98"><span>↑↓ move</span><span>↵ select</span><span>⌘1–9 quick pick</span><span>←→ effort</span><div style="flex:1"></div><span>esc</span></div>
+            </div>
+          </div>
+        </sc-if>
+        <sc-if value="{{permPopOpen}}" hint-placeholder-val="{{false}}">
+          <div onClick="{{stop}}" style="position:absolute; left:268px; bottom:66px; width:300px; display:flex; flex-direction:column; background:#17171b; border:1px solid #27272a; border-radius:8px; box-shadow:0 16px 40px rgba(0,0,0,0.5); overflow:hidden; z-index:11">
+            <div style="padding:10px 12px 4px; font-size:11.5px; font-weight:600; color:#8b8f98">Permissions</div>
+            <div style="padding:2px 4px 4px">
+              <sc-for list="{{permRows}}" as="r" hint-placeholder-count="4">
+                <div onClick="{{r.pick}}" onMouseEnter="{{r.hover}}" style="display:flex; align-items:center; gap:10px; padding:6px 8px; border-radius:5px; background:{{r.bg}}; cursor:default">
+                  <div style="flex:1; display:flex; flex-direction:column; gap:1px"><span style="font-size:13px; font-weight:500; color:{{r.fg}}">{{r.label}}</span><span style="font-size:11.5px; color:{{r.metaFg}}">{{r.meta}}</span></div>
+                  <span style="width:13px; height:13px; background:{{r.checkColor}}; mask:url(icons/check.svg) center/contain no-repeat; -webkit-mask:url(icons/check.svg) center/contain no-repeat"></span>
+                </div>
+              </sc-for>
+            </div>
+            <div style="padding:7px 12px; border-top:1px solid #27272a; font-size:11px; color:#8b8f98">Scheduled runs inherit these</div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{showDock}}" hint-placeholder-val="{{true}}">
+        <div style="display:flex; flex-direction:column; border:1px solid {{dockBorder}}; border-radius:8px; background:#17171b; overflow:hidden">
+          <sc-if value="{{showTray}}" hint-placeholder-val="{{false}}">
+            <div style="display:flex; flex-direction:column; background:#131316; border-bottom:1px solid #27272a">
+              <div style="display:flex; align-items:center; gap:4px; height:34px; padding:0 6px 0 8px">
+                <sc-for list="{{trayTabs}}" as="t" hint-placeholder-count="1">
+                  <button onClick="{{t.pick}}" style="all:unset; display:flex; align-items:center; gap:6px; height:24px; padding:0 8px; border-radius:4px; font-size:12px; font-weight:500; background:{{t.bg}}; color:{{t.fg}}; white-space:nowrap" style-hover="color:#eceef2">{{t.label}}<span style="font-weight:400; color:{{t.countColor}}">{{t.count}}</span></button>
+                </sc-for>
+                <sc-if value="{{showTaskMeter}}" hint-placeholder-val="{{false}}">
+                  <div style="width:72px; height:3px; margin-left:6px; border-radius:2px; background:#27272a; overflow:hidden"><div style="height:100%; width:{{tasks.pct}}; background:#7dd3fc"></div></div>
+                </sc-if>
+                <sc-if value="{{trayCollapsed}}" hint-placeholder-val="{{false}}">
+                  <span style="min-width:0; margin-left:8px; font-size:12px; color:#dcdfe4; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">{{trayPeek}}</span>
+                </sc-if>
+                <div style="flex:1"></div>
+                <span style="font-size:11.5px; color:#8b8f98; margin-right:4px; white-space:nowrap">{{trayHint}}</span>
+                <button onClick="{{toggleTray}}" title="{{trayToggleTitle}}" style="all:unset; width:22px; height:22px; display:flex; align-items:center; justify-content:center; border-radius:4px; color:#8b8f98" style-hover="background:#202027; color:#eceef2"><span style="width:12px; height:12px; background:currentColor; transform:{{trayRot}}; mask:url(icons/chevron-down.svg) center/contain no-repeat; -webkit-mask:url(icons/chevron-down.svg) center/contain no-repeat"></span></button>
+              </div>
+              <sc-if value="{{showTasks}}" hint-placeholder-val="{{false}}">
+                <div style="display:flex; flex-direction:column; padding:0 14px 8px">
+                  <sc-for list="{{tasks.items}}" as="t" hint-placeholder-count="4">
+                    <div style="display:flex; align-items:center; gap:9px; height:22px; font-size:12.5px">
+                      <sc-if value="{{t.active}}" hint-placeholder-val="{{false}}"><span style="width:11px; height:11px; flex-shrink:0; margin:0 1px; box-sizing:border-box; border-radius:50%; border:1.5px solid #27272a; border-top-color:#fbbf24; animation:mxSpin .9s linear infinite"></span></sc-if>
+                      <sc-if value="{{t.notActive}}" hint-placeholder-val="{{true}}"><span style="width:13px; height:13px; flex-shrink:0; background:{{t.iconColor}}; mask:{{t.icon}} center/contain no-repeat; -webkit-mask:{{t.icon}} center/contain no-repeat"></span></sc-if>
+                      <span style="flex:1; min-width:0; color:{{t.color}}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">{{t.text}}</span>
+                      <span style="font-size:11.5px; color:{{t.durColor}}; font-variant-numeric:tabular-nums; white-space:nowrap">{{t.dur}}</span>
+                    </div>
+                  </sc-for>
+                </div>
+              </sc-if>
+              <sc-if value="{{showQueued}}" hint-placeholder-val="{{false}}">
+                <div style="display:flex; flex-direction:column; padding:0 8px 6px 14px">
+                  <sc-for list="{{queued}}" as="q" hint-placeholder-count="2">
+                    <div style="display:flex; align-items:center; gap:9px; height:26px; font-size:12.5px">
+                      <span style="width:13px; height:13px; flex-shrink:0; background:{{q.iconColor}}; mask:url(icons/clock.svg) center/contain no-repeat; -webkit-mask:url(icons/clock.svg) center/contain no-repeat"></span>
+                      <span style="flex:1; min-width:0; color:#dcdfe4; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">{{q.text}}</span>
+                      <span style="font-size:11.5px; color:#8b8f98; white-space:nowrap">{{q.extra}}</span>
+                      <span style="font-size:11.5px; color:{{q.whenColor}}; white-space:nowrap">{{q.when}}</span>
+                      <button onClick="{{q.cancel}}" title="Take back" style="all:unset; width:22px; height:22px; display:flex; align-items:center; justify-content:center; border-radius:4px; color:#8b8f98" style-hover="background:#202027; color:#f87171"><span style="width:12px; height:12px; background:currentColor; mask:url(icons/x.svg) center/contain no-repeat; -webkit-mask:url(icons/x.svg) center/contain no-repeat"></span></button>
+                    </div>
+                  </sc-for>
+                </div>
+              </sc-if>
+            </div>
+          </sc-if>
+
+          <sc-for list="{{notices}}" as="n" hint-placeholder-count="0">
+            <div style="display:flex; align-items:center; gap:10px; min-height:40px; padding:6px 8px 6px 14px; background:#131316; border-bottom:1px solid #27272a">
+              <span style="width:13px; height:13px; flex-shrink:0; background:{{n.color}}; mask:{{n.icon}} center/contain no-repeat; -webkit-mask:{{n.icon}} center/contain no-repeat;"></span>
+              <span style="font-size:12.5px; color:#eceef2; white-space:nowrap">{{n.title}}</span>
+              <span style="flex:1; min-width:0; font-size:12px; color:#8b8f98; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">{{n.meta}}</span>
+              <sc-for list="{{n.actions}}" as="a" hint-placeholder-count="2">
+                <button onClick="{{a.run}}" style="all:unset; height:24px; padding:0 9px; border-radius:4px; font-size:12px; font-weight:{{a.weight}}; color:{{a.color}}; white-space:nowrap" style-hover="background:#202027; color:#eceef2">{{a.label}}</button>
+              </sc-for>
+            </div>
+          </sc-for>
+
+          <sc-if value="{{showAnswer}}" hint-placeholder-val="{{false}}">
+            <div style="display:flex; flex-direction:column; padding:12px 10px 8px">
+              <div style="display:flex; align-items:center; gap:8px; padding:0 6px; font-size:12px">
+                <span style="width:13px; height:13px; background:#fbbf24; mask:url(icons/message-circle-question.svg) center/contain no-repeat; -webkit-mask:url(icons/message-circle-question.svg) center/contain no-repeat"></span>
+                <span style="color:#fbbf24; font-weight:600">{{question.header}}</span><span style="color:#8b8f98">{{question.pos}}</span>
+                <div style="flex:1"></div>
+                <button onClick="{{dismissAnswer}}" style="all:unset; font-size:11.5px; color:#8b8f98; padding:1px 6px; border:1px solid #27272a; border-radius:4px" style-hover="color:#eceef2">esc</button>
+              </div>
+              <div style="margin:10px 6px; font-size:14px; line-height:1.5; color:#eceef2; text-wrap:pretty">{{question.text}}</div>
+              <div style="display:flex; flex-direction:column; gap:1px">
+                <sc-for list="{{answerRows}}" as="o" hint-placeholder-count="4">
+                  <div onClick="{{o.pick}}" onMouseEnter="{{o.hover}}" style="display:flex; align-items:center; gap:10px; height:32px; padding:0 8px; border-radius:6px; background:{{o.bg}}; cursor:default; white-space:nowrap">
+                    <span style="width:18px; height:18px; display:flex; align-items:center; justify-content:center; border-radius:4px; font-size:11px; font-weight:600; color:{{o.keyFg}}; background:{{o.keyBg}}">{{o.key}}</span>
+                    <span style="font-size:13px; font-weight:500; color:{{o.fg}}">{{o.label}}</span>
+                    <span style="flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; font-size:12px; color:{{o.metaFg}}">{{o.meta}}</span>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+          </sc-if>
+
+          <sc-if value="{{showComposer}}" hint-placeholder-val="{{true}}">
+            <div style="display:flex; flex-direction:column">
+              <textarea placeholder="{{placeholder}}" value="{{composerText}}" onChange="{{setComposer}}" onKeyDown="{{composerKey}}" rows="2" style="all:unset; box-sizing:border-box; width:100%; padding:12px 14px 4px; font-family:inherit; font-size:14px; line-height:1.5; color:#eceef2; resize:none; min-height:56px"></textarea>
+              <div style="display:flex; align-items:center; gap:2px; padding:4px 8px 8px 8px; white-space:nowrap">
+                <button onClick="{{noop}}" title="Attach image (⌘V)" style="all:unset; width:28px; height:28px; display:flex; align-items:center; justify-content:center; border-radius:6px; color:#8b8f98" style-hover="background:#202027; color:#eceef2"><span style="width:15px; height:15px; background:currentColor; mask:url(icons/plus.svg) center/contain no-repeat; -webkit-mask:url(icons/plus.svg) center/contain no-repeat"></span></button>
+                <button onClick="{{openModel}}" style="all:unset; display:flex; align-items:center; gap:6px; height:28px; padding:0 8px; border-radius:6px; font-size:12.5px; color:#dcdfe4; background:{{modelChipBg}}" style-hover="background:#202027">
+                  <span style="width:7px; height:7px; border-radius:50%; background:{{modelChip.color}}"></span>{{modelChip.label}}<span style="color:#3f3f46">·</span><span style="width:12px; height:12px; background:{{effortChipColor}}; mask:url(icons/gauge.svg) center/contain no-repeat; -webkit-mask:url(icons/gauge.svg) center/contain no-repeat"></span><span style="color:{{effortChipColor}}">{{effortLabel}}</span><span style="width:10px; height:10px; background:#8b8f98; mask:url(icons/chevron-down.svg) center/contain no-repeat; -webkit-mask:url(icons/chevron-down.svg) center/contain no-repeat"></span>
+                </button>
+                <button onClick="{{openPerm}}" style="all:unset; display:flex; align-items:center; gap:6px; height:28px; padding:0 8px; border-radius:6px; font-size:12.5px; color:#dcdfe4; background:{{permChipBg}}" style-hover="background:#202027">{{permLabel}}<span style="width:10px; height:10px; background:#8b8f98; mask:url(icons/chevron-down.svg) center/contain no-repeat; -webkit-mask:url(icons/chevron-down.svg) center/contain no-repeat"></span></button>
+                <div style="flex:1"></div>
+                <button onClick="{{openContext}}" title="Context window" style="all:unset; display:flex; align-items:center; gap:7px; height:28px; padding:0 8px; border-radius:6px; font-size:12px; color:#8b8f98" style-hover="background:#202027; color:#dcdfe4">
+                  <span style="width:14px; height:14px; border-radius:50%; background:conic-gradient(#7dd3fc 0 39%, #27272a 39% 100%); mask:radial-gradient(circle, transparent 4px, #000 4.5px); -webkit-mask:radial-gradient(circle, transparent 4px, #000 4.5px)"></span>39% · 387k/1m
+                </button>
+                <sc-if value="{{isRunning}}" hint-placeholder-val="{{false}}">
+                  <button onClick="{{noop}}" title="Interrupt" style="all:unset; width:28px; height:28px; display:flex; align-items:center; justify-content:center; border-radius:6px; background:#202027; color:#dcdfe4; margin-left:4px" style-hover="color:#f87171"><span style="width:9px; height:9px; border-radius:2px; background:currentColor"></span></button>
+                </sc-if>
+                <button onClick="{{send}}" title="{{sendTitle}}" style="all:unset; width:28px; height:28px; display:flex; align-items:center; justify-content:center; border-radius:6px; background:#7dd3fc; color:#09090b; margin-left:4px" style-hover="background:#eceef2"><span style="width:15px; height:15px; background:currentColor; mask:url(icons/arrow-up.svg) center/contain no-repeat; -webkit-mask:url(icons/arrow-up.svg) center/contain no-repeat"></span></button>
+              </div>
+            </div>
+          </sc-if>
+        </div>
+        </sc-if>
+        <sc-if value="{{inSubagent}}" hint-placeholder-val="{{false}}">
+          <div style="display:flex; align-items:center; gap:10px; height:52px; padding:0 8px 0 16px; border-radius:8px; background:#17171b; border:1px solid #27272a; box-shadow:inset 3px 0 0 #c4b5fd">
+            <span style="width:14px; height:14px; flex-shrink:0; background:#c4b5fd; mask:url(icons/bot.svg) center/contain no-repeat; -webkit-mask:url(icons/bot.svg) center/contain no-repeat;"></span>
+            <span style="min-width:0; font-size:13px; color:#eceef2; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">{{sub.title}}</span>
+            <span style="font-size:12px; color:#8b8f98; white-space:nowrap">· {{sub.state}} · read-only</span>
+            <div style="flex:1"></div>
+            <button onClick="{{closeSubagent}}" style="all:unset; display:flex; align-items:center; gap:6px; height:30px; padding:0 10px; border-radius:6px; font-size:12.5px; font-weight:500; color:#7dd3fc; white-space:nowrap" style-hover="background:#202027; color:#eceef2"><span style="width:13px; height:13px; flex-shrink:0; background:currentColor; mask:url(icons/arrow-left.svg) center/contain no-repeat; -webkit-mask:url(icons/arrow-left.svg) center/contain no-repeat;"></span>Back to the thread</button>
+          </div>
+        </sc-if>
+        <div style="display:flex; align-items:center; gap:14px; padding:0 4px; font-size:11.5px; color:#8b8f98; white-space:nowrap">
+          <span style="display:flex; align-items:center; gap:5px"><span style="width:12px; height:12px; background:currentColor; mask:url(icons/git-branch.svg) center/contain no-repeat; -webkit-mask:url(icons/git-branch.svg) center/contain no-repeat"></span><span style="font-family:var(--mx-font); font-size:11px">{{thread.branch}}</span></span>
+          <span>{{thread.checkout}}</span>
+          <div style="flex:1"></div>
+          <span>{{hint}}</span>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- SIDE PANEL -->
+  <sc-if value="{{panelOpen}}" hint-placeholder-val="{{true}}">
+    <section style="width:404px; flex-shrink:0; display:flex; flex-direction:column; background:#09090b; border-left:1px solid #27272a">
+      <div style="height:44px; flex-shrink:0; display:flex; align-items:stretch; padding:0 6px 0 8px; border-bottom:1px solid #27272a; overflow:hidden">
+        <sc-for list="{{tabs}}" as="t" hint-placeholder-count="5">
+          <button onClick="{{t.pick}}" style="all:unset; position:relative; display:flex; align-items:center; gap:4px; padding:0 6px; font-size:12.5px; font-weight:500; color:{{t.fg}}; white-space:nowrap; flex-shrink:0" style-hover="color:#eceef2">
+            {{t.label}}<span style="font-size:11px; font-weight:400; color:{{t.badgeColor}}">{{t.badge}}</span>
+            <span style="position:absolute; left:6px; right:6px; bottom:-1px; height:2px; border-radius:1px; background:{{t.bar}}"></span>
+          </button>
+        </sc-for>
+        <div style="flex:1"></div>
+        <button onClick="{{togglePanel}}" title="Close panel" style="all:unset; align-self:center; width:26px; height:26px; display:flex; align-items:center; justify-content:center; border-radius:6px; color:#8b8f98; flex-shrink:0" style-hover="background:#17171b; color:#eceef2"><span style="width:14px; height:14px; background:currentColor; mask:url(icons/x.svg) center/contain no-repeat; -webkit-mask:url(icons/x.svg) center/contain no-repeat"></span></button>
+      </div>
+
+      <div class="mx-scroll" style="flex:1; overflow-y:auto">
+        <!-- DIFF -->
+        <sc-if value="{{tabDiff}}" hint-placeholder-val="{{false}}">
+          <div style="display:flex; flex-direction:column">
+            <sc-if value="{{diffEmpty}}" hint-placeholder-val="{{true}}">
+              <div style="display:flex; flex-direction:column; padding:14px 8px 8px">
+                <div style="display:flex; font-size:11.5px; color:#8b8f98; padding:0 8px; margin-bottom:6px"><span style="font-weight:600">Diff</span><div style="flex:1"></div><span>{{diffMeta}}</span></div>
+                <sc-for list="{{turnRows}}" as="t" hint-placeholder-count="3">
+                  <div onClick="{{t.pick}}" style="display:flex; flex-direction:column; gap:3px; padding:8px; border-radius:6px; cursor:default" style-hover="background:#131316">
+                    <div style="display:flex; align-items:center; gap:8px; font-size:13px; white-space:nowrap"><span style="font-weight:500; color:#eceef2">Turn {{t.n}}</span><span style="font-size:11.5px; color:#8b8f98">{{t.time}}</span><div style="flex:1"></div><span style="font-size:11.5px; color:#8b8f98">{{t.fileLabel}}</span><span style="font-family:var(--mx-font); font-size:11px; color:#4ade80">+{{t.add}}</span><span style="font-family:var(--mx-font); font-size:11px; color:#f87171">−{{t.del}}</span></div>
+                    <div style="font-size:12px; color:#8b8f98; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">{{t.prompt}}</div>
+                  </div>
+                </sc-for>
+                <sc-if value="{{hasTurns}}" hint-placeholder-val="{{true}}"><div style="padding:6px 8px; font-size:12px; color:#8b8f98">Or click a diff row in the chat.</div></sc-if>
+                <sc-if value="{{noTurns}}" hint-placeholder-val="{{false}}">
+                  <div style="display:flex; align-items:flex-start; gap:10px; padding:2px 8px"><span style="width:14px; height:14px; flex-shrink:0; background:#3f3f46; mask:url(icons/diff.svg) center/contain no-repeat; -webkit-mask:url(icons/diff.svg) center/contain no-repeat; margin-top:2px;"></span><span style="font-size:12.5px; line-height:1.5; color:#8b8f98">Turns that change files show their diff here.</span></div>
+                </sc-if>
+              </div>
+            </sc-if>
+            <sc-if value="{{diffOpen}}" hint-placeholder-val="{{false}}">
+              <div style="display:flex; flex-direction:column">
+                <div style="position:relative; display:flex; align-items:center; gap:4px; height:40px; padding:0 8px 0 12px; border-bottom:1px solid #27272a">
+                  <button onClick="{{toggleTurnPicker}}" style="all:unset; display:flex; align-items:center; gap:6px; height:26px; padding:0 8px; border-radius:6px; font-size:12.5px; font-weight:500; color:#eceef2; white-space:nowrap" style-hover="background:#17171b">Turn {{turn.n}}<span style="font-weight:400; color:#8b8f98">of {{turnsTotal}}</span><span style="width:10px; height:10px; flex-shrink:0; background:#8b8f98; mask:url(icons/chevron-down.svg) center/contain no-repeat; -webkit-mask:url(icons/chevron-down.svg) center/contain no-repeat;"></span></button>
+                  <span style="font-size:11.5px; color:#8b8f98; white-space:nowrap">{{turn.time}}</span>
+                  <div style="flex:1"></div>
+                  <span style="font-family:var(--mx-font); font-size:11.5px; color:#4ade80">+{{turn.add}}</span><span style="font-family:var(--mx-font); font-size:11.5px; color:#f87171; margin-right:6px">−{{turn.del}}</span>
+                  <button onClick="{{prevTurn}}" title="Previous turn" style="all:unset; width:24px; height:24px; display:flex; align-items:center; justify-content:center; border-radius:4px; color:{{prevTurnColor}}" style-hover="background:#17171b"><span style="width:12px; height:12px; flex-shrink:0; background:currentColor; mask:url(icons/chevron-down.svg) center/contain no-repeat; -webkit-mask:url(icons/chevron-down.svg) center/contain no-repeat; transform:rotate(180deg);"></span></button>
+                  <button onClick="{{nextTurn}}" title="Next turn" style="all:unset; width:24px; height:24px; display:flex; align-items:center; justify-content:center; border-radius:4px; color:{{nextTurnColor}}" style-hover="background:#17171b"><span style="width:12px; height:12px; flex-shrink:0; background:currentColor; mask:url(icons/chevron-down.svg) center/contain no-repeat; -webkit-mask:url(icons/chevron-down.svg) center/contain no-repeat;"></span></button>
+                  <button onClick="{{closeDiff}}" title="Close the diff" style="all:unset; width:24px; height:24px; display:flex; align-items:center; justify-content:center; border-radius:4px; color:#8b8f98" style-hover="background:#17171b; color:#eceef2"><span style="width:12px; height:12px; flex-shrink:0; background:currentColor; mask:url(icons/x.svg) center/contain no-repeat; -webkit-mask:url(icons/x.svg) center/contain no-repeat;"></span></button>
+                  <sc-if value="{{turnPicker}}" hint-placeholder-val="{{false}}">
+                    <div onClick="{{stop}}" style="position:absolute; top:38px; left:8px; right:8px; display:flex; flex-direction:column; padding:4px; background:#17171b; border:1px solid #27272a; border-radius:8px; box-shadow:0 16px 40px rgba(0,0,0,0.5); z-index:11">
+                      <sc-for list="{{turnRows}}" as="t" hint-placeholder-count="3">
+                        <div onClick="{{t.pick}}" style="display:flex; flex-direction:column; gap:2px; padding:6px 8px; border-radius:5px; background:{{t.bg}}; cursor:default" style-hover="background:#202027">
+                          <div style="display:flex; align-items:center; gap:8px; font-size:12.5px; white-space:nowrap"><span style="font-weight:500; color:{{t.fg}}">Turn {{t.n}}</span><span style="font-size:11.5px; color:#8b8f98">{{t.time}}</span><div style="flex:1"></div><span style="font-family:var(--mx-font); font-size:11px; color:#4ade80">+{{t.add}}</span><span style="font-family:var(--mx-font); font-size:11px; color:#f87171">−{{t.del}}</span></div>
+                          <div style="font-size:11.5px; color:#8b8f98; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">{{t.prompt}}</div>
+                        </div>
+                      </sc-for>
+                    </div>
+                  </sc-if>
+                </div>
+                <sc-for list="{{diffFiles}}" as="f" hint-placeholder-count="2">
+                  <div style="display:flex; flex-direction:column; border-bottom:1px solid #27272a">
+                    <div onClick="{{f.toggle}}" style="position:sticky; top:0; z-index:1; display:flex; align-items:center; gap:8px; height:32px; padding:0 16px; background:#0f0f12; cursor:default" style-hover="background:#131316">
+                      <span style="width:10px; height:10px; flex-shrink:0; background:#8b8f98; mask:url(icons/chevron-down.svg) center/contain no-repeat; -webkit-mask:url(icons/chevron-down.svg) center/contain no-repeat; transform:{{f.chevRot}};"></span>
+                      <span style="flex:1; min-width:0; font-family:var(--mx-font); font-size:11.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis"><span style="color:#8b8f98">{{f.dir}}</span><span style="color:#eceef2">{{f.name}}</span></span>
+                      <span style="font-family:var(--mx-font); font-size:11px; color:#4ade80">+{{f.add}}</span><span style="font-family:var(--mx-font); font-size:11px; color:#f87171">−{{f.del}}</span>
+                    </div>
+                    <sc-if value="{{f.open}}" hint-placeholder-val="{{true}}">
+                      <div style="font-family:var(--mx-font); font-size:11px; line-height:19px; padding-bottom:6px">
+                        <sc-for list="{{f.lines}}" as="l" hint-placeholder-count="5">
+                          <div style="display:flex; background:{{l.bg}}">
+                            <span style="width:40px; flex-shrink:0; text-align:right; padding-right:8px; color:#8b8f98; background:{{l.nbg}}">{{l.n}}</span>
+                            <span style="width:14px; flex-shrink:0; text-align:center; color:{{l.signColor}}">{{l.sign}}</span>
+                            <span style="flex:1; white-space:pre-wrap; word-break:break-word; color:{{l.color}}; padding-right:12px">{{l.text}}</span>
+                          </div>
+                        </sc-for>
+                      </div>
+                    </sc-if>
+                  </div>
+                </sc-for>
+              </div>
+            </sc-if>
+          </div>
+        </sc-if>
+
+        <!-- GIT: commit view -->
+        <sc-if value="{{commitView}}" hint-placeholder-val="{{false}}">
+          <div style="display:flex; flex-direction:column">
+            <div style="display:flex; align-items:center; gap:8px; height:40px; padding:0 12px; border-bottom:1px solid #27272a">
+              <button onClick="{{closeCommit}}" style="all:unset; display:flex; align-items:center; gap:6px; height:26px; padding:0 8px; border-radius:6px; font-size:12.5px; color:#dcdfe4" style-hover="background:#17171b; color:#eceef2"><span style="width:13px; height:13px; background:currentColor; mask:url(icons/arrow-left.svg) center/contain no-repeat; -webkit-mask:url(icons/arrow-left.svg) center/contain no-repeat"></span>Commits</button>
+              <div style="flex:1"></div>
+              <button onClick="{{prevCommit}}" title="Newer commit" style="all:unset; width:24px; height:24px; display:flex; align-items:center; justify-content:center; border-radius:4px; color:{{commit.newerColor}}; transform:rotate(180deg)" style-hover="background:#17171b"><span style="width:12px; height:12px; background:currentColor; mask:url(icons/chevron-down.svg) center/contain no-repeat; -webkit-mask:url(icons/chevron-down.svg) center/contain no-repeat"></span></button>
+              <button onClick="{{nextCommit}}" title="Older commit" style="all:unset; width:24px; height:24px; display:flex; align-items:center; justify-content:center; border-radius:4px; color:{{commit.olderColor}}" style-hover="background:#17171b"><span style="width:12px; height:12px; background:currentColor; mask:url(icons/chevron-down.svg) center/contain no-repeat; -webkit-mask:url(icons/chevron-down.svg) center/contain no-repeat"></span></button>
+              <span style="font-size:11.5px; color:#8b8f98">{{commit.pos}}</span>
+            </div>
+            <div style="display:flex; flex-direction:column; gap:8px; padding:14px 16px">
+              <div style="font-size:14px; line-height:1.4; font-weight:500; color:#eceef2; text-wrap:pretty">{{commit.subject}}</div>
+              <sc-if value="{{commit.hasBody}}" hint-placeholder-val="{{true}}"><div style="font-size:12.5px; line-height:1.5; color:#a1a1aa; text-wrap:pretty">{{commit.body}}</div></sc-if>
+              <div style="display:flex; align-items:center; gap:8px; font-size:12px; color:#8b8f98; white-space:nowrap">
+                <span style="width:13px; height:13px; background:currentColor; mask:url(icons/git-commit-horizontal.svg) center/contain no-repeat; -webkit-mask:url(icons/git-commit-horizontal.svg) center/contain no-repeat"></span>
+                <span style="font-family:var(--mx-font); font-size:11.5px; color:#dcdfe4">{{commit.sha}}</span>
+                <span>{{commit.meta}}</span>
+                <div style="flex:1"></div>
+                <span style="width:12px; height:12px; background:{{commit.checkColor}}; mask:{{commit.checkIcon}} center/contain no-repeat; -webkit-mask:{{commit.checkIcon}} center/contain no-repeat"></span><sc-if value="{{commit.hasChecks}}" hint-placeholder-val="{{true}}"><span style="color:{{commit.checkColor}}">{{commit.checks}} checks</span></sc-if>
+              </div>
+            </div>
+            <div style="display:flex; align-items:center; gap:8px; height:32px; padding:0 16px; border-top:1px solid #27272a; border-bottom:1px solid #27272a; font-size:12px; color:#8b8f98">
+              <span>{{commit.fileCount}}</span><div style="flex:1"></div>
+              <span style="font-family:var(--mx-font); font-size:11.5px; color:#4ade80">+{{commit.add}}</span><span style="font-family:var(--mx-font); font-size:11.5px; color:#f87171">−{{commit.del}}</span>
+            </div>
+            <sc-for list="{{commitFiles}}" as="f" hint-placeholder-count="1">
+              <div style="display:flex; flex-direction:column; border-bottom:1px solid #27272a">
+                <div onClick="{{f.toggle}}" style="position:sticky; top:0; z-index:1; display:flex; align-items:center; gap:8px; height:32px; padding:0 16px; background:#0f0f12; cursor:default" style-hover="background:#131316">
+                  <span style="width:10px; height:10px; flex-shrink:0; background:#8b8f98; transform:{{f.chevRot}}; mask:url(icons/chevron-down.svg) center/contain no-repeat; -webkit-mask:url(icons/chevron-down.svg) center/contain no-repeat"></span>
+                  <span style="flex:1; min-width:0; font-family:var(--mx-font); font-size:11.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis"><span style="color:#8b8f98">{{f.dir}}</span><span style="color:#eceef2">{{f.name}}</span></span>
+                  <span style="font-family:var(--mx-font); font-size:11px; color:#4ade80">+{{f.add}}</span><span style="font-family:var(--mx-font); font-size:11px; color:#f87171">−{{f.del}}</span>
+                </div>
+                <sc-if value="{{f.open}}" hint-placeholder-val="{{true}}">
+                  <div style="font-family:var(--mx-font); font-size:11px; line-height:19px; padding-bottom:6px">
+                    <sc-for list="{{f.lines}}" as="l" hint-placeholder-count="5">
+                      <div style="display:flex; background:{{l.bg}}">
+                        <span style="width:40px; flex-shrink:0; text-align:right; padding-right:8px; color:#8b8f98; background:{{l.nbg}}">{{l.n}}</span>
+                        <span style="width:14px; flex-shrink:0; text-align:center; color:{{l.signColor}}">{{l.sign}}</span>
+                        <span style="flex:1; white-space:pre-wrap; word-break:break-word; color:{{l.color}}; padding-right:12px">{{l.text}}</span>
+                      </div>
+                    </sc-for>
+                  </div>
+                </sc-if>
+              </div>
+            </sc-for>
+          </div>
+        </sc-if>
+
+        <!-- GIT: overview -->
+        <sc-if value="{{gitMain}}" hint-placeholder-val="{{true}}">
+          <div style="display:flex; flex-direction:column">
+            <sc-if value="{{git.loading}}" hint-placeholder-val="{{false}}">
+              <div style="display:flex; align-items:center; gap:9px; padding:18px 16px; font-size:12.5px; color:#8b8f98"><span style="width:11px; height:11px; flex-shrink:0; box-sizing:border-box; border-radius:50%; border:1.5px solid #27272a; border-top-color:#7dd3fc; animation:mxSpin .9s linear infinite"></span>Reading git…</div>
+            </sc-if>
+            <sc-if value="{{git.notRepo}}" hint-placeholder-val="{{false}}">
+              <div style="display:flex; flex-direction:column; align-items:flex-start; gap:8px; padding:24px 16px">
+                <span style="width:18px; height:18px; flex-shrink:0; background:#3f3f46; mask:url(icons/folder.svg) center/contain no-repeat; -webkit-mask:url(icons/folder.svg) center/contain no-repeat;"></span>
+                <span style="font-size:13px; color:#dcdfe4">This thread's folder is not a git repository.</span>
+                <span style="font-family:var(--mx-font); font-size:11.5px; color:#8b8f98">{{git.root}}</span>
+              </div>
+            </sc-if>
+            <sc-if value="{{git.repo}}" hint-placeholder-val="{{true}}">
+              <div style="display:flex; flex-direction:column">
+                <sc-if value="{{git.hasError}}" hint-placeholder-val="{{false}}">
+                  <div style="display:flex; align-items:flex-start; gap:9px; padding:10px 16px; background:#2e151633; border-bottom:1px solid #27272a; font-size:12px; line-height:1.45; color:#f87171"><span style="width:13px; height:13px; flex-shrink:0; background:#f87171; mask:url(icons/circle-x.svg) center/contain no-repeat; -webkit-mask:url(icons/circle-x.svg) center/contain no-repeat; margin-top:1px;"></span><span style="flex:1">{{git.error}}</span></div>
+                </sc-if>
+                <sc-if value="{{git.hasBusy}}" hint-placeholder-val="{{false}}">
+                  <div style="display:flex; align-items:center; gap:9px; padding:10px 16px; border-bottom:1px solid #27272a; font-size:12px; color:#fbbf24"><span style="width:11px; height:11px; flex-shrink:0; box-sizing:border-box; border-radius:50%; border:1.5px solid #27272a; border-top-color:#fbbf24; animation:mxSpin .9s linear infinite"></span><span>{{git.busy}}</span></div>
+                </sc-if>
+                <div style="display:flex; flex-direction:column; gap:10px; padding:16px 16px 14px">
+                  <div style="display:flex; align-items:center; gap:7px; font-size:11.5px; color:#8b8f98"><span style="width:12px; height:12px; flex-shrink:0; background:currentColor; mask:url(icons/git-pull-request.svg) center/contain no-repeat; -webkit-mask:url(icons/git-pull-request.svg) center/contain no-repeat;"></span><span style="font-weight:600">Pull request</span><div style="flex:1"></div><span style="font-family:var(--mx-font); font-size:11px">{{git.branch}}</span></div>
+                  <sc-if value="{{git.noForge}}" hint-placeholder-val="{{false}}">
+                    <span style="font-size:12.5px; line-height:1.5; color:#8b8f98">{{git.forgeReason}}</span>
+                  </sc-if>
+                  <sc-if value="{{git.hasPr}}" hint-placeholder-val="{{true}}">
+                    <div style="display:flex; flex-direction:column; gap:10px">
+                      <div style="font-size:14px; line-height:1.4; font-weight:500; color:#eceef2; text-wrap:pretty">{{pr.title}} <span style="color:#8b8f98; font-weight:400">#{{pr.n}}</span></div>
+                      <div style="display:flex; flex-wrap:wrap; align-items:center; gap:8px; font-size:12px; white-space:nowrap">
+                        <span style="display:flex; align-items:center; height:20px; padding:0 7px; border-radius:4px; background:{{pr.stateBg}}; color:{{pr.stateColor}}; font-weight:500">{{pr.stateLabel}}</span>
+                        <sc-if value="{{pr.hasReview}}" hint-placeholder-val="{{false}}"><span style="color:{{pr.reviewColor}}">{{pr.reviewLabel}}</span></sc-if>
+                        <sc-if value="{{pr.conflicts}}" hint-placeholder-val="{{false}}"><span style="color:#f87171">Conflicts</span></sc-if>
+                        <span style="color:#8b8f98">into <span style="font-family:var(--mx-font); font-size:11px; color:#dcdfe4">main</span></span>
+                        <span style="color:#3f3f46">·</span>
+                        <span style="font-family:var(--mx-font); font-size:11px; color:#4ade80">+{{pr.add}}</span><span style="font-family:var(--mx-font); font-size:11px; color:#f87171">−{{pr.del}}</span><span style="color:#8b8f98">{{pr.files}} files</span>
+                      </div>
+                      <sc-if value="{{pr.done}}" hint-placeholder-val="{{false}}">
+                        <div style="display:flex; align-items:center; gap:10px"><span style="flex:1; font-size:12px; color:#8b8f98">{{pr.note}}</span><button onClick="{{ga.openUrl}}" style="all:unset; display:flex; align-items:center; gap:6px; height:28px; padding:0 11px; border-radius:6px; background:#17171b; font-size:12.5px; color:#dcdfe4; white-space:nowrap;" style-hover="background:#202027; color:#eceef2"><span style="width:13px; height:13px; flex-shrink:0; background:currentColor; mask:url(icons/external-link.svg) center/contain no-repeat; -webkit-mask:url(icons/external-link.svg) center/contain no-repeat;"></span>Open</button></div>
+                      </sc-if>
+                      <sc-if value="{{pr.active}}" hint-placeholder-val="{{true}}">
+                        <div style="display:flex; gap:6px; padding-top:2px">
+                          <sc-if value="{{mergeIdle}}" hint-placeholder-val="{{true}}">
+                            <div style="display:flex; gap:6px">
+                              <sc-if value="{{pr.canMerge}}" hint-placeholder-val="{{true}}">
+                                <button onClick="{{armMerge}}" style="all:unset; display:flex; align-items:center; gap:6px; height:28px; padding:0 11px; border-radius:6px; background:#eceef2; font-size:12.5px; font-weight:500; color:#09090b; white-space:nowrap" style-hover="background:#fbbf24"><span style="width:13px; height:13px; flex-shrink:0; background:currentColor; mask:url(icons/git-merge.svg) center/contain no-repeat; -webkit-mask:url(icons/git-merge.svg) center/contain no-repeat;"></span>Merge…</button>
+                              </sc-if>
+                              <sc-if value="{{pr.isDraft}}" hint-placeholder-val="{{false}}">
+                                <span title="Drafts can't be merged. Mark it ready for review on the forge first." style="display:flex; align-items:center; gap:6px; height:28px; padding:0 11px; border-radius:6px; background:#131316; font-size:12.5px; color:#3f3f46; white-space:nowrap; cursor:not-allowed"><span style="width:13px; height:13px; flex-shrink:0; background:currentColor; mask:url(icons/git-merge.svg) center/contain no-repeat; -webkit-mask:url(icons/git-merge.svg) center/contain no-repeat;"></span>Merge…</span>
+                              </sc-if>
+                              <button onClick="{{ga.commentStart}}" style="all:unset; display:flex; align-items:center; gap:6px; height:28px; padding:0 11px; border-radius:6px; background:#17171b; font-size:12.5px; color:#dcdfe4; white-space:nowrap;" style-hover="background:#202027; color:#eceef2"><span style="width:13px; height:13px; flex-shrink:0; background:currentColor; mask:url(icons/message-square.svg) center/contain no-repeat; -webkit-mask:url(icons/message-square.svg) center/contain no-repeat;"></span>Comment</button>
+                              <button onClick="{{ga.openUrl}}" style="all:unset; display:flex; align-items:center; gap:6px; height:28px; padding:0 11px; border-radius:6px; background:#17171b; font-size:12.5px; color:#dcdfe4; white-space:nowrap;" style-hover="background:#202027; color:#eceef2"><span style="width:13px; height:13px; flex-shrink:0; background:currentColor; mask:url(icons/external-link.svg) center/contain no-repeat; -webkit-mask:url(icons/external-link.svg) center/contain no-repeat;"></span>Open</button>
+                            </div>
+                          </sc-if>
+                          <sc-if value="{{mergeArmed}}" hint-placeholder-val="{{false}}">
+                            <div style="display:flex; gap:6px; align-items:center">
+                              <button onClick="{{mergeSquash}}" style="all:unset; height:28px; padding:0 11px; display:flex; align-items:center; border-radius:6px; background:#fbbf24; font-size:12.5px; font-weight:600; color:#221503; white-space:nowrap" style-hover="background:#eceef2">Squash and merge</button>
+                              <button onClick="{{mergeCommit}}" style="all:unset; height:28px; padding:0 11px; display:flex; align-items:center; border-radius:6px; background:#17171b; box-shadow:inset 0 0 0 1px #fbbf24; font-size:12.5px; color:#fbbf24; white-space:nowrap" style-hover="background:#202027">Merge commit</button>
+                              <button onClick="{{disarm}}" style="all:unset; height:28px; padding:0 9px; display:flex; align-items:center; border-radius:6px; font-size:12.5px; color:#8b8f98; white-space:nowrap" style-hover="color:#eceef2">Cancel</button>
+                            </div>
+                          </sc-if>
+                        </div>
+                      </sc-if>
+                      <sc-if value="{{commentOpen}}" hint-placeholder-val="{{false}}">
+                        <div style="display:flex; flex-direction:column; border-radius:6px; background:#17171b; box-shadow:inset 0 0 0 1px #7dd3fc66; overflow:hidden">
+                          <textarea autoFocus="{{true}}" value="{{commentText}}" onChange="{{ga.commentChange}}" placeholder="Comment on #{{pr.n}} — visible to everyone on the pull request" rows="3" style="all:unset; box-sizing:border-box; width:100%; padding:10px 12px 4px; font-family:inherit; font-size:13px; line-height:1.5; color:#eceef2; resize:none"></textarea>
+                          <div style="display:flex; justify-content:flex-end; gap:6px; padding:6px 8px 8px">
+                            <button onClick="{{ga.commentCancel}}" style="all:unset; height:26px; padding:0 10px; display:flex; align-items:center; border-radius:5px; font-size:12px; color:#8b8f98" style-hover="color:#eceef2">Cancel</button>
+                            <button onClick="{{ga.commentPost}}" style="all:unset; height:26px; padding:0 10px; display:flex; align-items:center; border-radius:5px; background:#7dd3fc; font-size:12px; font-weight:600; color:#09090b" style-hover="background:#eceef2">Post comment</button>
+                          </div>
+                        </div>
+                      </sc-if>
+                    </div>
+                  </sc-if>
+                  <sc-if value="{{git.noPr}}" hint-placeholder-val="{{false}}">
+                    <div style="display:flex; flex-direction:column; gap:8px">
+                      <span style="font-size:12.5px; color:#8b8f98">No pull request for <span style="font-family:var(--mx-font); font-size:11.5px; color:#dcdfe4">{{git.branch}}</span> yet.</span>
+                      <sc-if value="{{git.hasOpener}}" hint-placeholder-val="{{true}}">
+                        <div style="display:flex; flex-direction:column; gap:4px">
+                          <button onClick="{{ga.agentDraft}}" style="all:unset; display:flex; align-items:center; gap:9px; height:32px; padding:0 10px; border-radius:6px; background:#17171b; font-size:12.5px; color:#eceef2" style-hover="background:#202027"><span style="width:13px; height:13px; flex-shrink:0; background:#7dd3fc; mask:url(icons/sparkles.svg) center/contain no-repeat; -webkit-mask:url(icons/sparkles.svg) center/contain no-repeat;"></span><span style="flex:1">Have {{git.opener}} open a draft</span><span style="width:12px; height:12px; flex-shrink:0; background:#8b8f98; mask:url(icons/arrow-right.svg) center/contain no-repeat; -webkit-mask:url(icons/arrow-right.svg) center/contain no-repeat;"></span></button>
+                          <button onClick="{{ga.agentReady}}" style="all:unset; display:flex; align-items:center; gap:9px; height:32px; padding:0 10px; border-radius:6px; font-size:12.5px; color:#dcdfe4" style-hover="background:#17171b; color:#eceef2"><span style="width:13px; height:13px; flex-shrink:0; background:#8b8f98; mask:url(icons/sparkles.svg) center/contain no-repeat; -webkit-mask:url(icons/sparkles.svg) center/contain no-repeat;"></span><span style="flex:1">Have {{git.opener}} open it ready for review</span><span style="width:12px; height:12px; flex-shrink:0; background:#8b8f98; mask:url(icons/arrow-right.svg) center/contain no-repeat; -webkit-mask:url(icons/arrow-right.svg) center/contain no-repeat;"></span></button>
+                        </div>
+                      </sc-if>
+                      <sc-if value="{{git.noOpener}}" hint-placeholder-val="{{false}}">
+                        <div style="display:flex; align-items:center; gap:8px; font-size:12px; color:#8b8f98"><span style="width:13px; height:13px; flex-shrink:0; background:#fbbf24; mask:url(icons/clock.svg) center/contain no-repeat; -webkit-mask:url(icons/clock.svg) center/contain no-repeat;"></span>No agent has usage left to open one.</div>
+                      </sc-if>
+                      <sc-if value="{{createOpen}}" hint-placeholder-val="{{false}}">
+                        <div style="display:flex; flex-direction:column; gap:8px; padding:10px; border-radius:6px; background:#131316; box-shadow:inset 0 0 0 1px #27272a">
+                          <span style="font-size:11.5px; font-weight:600; color:#8b8f98">Title for the draft</span>
+                          <input autoFocus="{{true}}" value="{{createTitle}}" onChange="{{ga.createTitleChange}}" style="all:unset; box-sizing:border-box; height:30px; padding:0 10px; border-radius:5px; background:#09090b; box-shadow:inset 0 0 0 1px #3f3f46; font-size:13px; color:#eceef2">
+                          <div style="display:flex; justify-content:flex-end; gap:6px">
+                            <button onClick="{{ga.createCancel}}" style="all:unset; height:26px; padding:0 10px; display:flex; align-items:center; border-radius:5px; font-size:12px; color:#8b8f98" style-hover="color:#eceef2">Cancel</button>
+                            <button onClick="{{ga.createSubmit}}" style="all:unset; height:26px; padding:0 10px; display:flex; align-items:center; border-radius:5px; background:#7dd3fc; font-size:12px; font-weight:600; color:#09090b" style-hover="background:#eceef2">Open draft</button>
+                          </div>
+                        </div>
+                      </sc-if>
+                      <button onClick="{{ga.createOpen}}" style="all:unset; align-self:flex-start; padding:2px 10px; font-size:12px; color:#8b8f98" style-hover="color:#eceef2">Or open a draft yourself…</button>
+                    </div>
+                  </sc-if>
+                </div>
+                <sc-if value="{{git.hasPr}}" hint-placeholder-val="{{true}}">
+                  <div style="border-top:1px solid #27272a">
+                    <div onClick="{{toggleRuns}}" style="display:flex; align-items:center; gap:10px; height:48px; padding:0 16px; cursor:default" style-hover="background:#0f0f12">
+                      <sc-if value="{{pr.sumPending}}" hint-placeholder-val="{{true}}"><span style="width:11px; height:11px; flex-shrink:0; box-sizing:border-box; border-radius:50%; border:1.5px solid #27272a; border-top-color:#fbbf24; animation:mxSpin .9s linear infinite"></span></sc-if>
+                      <sc-if value="{{pr.hasFailedRun}}" hint-placeholder-val="{{false}}"><span style="width:13px; height:13px; flex-shrink:0; background:#f87171; mask:url(icons/circle-x.svg) center/contain no-repeat; -webkit-mask:url(icons/circle-x.svg) center/contain no-repeat;"></span></sc-if>
+                      <div style="flex:1; min-width:0; display:flex; flex-direction:column; gap:1px"><span style="font-size:12.5px; font-weight:500; color:#eceef2">{{pr.sumTitle}}</span><span style="font-size:11.5px; color:#8b8f98; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">{{pr.sumSub}}</span></div>
+                      <span style="width:11px; height:11px; flex-shrink:0; background:#8b8f98; mask:url(icons/chevron-down.svg) center/contain no-repeat; -webkit-mask:url(icons/chevron-down.svg) center/contain no-repeat; transform:{{runsRot}};"></span>
+                    </div>
+                    <sc-if value="{{runsAll}}" hint-placeholder-val="{{false}}">
+                      <div style="display:flex; flex-direction:column; padding:0 16px 10px">
+                        <sc-for list="{{runs}}" as="r" hint-placeholder-count="5">
+                          <div style="display:flex; align-items:center; gap:10px; height:26px; font-size:12.5px">
+                            <sc-if value="{{r.pending}}" hint-placeholder-val="{{false}}"><span style="width:13px; display:flex; justify-content:center"><span style="width:6px; height:6px; border-radius:50%; background:#fbbf24; animation:mxPulse 1.4s ease-in-out infinite"></span></span></sc-if>
+                            <sc-if value="{{r.notPending}}" hint-placeholder-val="{{true}}"><span style="width:13px; height:13px; flex-shrink:0; background:{{r.color}}; mask:{{r.icon}} center/contain no-repeat; -webkit-mask:{{r.icon}} center/contain no-repeat;"></span></sc-if>
+                            <span style="color:{{r.nameColor}}">{{r.name}}</span><span style="font-size:11.5px; color:#8b8f98">{{r.kind}}</span>
+                            <div style="flex:1"></div><span style="font-size:11.5px; color:#8b8f98; font-variant-numeric:tabular-nums">{{r.dur}}</span>
+                          </div>
+                        </sc-for>
+                        <sc-if value="{{pr.hasFailedRun}}" hint-placeholder-val="{{false}}">
+                          <button onClick="{{ga.openFailing}}" style="all:unset; align-self:flex-start; display:flex; align-items:center; gap:6px; margin:4px 0 0 23px; font-size:12px; color:#7dd3fc" style-hover="color:#eceef2">Open the failing run<span style="width:11px; height:11px; flex-shrink:0; background:currentColor; mask:url(icons/external-link.svg) center/contain no-repeat; -webkit-mask:url(icons/external-link.svg) center/contain no-repeat;"></span></button>
+                        </sc-if>
+                      </div>
+                    </sc-if>
+                  </div>
+                </sc-if>
+                <sc-if value="{{hasOtherPrs}}" hint-placeholder-val="{{true}}">
+                  <div style="border-top:1px solid #27272a; padding:14px 16px 8px">
+                    <div style="font-size:11.5px; font-weight:600; color:#8b8f98; margin-bottom:6px">Other open pull requests</div>
+                    <sc-for list="{{otherPrs}}" as="p" hint-placeholder-count="2">
+                      <div onClick="{{p.open}}" style="display:flex; align-items:center; gap:10px; height:28px; padding:0 8px; margin:0 -8px; border-radius:6px; font-size:12.5px; white-space:nowrap; cursor:default" style-hover="background:#131316">
+                        <span style="width:13px; height:13px; flex-shrink:0; background:{{p.iconColor}}; mask:url(icons/git-pull-request.svg) center/contain no-repeat; -webkit-mask:url(icons/git-pull-request.svg) center/contain no-repeat;"></span>
+                        <span style="flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; color:#dcdfe4">{{p.title}}</span><span style="font-size:11.5px; color:#8b8f98">#{{p.n}}</span>
+                        <span style="width:13px; height:13px; flex-shrink:0; background:{{p.checkColor}}; mask:{{p.checkIcon}} center/contain no-repeat; -webkit-mask:{{p.checkIcon}} center/contain no-repeat;"></span>
+                      </div>
+                    </sc-for>
+                  </div>
+                </sc-if>
+                <div style="border-top:1px solid #27272a; padding:14px 16px 12px">
+                  <div style="display:flex; font-size:11.5px; color:#8b8f98; margin-bottom:4px"><span style="font-weight:600">Commits</span><div style="flex:1"></div><span style="font-family:var(--mx-font); font-size:11px">{{git.branch}}</span></div>
+                  <sc-for list="{{commits}}" as="c" hint-placeholder-count="3">
+                    <div onClick="{{c.open}}" style="display:flex; align-items:center; gap:10px; padding:7px 8px; margin:0 -8px; border-radius:6px; cursor:default" style-hover="background:#131316">
+                      <div style="flex:1; min-width:0; display:flex; flex-direction:column; gap:2px">
+                        <div style="display:flex; gap:8px; font-size:12.5px"><span style="flex:1; min-width:0; color:#dcdfe4; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">{{c.subject}}</span><span style="font-family:var(--mx-font); font-size:11px; color:#8b8f98">{{c.sha}}</span></div>
+                        <div style="display:flex; align-items:center; gap:6px; font-size:11.5px; color:#8b8f98"><span>{{c.meta}}</span><span style="width:11px; height:11px; flex-shrink:0; background:{{c.checkColor}}; mask:{{c.checkIcon}} center/contain no-repeat; -webkit-mask:{{c.checkIcon}} center/contain no-repeat;"></span><span style="color:{{c.checkColor}}">{{c.checks}}</span><div style="flex:1"></div><span style="font-family:var(--mx-font); font-size:11px; color:#4ade80">+{{c.add}}</span><span style="font-family:var(--mx-font); font-size:11px; color:#f87171">−{{c.del}}</span></div>
+                      </div>
+                      <span style="width:11px; height:11px; flex-shrink:0; background:#3f3f46; mask:url(icons/chevron-right.svg) center/contain no-repeat; -webkit-mask:url(icons/chevron-right.svg) center/contain no-repeat;"></span>
+                    </div>
+                  </sc-for>
+                </div>
+                <div style="border-top:1px solid #27272a; padding:14px 16px 12px">
+                  <div style="display:flex; font-size:11.5px; color:#8b8f98; margin-bottom:6px"><span style="font-weight:600">Branches</span><div style="flex:1"></div><span>{{branchCount}}</span></div>
+                  <sc-for list="{{branches}}" as="b" hint-placeholder-count="3">
+                    <div style="display:flex; align-items:center; gap:10px; height:26px; padding:0 8px; margin:0 -8px; border-radius:6px; background:{{b.bg}}; font-size:12px; white-space:nowrap; cursor:default" style-hover="background:#131316">
+                      <span style="width:12px; height:12px; flex-shrink:0; background:{{b.iconColor}}; mask:url(icons/git-branch.svg) center/contain no-repeat; -webkit-mask:url(icons/git-branch.svg) center/contain no-repeat;"></span>
+                      <span style="flex:1; font-family:var(--mx-font); font-size:11.5px; color:{{b.color}}">{{b.name}}</span><span style="font-family:var(--mx-font); font-size:11px; color:{{b.trackColor}}">{{b.track}}</span>
+                    </div>
+                  </sc-for>
+                </div>
+              </div>
+            </sc-if>
+          </div>
+        </sc-if>
+
+        <!-- CONTEXT -->
+        <sc-if value="{{tabContext}}" hint-placeholder-val="{{false}}">
+          <div style="display:flex; flex-direction:column">
+            <div style="display:flex; align-items:center; gap:20px; padding:20px 16px 18px">
+              <div style="position:relative; width:112px; height:112px; flex-shrink:0">
+                <div style="position:absolute; inset:0; border-radius:50%; background:{{ctxRing}}; mask:radial-gradient(circle, transparent 43px, #000 44px); -webkit-mask:radial-gradient(circle, transparent 43px, #000 44px)"></div>
+                <div style="position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:1px">
+                  <span style="font-size:22px; font-weight:600; color:#eceef2; font-variant-numeric:tabular-nums; letter-spacing:-0.01em">39%</span>
+                  <span style="font-size:11px; color:#8b8f98">387k of 1m</span>
+                </div>
+              </div>
+              <div style="flex:1; display:grid; grid-template-columns:1fr 1fr; gap:14px 12px">
+                <sc-for list="{{ctxStats}}" as="k" hint-placeholder-count="4">
+                  <div style="display:flex; flex-direction:column; gap:2px">
+                    <span style="font-size:11.5px; color:#8b8f98">{{k.label}}</span>
+                    <span style="font-size:15px; font-weight:500; color:{{k.color}}; font-variant-numeric:tabular-nums">{{k.value}}</span>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+            <div style="border-top:1px solid #27272a; padding:14px 16px 12px">
+              <div style="display:flex; font-size:11.5px; color:#8b8f98; margin-bottom:8px"><span style="font-weight:600">Where the tokens go</span><div style="flex:1"></div><span>estimated</span></div>
+              <sc-for list="{{ctxCats}}" as="s" hint-placeholder-count="5">
+                <div style="display:flex; flex-direction:column; gap:5px; padding:5px 0">
+                  <div style="display:flex; align-items:center; gap:8px; font-size:12.5px">
+                    <span style="width:8px; height:8px; border-radius:2px; background:{{s.color}}"></span>
+                    <span style="flex:1; color:#dcdfe4">{{s.name}}</span>
+                    <span style="color:#dcdfe4; font-variant-numeric:tabular-nums">{{s.tokens}}</span><span style="width:42px; text-align:right; font-size:12px; color:#8b8f98; font-variant-numeric:tabular-nums">{{s.pct}}</span>
+                  </div>
+                  <div style="height:4px; margin-left:16px; border-radius:2px; background:#131316; overflow:hidden"><div style="height:100%; width:{{s.w}}; background:{{s.color}}; border-radius:2px"></div></div>
+                </div>
+              </sc-for>
+            </div>
+            <div style="border-top:1px solid #27272a; padding:14px 16px 12px">
+              <div style="font-size:11.5px; font-weight:600; color:#8b8f98; margin-bottom:8px">Heaviest tools</div>
+              <div style="display:flex; flex-direction:column; gap:3px">
+                <sc-for list="{{tools}}" as="t" hint-placeholder-count="6">
+                  <div style="position:relative; display:flex; align-items:center; height:26px; padding:0 8px; border-radius:4px; overflow:hidden; font-size:12.5px">
+                    <div style="position:absolute; left:0; top:0; bottom:0; width:{{t.w}}; background:#c3e88d1c; border-right:2px solid #c3e88d66"></div>
+                    <span style="position:relative; flex:1; color:#dcdfe4">{{t.name}}</span>
+                    <span style="position:relative; font-size:12px; color:#8b8f98; font-variant-numeric:tabular-nums">{{t.v}}</span>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+            <div style="border-top:1px solid #27272a; padding:14px 16px 16px">
+              <div style="display:flex; font-size:11.5px; color:#8b8f98; margin-bottom:6px"><span style="font-weight:600">Plan usage</span><div style="flex:1"></div><span>Claude Code</span></div>
+              <sc-for list="{{plan}}" as="p" hint-placeholder-count="2">
+                <div style="display:flex; align-items:center; gap:10px; height:26px; font-size:12.5px">
+                  <span style="width:64px; color:#dcdfe4">{{p.label}}</span>
+                  <div style="flex:1; height:4px; border-radius:2px; background:#17171b; overflow:hidden"><div style="height:100%; width:{{p.pct}}; background:#7dd3fc"></div></div>
+                  <span style="width:34px; text-align:right; color:#dcdfe4; font-variant-numeric:tabular-nums">{{p.pct}}</span>
+                  <span style="width:92px; text-align:right; font-size:11.5px; color:#8b8f98; white-space:nowrap">resets in {{p.reset}}</span>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+        </sc-if>
+
+        <!-- AGENTS -->
+        <sc-if value="{{tabAgents}}" hint-placeholder-val="{{false}}">
+          <div style="display:flex; flex-direction:column">
+            <div style="padding:14px 8px 8px">
+              <div style="display:flex; font-size:11.5px; color:#8b8f98; padding:0 8px; margin-bottom:4px"><span style="font-weight:600">Delegated threads</span><div style="flex:1"></div><span>{{delegatedCount}}</span></div>
+              <sc-for list="{{delegated}}" as="d" hint-placeholder-count="2">
+                <div onClick="{{d.open}}" style="display:flex; align-items:center; gap:10px; padding:7px 8px; border-radius:6px; cursor:default" style-hover="background:#131316">
+                  <span style="width:13px; height:13px; flex-shrink:0; background:#c4b5fd; mask:url(icons/messages-square.svg) center/contain no-repeat; -webkit-mask:url(icons/messages-square.svg) center/contain no-repeat;"></span>
+                  <div style="flex:1; min-width:0; display:flex; flex-direction:column; gap:1px"><span style="font-size:13px; color:#dcdfe4">{{d.title}}</span><span style="font-family:var(--mx-font); font-size:11px; color:#8b8f98">{{d.model}}</span></div>
+                  <span style="display:flex; align-items:center; gap:5px; font-size:12px; color:#8b8f98">{{d.state}}<span style="width:12px; height:12px; flex-shrink:0; background:#4ade80; mask:url(icons/check.svg) center/contain no-repeat; -webkit-mask:url(icons/check.svg) center/contain no-repeat;"></span></span>
+                </div>
+              </sc-for>
+              <sc-if value="{{noDelegated}}" hint-placeholder-val="{{false}}"><div style="padding:2px 8px; font-size:12.5px; line-height:1.5; color:#8b8f98">Tasks this thread delegates appear here, each a thread you can open.</div></sc-if>
+            </div>
+            <div style="border-top:1px solid #27272a; padding:14px 8px 8px">
+              <div style="display:flex; font-size:11.5px; color:#8b8f98; padding:0 8px; margin-bottom:4px"><span style="font-weight:600">Subagents in this thread</span><div style="flex:1"></div><span>{{subagentCount}}</span></div>
+              <sc-for list="{{subagents}}" as="s" hint-placeholder-count="2">
+                <div onClick="{{s.open}}" style="display:flex; gap:10px; padding:8px; border-radius:6px; cursor:default" style-hover="background:#131316">
+                  <span style="width:13px; height:13px; flex-shrink:0; background:#c4b5fd; mask:url(icons/bot.svg) center/contain no-repeat; -webkit-mask:url(icons/bot.svg) center/contain no-repeat; margin-top:2px;"></span>
+                  <div style="flex:1; min-width:0; display:flex; flex-direction:column; gap:3px">
+                    <div style="display:flex; gap:8px; font-size:13px; white-space:nowrap"><span style="color:#dcdfe4">{{s.type}}</span><span style="flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; color:#8b8f98">{{s.desc}}</span><span style="font-size:12px; color:{{s.stateColor}}">{{s.stateLabel}}</span></div>
+                    <span style="font-size:12px; line-height:1.45; color:#8b8f98; text-wrap:pretty">{{s.last}}</span>
+                  </div>
+                  <span style="width:11px; height:11px; flex-shrink:0; background:#3f3f46; mask:url(icons/chevron-right.svg) center/contain no-repeat; -webkit-mask:url(icons/chevron-right.svg) center/contain no-repeat; align-self:center;"></span>
+                </div>
+              </sc-for>
+              <sc-if value="{{noSubagents}}" hint-placeholder-val="{{false}}"><div style="padding:2px 8px; font-size:12.5px; line-height:1.5; color:#8b8f98">The provider's own subagents (Claude's Agent tool) appear here.</div></sc-if>
+            </div>
+          </div>
+        </sc-if>
+
+        <!-- BACKGROUND -->
+        <sc-if value="{{tabBackground}}" hint-placeholder-val="{{false}}">
+          <div style="display:flex; flex-direction:column">
+            <div style="padding:14px 8px 8px">
+              <div style="display:flex; font-size:11.5px; color:#8b8f98; padding:0 8px; margin-bottom:4px"><span style="font-weight:600">Running</span><div style="flex:1"></div><span>{{bgCount}}</span></div>
+              <sc-for list="{{bgTasks}}" as="b" hint-placeholder-count="2">
+                <div style="display:flex; gap:10px; padding:8px; border-radius:6px" style-hover="background:#131316">
+                  <span style="width:13px; height:13px; margin-top:2px; flex-shrink:0; background:#fbbf24; mask:{{b.icon}} center/contain no-repeat; -webkit-mask:{{b.icon}} center/contain no-repeat"></span>
+                  <div style="flex:1; min-width:0; display:flex; flex-direction:column; gap:3px">
+                    <div style="display:flex; gap:6px; font-size:13px; white-space:nowrap"><span style="color:#dcdfe4">{{b.title}}</span><span style="color:#8b8f98">{{b.kind}}</span><div style="flex:1"></div><span style="font-size:12px; color:#8b8f98">{{b.dur}}</span></div>
+                    <code style="font-family:var(--mx-font); font-size:11px; color:#8b8f98; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">{{b.cmd}}</code>
+                  </div>
+                  <button onClick="{{b.stop}}" style="all:unset; align-self:center; height:24px; padding:0 8px; display:flex; align-items:center; border-radius:4px; font-size:12px; color:#8b8f98" style-hover="background:#2e1516; color:#f87171">Stop</button>
+                </div>
+              </sc-for>
+              <sc-if value="{{bgEmpty}}" hint-placeholder-val="{{false}}"><div style="padding:4px 8px; font-size:12.5px; color:#8b8f98; line-height:1.5">Nothing running. Background commands, Monitor watches and background subagents show here while they run.</div></sc-if>
+            </div>
+            <div style="border-top:1px solid #27272a; padding:8px 8px">
+              <button onClick="{{toggleFinished}}" style="all:unset; box-sizing:border-box; width:100%; display:flex; align-items:center; gap:7px; height:28px; padding:0 8px; border-radius:6px; font-size:11.5px; color:#8b8f98" style-hover="color:#dcdfe4">
+                <span style="width:10px; height:10px; background:currentColor; transform:{{finishedRot}}; mask:url(icons/chevron-down.svg) center/contain no-repeat; -webkit-mask:url(icons/chevron-down.svg) center/contain no-repeat"></span>
+                <span style="flex:1; font-weight:600">Finished</span><span>{{finishedCount}}</span>
+              </button>
+              <sc-if value="{{finishedOpen}}" hint-placeholder-val="{{false}}">
+                <div style="display:flex; flex-direction:column">
+                  <sc-for list="{{finished}}" as="b" hint-placeholder-count="3">
+                    <div style="display:flex; gap:10px; padding:8px; border-radius:6px; cursor:default" style-hover="background:#131316">
+                      <span style="width:13px; height:13px; margin-top:2px; flex-shrink:0; background:{{b.color}}; mask:{{b.icon}} center/contain no-repeat; -webkit-mask:{{b.icon}} center/contain no-repeat"></span>
+                      <div style="flex:1; min-width:0; display:flex; flex-direction:column; gap:3px">
+                        <div style="display:flex; gap:6px; font-size:13px; white-space:nowrap"><span style="color:#a1a1aa">{{b.title}}</span><span style="color:#8b8f98">{{b.kind}}</span><div style="flex:1"></div><span style="font-size:12px; color:{{b.resultColor}}">{{b.result}}</span></div>
+                        <div style="display:flex; gap:8px; font-size:11px; color:#8b8f98"><code style="flex:1; min-width:0; font-family:var(--mx-font); white-space:nowrap; overflow:hidden; text-overflow:ellipsis">{{b.cmd}}</code><span>{{b.dur}}</span></div>
+                      </div>
+                    </div>
+                  </sc-for>
+                </div>
+              </sc-if>
+            </div>
+          </div>
+        </sc-if>
+      </div>
+
+      <sc-if value="{{showPanelFooter}}" hint-placeholder-val="{{true}}">
+        <div style="flex-shrink:0; height:40px; border-top:1px solid #27272a; padding:0 16px; display:flex; align-items:center; gap:8px; font-size:12px; white-space:nowrap">
+          <sc-if value="{{tabDiff}}" hint-placeholder-val="{{false}}"><span style="color:#8b8f98">Click a file header to fold it</span></sc-if>
+          <sc-if value="{{tabGit}}" hint-placeholder-val="{{true}}"><div style="flex:1; display:flex; align-items:center; gap:8px; min-width:0"><span style="font-family:var(--mx-font); font-size:11px; color:#8b8f98">{{git.where}}</span><span style="min-width:0; font-family:var(--mx-font); font-size:11px; color:#dcdfe4; overflow:hidden; text-overflow:ellipsis">{{git.footBranch}}</span><span style="color:{{git.statusColor}}">{{git.status}}</span><div style="flex:1"></div><button onClick="{{gitRefresh}}" title="Refresh" style="all:unset; width:24px; height:24px; display:flex; align-items:center; justify-content:center; border-radius:4px; color:#8b8f98" style-hover="background:#17171b; color:#eceef2"><span style="width:13px; height:13px; flex-shrink:0; background:currentColor; mask:url(icons/refresh-cw.svg) center/contain no-repeat; -webkit-mask:url(icons/refresh-cw.svg) center/contain no-repeat;"></span></button></div></sc-if>
+          <sc-if value="{{tabContext}}" hint-placeholder-val="{{false}}"><div style="display:flex; align-items:center; gap:8px"><button onClick="{{noop}}" style="all:unset; color:#7dd3fc; font-weight:500" style-hover="color:#eceef2">Compact now</button><span style="color:#8b8f98">frees the window</span></div></sc-if>
+          <sc-if value="{{tabAgents}}" hint-placeholder-val="{{false}}"><span style="color:#8b8f98">Open a row to read or message it</span></sc-if>
+        </div>
+      </sc-if>
+    </section>
+  </sc-if>
+
+  <sc-if value="{{pickerOpen}}" hint-placeholder-val="{{false}}">
+    <div onClick="{{closePicker}}" style="position:absolute; inset:0; z-index:10"></div>
+  </sc-if>
+
+  <sc-if value="{{menuOpen}}" hint-placeholder-val="{{false}}">
+    <div onClick="{{stop}}" style="position:absolute; top:40px; right:{{menuRight}}; width:260px; display:flex; flex-direction:column; background:#17171b; border:1px solid #27272a; border-radius:8px; box-shadow:0 16px 40px rgba(0,0,0,0.5); overflow:hidden; z-index:11">
+      <sc-for list="{{menuSecs}}" as="sec" hint-placeholder-count="3">
+        <div style="display:flex; flex-direction:column; padding:4px; border-top:{{sec.border}}">
+          <sc-for list="{{sec.items}}" as="m" hint-placeholder-count="3">
+            <div onClick="{{m.run}}" style="display:flex; align-items:center; gap:10px; height:30px; padding:0 8px; border-radius:5px; background:{{m.bg}}; font-size:12.5px; color:{{m.color}}; cursor:default" style-hover="background:#202027"><span style="width:13px; height:13px; flex-shrink:0; background:{{m.iconColor}}; mask:{{m.icon}} center/contain no-repeat; -webkit-mask:{{m.icon}} center/contain no-repeat;"></span><span>{{m.label}}</span></div>
+          </sc-for>
+        </div>
+      </sc-for>
+    </div>
+  </sc-if>
+  <sc-if value="{{paletteOpen}}" hint-placeholder-val="{{false}}">
+    <div onClick="{{closePalette}}" style="position:absolute; inset:0; z-index:20; background:rgba(9,9,11,0.5); display:flex; justify-content:center; align-items:flex-start; padding-top:96px">
+      <div onClick="{{stop}}" style="width:600px; display:flex; flex-direction:column; background:#17171b; border:1px solid #27272a; border-radius:10px; box-shadow:0 24px 60px rgba(0,0,0,0.55); overflow:hidden">
+        <div style="display:flex; align-items:center; gap:10px; height:50px; padding:0 16px; border-bottom:1px solid #27272a">
+          <span style="width:15px; height:15px; flex-shrink:0; background:#8b8f98; mask:url(icons/search.svg) center/contain no-repeat; -webkit-mask:url(icons/search.svg) center/contain no-repeat;"></span>
+          <input autoFocus="{{true}}" value="{{paletteQ}}" onChange="{{paletteChange}}" onKeyDown="{{paletteKey}}" placeholder="Search threads and actions" style="all:unset; flex:1; font-size:15px; color:#eceef2">
+          <span style="font-size:11px; color:#8b8f98; padding:0 5px; border:1px solid #27272a; border-radius:4px; line-height:16px">esc</span>
+        </div>
+        <sc-if value="{{paletteConfirm}}" hint-placeholder-val="{{false}}">
+          <div style="display:flex; align-items:center; gap:10px; padding:10px 12px 10px 16px; background:#2e1516; border-bottom:1px solid #27272a">
+            <span style="width:14px; height:14px; flex-shrink:0; background:#f87171; mask:url(icons/trash-2.svg) center/contain no-repeat; -webkit-mask:url(icons/trash-2.svg) center/contain no-repeat;"></span>
+            <span style="flex:1; min-width:0; font-size:12.5px; color:#eceef2; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">Delete “{{confirmTitle}}”? This can't be undone.</span>
+            <button onClick="{{cancelDelete}}" style="all:unset; height:26px; padding:0 10px; display:flex; align-items:center; border-radius:5px; font-size:12px; color:#dcdfe4" style-hover="color:#eceef2; background:#3a1a1b">Cancel</button>
+            <button onClick="{{confirmDelete}}" style="all:unset; height:26px; padding:0 10px; display:flex; align-items:center; border-radius:5px; background:#f87171; font-size:12px; font-weight:600; color:#09090b" style-hover="background:#eceef2">Delete</button>
+          </div>
+        </sc-if>
+        <div class="mx-scroll" style="max-height:420px; overflow-y:auto; padding:4px 6px 6px">
+          <sc-for list="{{paletteSections}}" as="sec" hint-placeholder-count="3">
+            <div style="display:flex; flex-direction:column; gap:1px">
+              <div style="padding:10px 10px 4px; font-size:11.5px; font-weight:600; color:#8b8f98">{{sec.header}}</div>
+              <sc-for list="{{sec.items}}" as="it" hint-placeholder-count="3">
+                <div onClick="{{it.run}}" onMouseEnter="{{it.hover}}" style="display:flex; align-items:center; gap:10px; height:34px; padding:0 10px; border-radius:6px; background:{{it.bg}}; cursor:default">
+                  <sc-if value="{{it.isThread}}" hint-placeholder-val="{{false}}"><span style="font-family:var(--mx-font); font-size:9.5px; font-weight:700; line-height:15px; padding:0 4px; border-radius:3px; color:#09090b; background:{{it.badgeColor}}">{{it.badge}}</span></sc-if>
+                  <sc-if value="{{it.isAction}}" hint-placeholder-val="{{true}}"><span style="width:14px; height:14px; flex-shrink:0; background:{{it.iconColor}}; mask:{{it.icon}} center/contain no-repeat; -webkit-mask:{{it.icon}} center/contain no-repeat;"></span></sc-if>
+                  <span style="flex:1; min-width:0; font-size:13px; color:{{it.fg}}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">{{it.label}}</span>
+                  <span style="font-size:11.5px; color:{{it.metaFg}}; white-space:nowrap">{{it.meta}}</span>
+                </div>
+              </sc-for>
+            </div>
+          </sc-for>
+          <sc-if value="{{paletteEmpty}}" hint-placeholder-val="{{false}}"><div style="padding:18px 10px; font-size:13px; color:#8b8f98">Nothing matches “{{paletteQ}}”.</div></sc-if>
+        </div>
+        <div style="display:flex; gap:14px; padding:8px 16px; border-top:1px solid #27272a; font-size:11px; color:#8b8f98"><span>↑↓ move</span><span>↵ run</span><span>esc close</span><div style="flex:1"></div><span>⌘K anywhere</span></div>
+      </div>
+    </div>
+  </sc-if>
+  <sc-if value="{{hasToast}}" hint-placeholder-val="{{false}}">
+    <div style="position:absolute; top:56px; left:50%; transform:translateX(-50%); display:flex; align-items:center; gap:8px; height:32px; padding:0 14px; border-radius:8px; background:#202027; box-shadow:0 8px 24px rgba(0,0,0,0.45), inset 0 0 0 1px #3f3f46; font-size:12.5px; color:#eceef2; white-space:nowrap; z-index:30"><span style="width:13px; height:13px; flex-shrink:0; background:#4ade80; mask:url(icons/check.svg) center/contain no-repeat; -webkit-mask:url(icons/check.svg) center/contain no-repeat;"></span>{{toast}}</div>
+  </sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1440,&quot;height&quot;:900},&quot;scenario&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;auto&quot;,&quot;idle&quot;,&quot;running&quot;,&quot;question&quot;],&quot;default&quot;:&quot;auto&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;initialTab&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;diff&quot;,&quot;git&quot;,&quot;context&quot;,&quot;agents&quot;,&quot;background&quot;],&quot;default&quot;:&quot;git&quot;,&quot;tsType&quot;:&quot;string&quot;}}">
+class Component extends DCLogic {
+  state = {
+    openId: 't4', touched: false, mode: 'grouped', proj: 0, collapsed: {}, settledOpen: false, panelOpen: true,
+    tab: null, diffCollapsed: { 'src/tui/app/hooks/useUsageLimitBanner.ts': true }, workOpen: {},
+    picker: null, pickHi: null, pickerFilter: '', providerFilter: 'all', model: 'opus', effort: 'medium', perm: 'full',
+    slot: 0, noticeGone: false, armed: false, answered: {}, answerHi: 0, runsAll: false,
+    trayCollapsed: false, queuedGone: {}, bgStopped: {}, hover: null, commit: null, commitCollapsed: {}, finishedOpen: false,
+    palette: false, paletteQ: '', paletteHi: 0, paletteConfirm: false, menu: false, menuConfirm: false,
+    renaming: false, renameVal: '', titles: {}, archived: {}, deleted: {}, toast: null, subagent: null,
+    limitScheduled: false, limitDismissed: false, extra: [], newThread: null, projPop: false, composer: '', sent: {}, queuedExtra: {},
+    showJump: false, diffTurn: {}, turnPicker: false, gitOver: {}, gitBusy: null, gitLoading: false,
+    commentOpen: false, commentText: '', createOpen: false, createTitle: '', seq: 0
+  };
+  chatRef = React.createRef();
+
+  componentDidMount() {
+    this._key = (e) => {
+      const k = (e.key || '').toLowerCase();
+      if ((e.metaKey || e.ctrlKey) && (k === 'k' || k === 'p')) { e.preventDefault(); this.openPalette(); }
+      else if ((e.metaKey || e.ctrlKey) && k === 'n') { e.preventDefault(); this.startNew(); }
+      else if (e.key === 'Escape') {
+        const s = this.state;
+        if (s.palette) this.setState({ palette: false });
+        else if (s.menu) this.setState({ menu: false, menuConfirm: false });
+        else if (s.picker || s.turnPicker || s.projPop) this.setState({ picker: null, turnPicker: false, projPop: false });
+        else if (s.subagent) this.setState({ subagent: null });
+      }
+    };
+    window.addEventListener('keydown', this._key);
+    setTimeout(() => this.scrollBottom(false), 60);
+  }
+  componentWillUnmount() { window.removeEventListener('keydown', this._key); clearTimeout(this._t); clearTimeout(this._g); clearTimeout(this._n); }
+  componentDidUpdate(pp, ps) {
+    const s = this.state;
+    if (ps.openId !== s.openId || ps.subagent !== s.subagent || ps.sent !== s.sent || (ps.newThread && ps.newThread.creating) !== (s.newThread && s.newThread.creating)) setTimeout(() => this.scrollBottom(false), 0);
+  }
+  scrollBottom(smooth) { const el = this.chatRef.current; if (el) el.scrollTo({ top: el.scrollHeight, behavior: smooth ? 'smooth' : 'auto' }); }
+  flash(msg) { clearTimeout(this._t); this.setState({ toast: msg }); this._t = setTimeout(() => this.setState({ toast: null }), 2000); }
+  setTab(t) { this.setState({ tab: t, panelOpen: true }); }
+  openPalette() { this.setState({ palette: true, paletteQ: '', paletteHi: 0, paletteConfirm: false, menu: false, picker: null }); }
+  resetThreadUi() { return { armed: false, hover: null, commit: null, subagent: null, renaming: false, menu: false, menuConfirm: false, commentOpen: false, createOpen: false, turnPicker: false, gitBusy: null, composer: '' }; }
+  openThread(id) { this.setState({ openId: id, touched: true, ...this.resetThreadUi() }); }
+  startNew(p) {
+    const cur = this._cur;
+    this.setState({ ...this.resetThreadUi(), newThread: { p: p || (cur && cur.p) || 'moxen', checkout: 'Local', creating: false, text: '' }, openId: '__new', touched: true, palette: false });
+  }
+  gitDo(msg, ms, patch) {
+    clearTimeout(this._g);
+    this.setState({ gitBusy: msg, armed: false });
+    this._g = setTimeout(() => this.setState(x => ({ gitBusy: null, ...(typeof patch === 'function' ? patch(x) : patch) })), ms);
+  }
+
+  data() {
+    const s = this.state;
+    const P = {
+      moxen: { name: 'moxen', badge: 'MX', color: '#86efac', path: '~/code/moxen' },
+      t3: { name: 't3code-cli', badge: 'T3', color: '#93c5fd', path: '~/code/t3code-cli' },
+      dot: { name: 'dotfiles', badge: 'DF', color: '#c4b5fd', path: '~/dotfiles' }
+    };
+    const base = [
+      { id: 't1', p: 'moxen', title: 'Desktop app: native shell over the TUI store', status: 'running', age: '', scenario: 'running', branch: 'moxen/desktop-shell', checkout: 'Worktree',
+        children: [{ sid: 'sa1', kind: 'native', label: 'Explore · map side panel tabs', age: '1m', running: true }, { sid: 'sa2', kind: 'native', label: 'Explore · list composer states', age: '3m' }] },
+      { id: 't2', p: 'moxen', title: 'Git panel: PR details/CI, draft PRs, comments', status: 'active', waiting: true, age: '12m', scenario: 'question', branch: 'moxen/git-panel-pr', checkout: 'Worktree' },
+      { id: 't3', p: 'moxen', title: 'Settings: tabbed layout + pickers', status: 'active', draft: true, age: '2h', scenario: 'idle', branch: 'main', checkout: 'Local',
+        children: [{ kind: 'delegated', label: 'Run threads test suite', age: '2h' }] },
+      { id: 't4', p: 't3', title: 'Hit limits, last assistant message is visible', status: 'active', limited: true, age: '2d', scenario: 'limit', branch: 't3code/queue-together', checkout: 'Local',
+        children: [{ kind: 'delegated', label: 'Run bun check', age: '2d' }, { kind: 'delegated', label: 'Summarize render-check scenarios', age: '2d' }, { sid: 'sa3', kind: 'native', label: 'Explore · list core forge modules', age: '2d' }] },
+      { id: 't5', p: 't3', title: 'Stage all changes, commit and push', status: 'blocked', age: '1d', scenario: 'idle', branch: 't3code/syntax-hl', checkout: 'Local' },
+      { id: 't6', p: 'dot', title: 'Nix: pin bun 1.3.13 in the devshell', status: 'snoozed', age: '3d', scenario: 'idle', branch: 'main', checkout: 'Local' },
+      { id: 't7', p: 'dot', title: 'Refresh zsh prompt timings', status: 'active', age: '5d', scenario: 'idle', branch: 'main', checkout: 'Local', noRepo: true }
+    ];
+    const all = [...s.extra, ...base].filter(t => !s.deleted[t.id]).map(t => ({ ...t, title: s.titles[t.id] ?? t.title }));
+    const threads = all.filter(t => !s.archived[t.id]);
+    const settledBase = [
+      { id: 's1', p: 't3', title: 'Syntax highlighting missing in diffs', age: '3d', branch: 't3code/tree-sitter', pr: 405 },
+      { id: 's2', p: 'moxen', title: 'Backdrop setting applies to sidebar', age: '4d', branch: 'moxen/backdrop', pr: 399 },
+      { id: 's3', p: 'moxen', title: 'Image token back to [Image #N]', age: '5d', branch: 'main' },
+      { id: 's4', p: 'dot', title: 'Ghostty keybinds for splits', age: '1w', branch: 'main' },
+      { id: 's5', p: 't3', title: 'Typst watch for the terraform PDFs', age: '2w', branch: 't3code/typst-watch', noOpener: true }
+    ].filter(t => !s.deleted[t.id]).map(t => ({ ...t, title: s.titles[t.id] ?? t.title, scenario: 'idle', checkout: 'Local', status: 'settled' }));
+    const settled = [...all.filter(t => s.archived[t.id]).map(t => ({ ...t, age: 'now', status: 'settled', scenario: t.scenario === 'running' ? 'idle' : t.scenario })), ...settledBase];
+    return { P, threads, settled, all: [...threads, ...settled] };
+  }
+
+  runAction(key) {
+    const s = this.state;
+    const { P, threads, settled } = this.data();
+    const t = this._cur;
+    const next = () => (threads.find(x => x.id !== s.openId) || {}).id || 't4';
+    const close = { palette: false, menu: false, menuConfirm: false, paletteConfirm: false };
+    switch (key) {
+      case 'new': this.startNew(t && t.p); return;
+      case 'newIn': this.startNew(t && t.p); setTimeout(() => this.setState({ projPop: true }), 0); return;
+      case 'rename': if (t) this.setState({ ...close, renaming: true, renameVal: t.title }); return;
+      case 'regen': this.setState(close); this.flash('Regenerating the title…'); return;
+      case 'compact': this.setState({ ...close, noticeGone: true }); this.flash('Compacting the session…'); return;
+      case 'continueNew': this.setState(close); this.continueInNew(); return;
+      case 'export': this.setState(close); this.flash(`Exported to ~/Downloads/${(t ? t.title : 'thread').toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 32)}.md`); return;
+      case 'copyPath': this.setState(close); this.flash(`Copied ${t ? P[t.p].path : ''}`); return;
+      case 'copyBranch': this.setState(close); this.flash(`Copied ${t ? t.branch : ''}`); return;
+      case 'copyId': this.setState(close); this.flash(`Copied th_${(t ? t.id : 'x')}7f3a9c`); return;
+      case 'copyLast': this.setState(close); this.flash('Copied the last assistant message'); return;
+      case 'archive': if (!t) return; this.setState(x => ({ ...close, archived: { ...x.archived, [t.id]: true }, openId: next(), ...this.resetThreadUi() })); this.flash(`Archived “${t.title}”`); return;
+      case 'delete': if (!t) return; this.setState(x => ({ ...close, deleted: { ...x.deleted, [t.id]: true }, openId: next(), ...this.resetThreadUi() })); this.flash(`Deleted “${t.title}”`); return;
+      case 'bg': this.setState(close); this.setTab('background'); return;
+      case 'panel': this.setState(x => ({ ...close, panelOpen: !x.panelOpen })); return;
+      case 'tabDiff': case 'tabGit': case 'tabContext': case 'tabAgents': this.setState(close); this.setTab(key.slice(3).toLowerCase()); return;
+      default: return;
+    }
+  }
+  continueInNew() {
+    const t = this._cur; if (!t) return;
+    const id = `h${this.state.seq + 1}`;
+    const th = { id, p: t.p, title: `Continue: ${t.title}`, status: 'scheduled', age: 'now', scenario: 'handoff', branch: t.branch, checkout: t.checkout, from: t.title };
+    this.setState(x => ({ seq: x.seq + 1, extra: [th, ...x.extra], openId: id, touched: true, ...this.resetThreadUi() }));
+    this.flash('Handoff written. It sends at 11:01, after the reset');
+  }
+  send() {
+    const s = this.state;
+    const text = s.composer.trim();
+    if (s.openId === '__new') {
+      if (!text) { this.flash('Write the first message to start the thread'); return; }
+      const nt = s.newThread;
+      this.setState({ newThread: { ...nt, creating: true, text }, composer: '' });
+      clearTimeout(this._n);
+      this._n = setTimeout(() => {
+        const id = `n${this.state.seq + 1}`;
+        const title = text.length > 56 ? `${text.slice(0, 56).trim()}…` : text;
+        const th = { id, p: nt.p, title, status: 'running', age: '', scenario: 'fresh', branch: nt.checkout === 'Worktree' ? `${nt.p === 't3' ? 't3code' : nt.p}/${title.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 24).replace(/-$/, '')}` : 'main', checkout: nt.checkout, firstMsg: text };
+        this.setState(x => ({ seq: x.seq + 1, extra: [th, ...x.extra], openId: id, newThread: null }));
+      }, 1500);
+      return;
+    }
+    if (!text) return;
+    const cur = this._scenario;
+    if (cur === 'limit') {
+      this.setState(x => ({ composer: '', queuedExtra: { ...x.queuedExtra, [x.openId]: [...(x.queuedExtra[x.openId] || []), text] }, slot: 1, trayCollapsed: false }));
+      return;
+    }
+    this.setState(x => ({ composer: '', sent: { ...x.sent, [x.openId]: [...(x.sent[x.openId] || []), text] } }));
+  }
+
+  renderVals() {
+    let s = this.state;
+    const noop = () => {};
+    const I = (n) => `url(icons/${n}.svg)`;
+    const pulse = (d) => `mxPulse ${d}s ease-in-out infinite`;
+    const { P, threads, settled, all } = this.data();
+
+    const forcedSc = this.props.scenario && this.props.scenario !== 'auto' ? this.props.scenario : null;
+    if (!s.touched && forcedSc) s = { ...s, openId: { running: 't1', question: 't2', idle: 't4' }[forcedSc] || s.openId };
+    const isNewView = s.openId === '__new' && !!s.newThread;
+    const open = isNewView ? null : all.find(t => t.id === s.openId) || threads[0];
+    this._cur = open;
+    let scenario = isNewView ? (s.newThread.creating ? 'creating' : 'new') : open ? open.scenario : 'idle';
+    if (scenario === 'question' && s.answered.q) scenario = 'answered';
+    this._scenario = scenario;
+    const tid = open ? open.id : '__new';
+    const pk = isNewView ? s.newThread.p : open ? open.p : 'moxen';
+
+    // --- subagents
+    const st = (icon, tool, detail, dur, o = {}) => ({ icon: I(icon), iconColor: o.iconColor || '#8b8f98', tool, toolColor: o.toolColor || '#a1a1aa', detail, detailColor: o.detailColor || '#8b8f98', dur, running: !!o.running, spinColor: o.spinColor || '#7dd3fc' });
+    const SUBS = {
+      sa1: { parent: 't1', title: 'Explore · Map side panel tabs', type: 'Explore', desc: 'Map side panel tabs', running: true, state: 'running · 38s', model: 'Claude Haiku 4.5',
+        prompt: 'Read src/tui/features/sidepanel, gitpanel and diffpanel. For every side panel tab, list what it shows, its empty state, its footer and each action it offers. One short table per tab.',
+        steps: [st('file-text', 'Read', 'src/tui/features/sidepanel/sidepanel.tsx', '0.3s'), st('file-text', 'Read', 'src/tui/features/gitpanel/gitpanel.tsx', '0.2s'), st('text-search', 'Grep', '"Empty glyph" in src/tui', '0.2s'),
+          st('file-text', 'Read', 'src/tui/features/diffpanel/diffpanel.tsx', '4s', { iconColor: '#7dd3fc', toolColor: '#eceef2', detailColor: '#dcdfe4', running: true })],
+        last: 'Reading gitpanel.tsx and diffpanel.tsx for the tab bodies and their footers.' },
+      sa2: { parent: 't1', title: 'Explore · List composer states', type: 'Explore', desc: 'List composer states', running: false, state: 'finished in 1m 02s', model: 'Claude Haiku 4.5',
+        prompt: 'List every state the composer can be in and what enter does in each.',
+        steps: [st('file-text', 'Read', 'src/tui/features/composer/composer.tsx', '0.4s'), st('file-text', 'Read', 'src/tui/features/composer/useComposer.ts', '0.2s'), st('text-search', 'Grep', '"placeholder" in src/tui/features/composer', '0.2s')],
+        final: ['The composer has four states. Idle: enter sends. Running: enter steers the turn in progress. Waiting out a usage limit: enter queues the message for the reset. Creating: the first message of a new thread, sent once the thread exists.'],
+        last: 'Composer: idle, running (enter steers), waiting out a limit (enter queues), creating.' },
+      sa3: { parent: 't4', title: 'Explore · List core forge modules', type: 'Explore', desc: 'List core forge modules', running: false, state: 'finished in 42s', model: 'Claude Haiku 4.5',
+        prompt: 'Find where forge detection, request status and CI checks are implemented and how the TUI reads them.',
+        steps: [st('text-search', 'Grep', '"ForgeDetection" in src', '0.3s'), st('file-text', 'Read', 'src/server/forge/github.ts', '0.2s'), st('file-text', 'Read', 'src/server/api.ts', '0.3s')],
+        final: ['Forge detection, request status and checks live in src/server/forge; the TUI reads them through api.ts, one call per panel refresh.'],
+        last: 'Forge detection, request status and checks live in src/server; the TUI reads them through api.ts.' }
+    };
+    const subOpen = s.subagent && SUBS[s.subagent] && open && SUBS[s.subagent].parent === open.id ? SUBS[s.subagent] : null;
+    const openSub = (sid) => this.setState({ subagent: sid, menu: false, hover: null });
+
+    // --- sidebar
+    const mkRow = (t, showProject) => {
+      const isOpen = t.id === s.openId;
+      const p = P[t.p];
+      let icon = null, iconColor = '#8b8f98', anim = 'none', iconTitle = '';
+      if (t.waiting) { icon = 'message-circle-question'; iconColor = '#fbbf24'; anim = pulse(1.6); iconTitle = 'Waiting on you'; }
+      else if (t.status === 'blocked') { icon = 'circle-alert'; iconColor = '#f87171'; iconTitle = 'Needs approval'; }
+      else if (t.limited) { icon = 'clock'; iconColor = '#fbbf24'; iconTitle = 'Session limit · resets 11:00'; }
+      else if (t.status === 'scheduled') { icon = 'calendar-clock'; iconColor = '#fbbf24'; iconTitle = 'Starts at 11:01, after the reset'; }
+      else if (t.status === 'snoozed') { icon = 'moon'; iconColor = '#a78bfa'; iconTitle = 'Snoozed until Mon 09:00'; }
+      else if (t.draft) { icon = 'pencil'; iconColor = '#fbbf24'; iconTitle = 'Unsent draft'; }
+      const children = (t.children || []).map(c => {
+        const active = isOpen && c.sid && s.subagent === c.sid;
+        return { iconColor: c.running ? '#c4b5fd' : '#8b8f98', icon: I(c.kind === 'native' ? 'bot' : 'messages-square'), label: c.label, age: c.age, running: !!c.running, done: !c.running,
+          color: active ? '#eceef2' : c.running ? '#dcdfe4' : '#8b8f98', bg: active ? '#1c1c21' : 'transparent',
+          open: (e) => { e.stopPropagation(); if (c.sid) { if (!isOpen) this.openThread(t.id); setTimeout(() => openSub(c.sid), 0); } else this.flash(`Opens the delegated thread “${c.label}”`); } };
+      });
+      return {
+        title: t.title, age: t.age, showProject, projectColor: p.color, projectBadge: p.badge,
+        spin: t.status === 'running', hasIcon: !!icon, icon: icon ? I(icon) : 'none', iconColor, anim, iconTitle,
+        bg: isOpen && !subOpen ? '#1c1c21' : isOpen ? '#17171b' : 'transparent', hoverBg: isOpen ? '#1c1c21' : '#131316', marker: isOpen ? '#7dd3fc' : 'transparent',
+        titleColor: isOpen ? '#eceef2' : '#dcdfe4', titleWeight: isOpen ? '500' : '400',
+        hasChildren: children.length > 0, children, open: () => this.openThread(t.id)
+      };
+    };
+    const draftRow = (showProject) => ({ title: s.newThread.creating ? s.newThread.text : 'New thread', age: '', showProject, projectColor: P[s.newThread.p].color, projectBadge: P[s.newThread.p].badge,
+      spin: s.newThread.creating, hasIcon: !s.newThread.creating, icon: I('square-pen'), iconColor: '#7dd3fc', anim: 'none', iconTitle: 'New thread',
+      bg: '#1c1c21', hoverBg: '#1c1c21', marker: '#7dd3fc', titleColor: '#eceef2', titleWeight: '500', hasChildren: false, children: [], open: noop });
+    const pkeys = ['moxen', 't3', 'dot'];
+    let groups;
+    if (s.mode === 'grouped') {
+      groups = pkeys.map(k => {
+        const rows = threads.filter(t => t.p === k).map(t => mkRow(t, false)); const col = !!s.collapsed[k];
+        if (isNewView && s.newThread.p === k) rows.unshift(draftRow(false));
+        return { showHeader: true, color: P[k].color, badge: P[k].badge, name: P[k].name, count: rows.length, chevRot: col ? 'rotate(-90deg)' : 'none',
+          toggle: () => this.setState(x => ({ collapsed: { ...x.collapsed, [k]: !x.collapsed[k] } })), rows: col ? [] : rows };
+      });
+    } else if (s.mode === 'flat') {
+      const rows = threads.map(t => mkRow(t, true)); if (isNewView) rows.unshift(draftRow(true));
+      groups = [{ showHeader: false, rows }];
+    } else {
+      const k = pkeys[s.proj];
+      const rows = threads.filter(t => t.p === k).map(t => mkRow(t, false)); if (isNewView && s.newThread.p === k) rows.unshift(draftRow(false));
+      groups = [{ showHeader: false, rows }];
+    }
+    const modes = [['flat', 'All'], ['grouped', 'Projects'], ['project', 'One']].map(([m, label]) => ({
+      label, bg: s.mode === m ? '#27272a' : 'transparent', fg: s.mode === m ? '#eceef2' : '#8b8f98', pick: () => this.setState({ mode: m })
+    }));
+    const thread = open ? { ...open, projectColor: P[open.p].color, projectBadge: P[open.p].badge, projectName: P[open.p].name }
+      : { title: s.newThread && s.newThread.creating ? s.newThread.text : 'New thread', projectColor: P[pk].color, projectBadge: P[pk].badge, projectName: P[pk].name, branch: s.newThread && s.newThread.checkout === 'Worktree' ? 'new branch from main' : 'main', checkout: s.newThread ? s.newThread.checkout : 'Local' };
+
+    // --- files & turns
+    const L = (n, sign, text, kind) => ({ n, sign, text, bg: kind === 'a' ? '#0f2a1a' : kind === 'r' ? '#2e1516' : kind === 'h' ? '#101013' : 'transparent', nbg: kind === 'a' ? '#16341f' : kind === 'r' ? '#3a1a1b' : 'transparent',
+      signColor: kind === 'a' ? '#4ade80' : kind === 'r' ? '#f87171' : '#3f3f46', color: kind === 'h' ? '#8b8f98' : '#e5e7eb' });
+    const F = {
+      thread: { path: 'src/tui/model/thread.ts', add: 18, del: 6, lines: [
+        L('', '', '@@ -214,9 +214,14 @@ queuedSummary(', 'h'), L(214, '', '  const held = items.filter(isHeld);', ''),
+        L('', '−', '  return held.length > 0 ? sendOne(held[0]) : null;', 'r'),
+        L(215, '+', '  // Everything held for the reset goes out as one turn,', 'a'), L(216, '+', '  // in the order it was queued, images included.', 'a'),
+        L(217, '+', '  if (held.length === 0) return null;', 'a'), L(218, '+', '  return sendTogether(held.map(toPromptPart));', 'a'), L(219, '', '}', '')] },
+      queued: { path: 'src/tui/features/queuedpanel/queuedpanel.tsx', add: 9, del: 2, lines: [
+        L('', '', '@@ -88,6 +88,13 @@ QueuedPanel({', 'h'), L(88, '', '  const held = items.filter(isHeld).length;', ''),
+        L('', '−', '  const title = `${items.length} queued`;', 'r'),
+        L(89, '+', '  // One line for the whole batch: it leaves together.', 'a'), L(90, '+', '  const title = queuedSummary(items.length, held);', 'a'),
+        L(91, '', '  const rows = items.map((item, index) => {', '')] },
+      banner: { path: 'src/tui/app/hooks/useUsageLimitBanner.ts', add: 14, del: 4, lines: [
+        L('', '', '@@ -31,7 +31,9 @@ useUsageLimitBanner(', 'h'), L(31, '', '  const turn = lastTurn(thread);', ''),
+        L('', '−', '  const group = turn?.work.slice(-1);', 'r'),
+        L(32, '+', '  // Keep the whole Worked group visible under the banner.', 'a'), L(33, '+', '  const group = turn?.work ?? [];', 'a'), L(34, '', '  return { group, resetsAt };', '')] },
+      token: { path: 'src/tui/ui/imagetoken.ts', add: 3, del: 3, lines: [
+        L('', '', '@@ -12,6 +12,6 @@ imageToken(', 'h'), L('', '−', '  return `${file.name}`;', 'r'), L(12, '+', '  return `[Image #${index + 1}]`;', 'a'), L(13, '', '}', '')] },
+      shell: { path: 'src/desktop/window.tsx', add: 88, del: 0, lines: [
+        L('', '', '@@ -0,0 +1,88 @@', 'h'), L(1, '+', 'export function Window({ store }: { store: ThreadStore }) {', 'a'), L(2, '+', '  const panel = useSidePanel(store);', 'a'),
+        L(3, '+', '  return (', 'a'), L(4, '+', '    <Split sidebar={<Threads store={store} />} panel={panel.open && <SidePanel {...panel} />}>', 'a'), L(5, '+', '      <Chat store={store} />', 'a'), L(6, '+', '    </Split>', 'a')] },
+      gitp: { path: 'src/tui/features/gitpanel/gitpanel.tsx', add: 31, del: 9, lines: [
+        L('', '', '@@ -212,7 +212,12 @@ GitTab({', 'h'), L(212, '', '  const mergeActions = (request: ForgeRequest) =>', ''),
+        L('', '−', '    <ActionLink label="merge" onClick={() => onMerge(request)} />', 'r'),
+        L(213, '+', '    armedMerge === request.number ? (', 'a'), L(214, '+', '      <MergeStrategies onPick={(strategy) => onMerge(request, strategy)} />', 'a'),
+        L(215, '+', '    ) : <ActionLink label="merge…" onClick={() => setArmedMerge(request.number)} />;', 'a')] },
+      settings: { path: 'src/tui/features/settings/settingsmodal.tsx', add: 46, del: 38, lines: [
+        L('', '', '@@ -48,9 +48,11 @@ SettingsModal({', 'h'), L('', '−', '  return <List rows={rows} />;', 'r'),
+        L(48, '+', '  const [tab, setTab] = useState<SettingsTab>("general");', 'a'), L(49, '+', '  return <Tabs tab={tab} onTab={setTab}>{rows[tab]}</Tabs>;', 'a')] },
+      nix: { path: 'flake.nix', add: 1, del: 1, lines: [
+        L('', '', '@@ -21,7 +21,7 @@ devShells.default', 'h'), L('', '−', '      bun = pkgs.bun;', 'r'), L(21, '+', '      bun = pkgs.bun_1_3_13;', 'a'), L(22, '', '      nodejs = pkgs.nodejs_22;', '')] }
+    };
+    const fileView = (f, collapsedMap, key) => { const col = !!collapsedMap[f.path]; const i = f.path.lastIndexOf('/') + 1;
+      return { ...f, dir: f.path.slice(0, i), name: f.path.slice(i), open: !col, chevRot: col ? 'rotate(-90deg)' : 'none',
+        toggle: () => this.setState(x => ({ [key]: { ...x[key], [f.path]: !x[key][f.path] } })) }; };
+    const TURNS = {
+      t3: [
+        { n: 1, time: 'Sun, 09:48', prompt: 'Hit limits, last assistant message is visible. Keep the full Worked group under the banner.', files: [F.banner, F.token] },
+        { n: 2, time: 'Sun, 10:25', prompt: "Okay maybe it wasn't that, but it still reads like duplication…", files: [F.thread, F.queued, F.banner] },
+        { n: 3, time: 'Sun, 10:41', prompt: 'Make the banner responsive on narrow terminals', files: [F.banner] },
+        { n: 4, time: 'Sun, 11:02', prompt: 'Queued panel: one line for the whole batch', files: [F.queued] },
+        { n: 5, time: 'Sun, 11:20', prompt: 'Run bun check and fix what it finds', files: [F.thread, F.token] }],
+      moxen: [
+        { n: 1, time: 'Today, 09:12', prompt: 'Draft the window shell: sidebar, chat and side panel', files: [F.shell] },
+        { n: 2, time: 'Today, 09:55', prompt: 'Git panel: merge arms first and names the strategy', files: [F.gitp, F.settings] }],
+      dot: [{ n: 1, time: 'Thu, 18:03', prompt: 'Pin bun 1.3.13 in the devshell', files: [F.nix] }]
+    };
+    const noTurns = isNewView || !open || open.noRepo || ['fresh', 'handoff'].includes(open.scenario);
+    const turns = noTurns ? [] : (TURNS[open.p] || []).map(t => ({ ...t, add: t.files.reduce((a, f) => a + f.add, 0), del: t.files.reduce((a, f) => a + f.del, 0) }));
+    const turnN = s.diffTurn[tid];
+    const turn = turns.find(t => t.n === turnN) || null;
+    const setTurn = (n) => this.setState(x => ({ diffTurn: { ...x.diffTurn, [tid]: n }, turnPicker: false, tab: 'diff', panelOpen: true }));
+
+    // --- timeline
+    const steps29 = [st('file-text', 'Read', 'src/tui/features/queuedpanel/queuedpanel.tsx', '0.2s'), st('text-search', 'Grep', '"usage-hold" in src/tui', '0.3s'), st('file-pen', 'Edit', 'src/tui/model/thread.ts', '1.1s'), st('terminal', 'Bash', 'bun run check', '48s'), st('bot', 'Explore', 'List core forge modules', '42s', { iconColor: '#c4b5fd' })];
+    const work = (id, duration, steps, list) => ({ isWork: true, duration, steps, expanded: !!s.workOpen[id], chevRot: s.workOpen[id] ? 'none' : 'rotate(-90deg)', stepsList: list || steps29,
+      toggle: () => this.setState(x => ({ workOpen: { ...x.workOpen, [id]: !x.workOpen[id] } })) });
+    const diffRow = (n) => { const t = turns.find(x => x.n === n); return t ? { isDiff: true, files: t.files.length, add: t.add, del: t.del, turn: n, open: () => setTurn(n) } : null; };
+    const user = (time, text, attachments = []) => ({ isUser: true, time, text, attachments });
+    const earlierT = [
+      user('Sun, 09:41', "Hit limits, last assistant message is visible, I'd say we keep the full Worked group under the banner instead of only the last step."),
+      work('e1', '2m 12s', 18),
+      { isAgent: true, model: 'Claude Opus 5.5', time: 'Sun, 09:44',
+        paras: [{ text: 'The usage banner now keeps the whole Worked group of the last turn visible above it, so you can still see what the agent was doing when the limit hit.' }, { text: 'I also stopped the banner from pushing the last assistant message out of view on short terminals: the timeline scrolls it back into place when the banner appears.' }],
+        hasBullets: false, bullets: [], hasCode: false },
+      diffRow(1),
+      user('Sun, 09:52', 'Good. The image token shows the file name again, it should read [Image #N] like before.'),
+      work('e2', '48s', 6),
+      { isAgent: true, model: 'Claude Opus 5.5', time: 'Sun, 09:53',
+        paras: [{ text: 'Image tokens render as [Image #N] again, numbered in paste order within the message. The file name stays in the attachment chip below the text.' }],
+        hasBullets: true, bullets: [
+          { lead: 'Composer:', text: 'the token is inserted at the cursor when you paste, and deleting it removes the attachment too.' },
+          { lead: 'Timeline:', text: 'sent messages keep the numbered token, so references like “see Image #2” still line up.' }],
+        hasCode: false },
+      user('Sun, 10:02', 'Run bun check and make sure the render-check scenarios for the banner still pass.'),
+      work('e3', '1m 40s', 11),
+      { isAgent: true, model: 'Claude Opus 5.5', time: 'Sun, 10:04',
+        paras: [{ text: 'bun check passes. Two render-check scenarios needed new snapshots because the banner is now one row taller when the Worked group is expanded; the rest match.' }],
+        hasBullets: false, bullets: [], hasCode: true, code: '$ bun run render-check --filter usage-banner\n✓ usage-banner/narrow\n✓ usage-banner/wide\n↻ usage-banner/expanded-worked (snapshot updated)\n↻ usage-banner/with-queued (snapshot updated)' }
+    ];
+    const idleT = [
+      ...earlierT,
+      user('Sun, 10:25', "Okay maybe it wasn't that, but it still reads like duplication: 2 not sent and 2 waiting for the reset? I'm not sure how we handle multiple queued messages, but they should all send afterwards together, not one at a time with the agent working in between.", [{ name: 'clipboard-1790490592447.png', bg: 'url(uploads/pasted-1790654053855-0.png) 38% 30% / 260% auto no-repeat' }]),
+      work('w1', '3m 34s', 29),
+      { isAgent: true, model: 'Claude Opus 5.5', time: 'Sun, 10:28',
+        paras: [{ text: 'Queued messages now go out together, as one turn, instead of the agent finishing one before it sees the next.' }],
+        hasBullets: true, bullets: [
+          { lead: 'At the reset:', text: 'every message held for the reset is sent in the same turn as the continue. The agent gets the continue prompt plus your messages in order, with all their images.' },
+          { lead: 'Queued behind a running turn:', text: 'when the turn ends, everything queued behind it goes out as one turn.' }],
+        hasCode: true, code: 'if (held.length === 0) return null;\nreturn sendTogether(held.map(toPromptPart));' },
+      diffRow(2)
+    ];
+    const questionT = [
+      user('Today, 10:12', 'Git panel: show the PR details and CI, let the agent open draft PRs, and support comments.'),
+      work('w2', '6m 10s', 41),
+      { isAgent: true, model: 'Claude Opus 5.5', time: 'Today, 10:18',
+        paras: [{ text: "The Git tab now reads the branch's pull request, its checks (failures first) and its size. The agent can open it as a draft or ready for review, and comment and merge both confirm in the tab before they land." }, { text: 'One call left before merge ships: which strategy the tab arms by default.' }],
+        hasBullets: false, bullets: [], hasCode: false },
+      diffRow(2)
+    ];
+    const T = {
+      idle: idleT, limit: idleT,
+      running: [
+        user('Today, 10:40', 'Design Moxen as a native desktop app over the same store. Map every side panel tab and composer state first, then draft the window shell.'),
+        { isLive: true, duration: '1m 12s', steps: 8, stepsList: [
+          st('file-text', 'Read', 'src/tui/features/sidepanel/sidepanel.tsx', '0.2s'), st('text-search', 'Grep', '"TAB_LABEL" in src/tui', '0.4s'), st('file-text', 'Read', 'src/tui/features/composer/composer.tsx', '0.3s'),
+          st('bot', 'Explore', 'List composer states', '1m 02s', { iconColor: '#c4b5fd' }),
+          st('bot', 'Explore', 'Map side panel tabs', '38s', { iconColor: '#c4b5fd', toolColor: '#eceef2', detailColor: '#dcdfe4', running: true, spinColor: '#fbbf24' }),
+          st('terminal', 'Bash', 'bun run check:tui', '6s', { iconColor: '#7dd3fc', toolColor: '#eceef2', detailColor: '#c3e88d', running: true })] }
+      ],
+      question: questionT,
+      answered: [...questionT, user('Today, 10:19', `Merge strategy: ${s.answered.q}`)],
+      handoff: [{ isBrief: true, icon: I('messages-square'), label: `Handoff from “${open && open.from ? open.from : ''}”`, meta: 'written by Claude Opus 5.5',
+        text: 'Queued messages held for a usage reset now leave together as one turn, with the continue prompt. Done: thread.ts sendTogether, queuedpanel summary line, usage banner keeps the full Worked group. Left: render-check on narrow terminals, and the queued panel copy when only some messages are held.' }],
+      fresh: open && open.scenario === 'fresh' ? [user('Just now', open.firstMsg), { isLive: true, duration: '3s', steps: 1, stepsList: [st('file-text', 'Read', 'README.md', '1s', { iconColor: '#7dd3fc', toolColor: '#eceef2', detailColor: '#dcdfe4', running: true })] }] : [],
+      creating: s.newThread ? [user('Just now', s.newThread.text), { isStarting: true, text: `Creating the thread in ${P[pk].name}${s.newThread.checkout === 'Worktree' ? ' on a new worktree' : ''}…` }] : [],
+      new: []
+    };
+    let tl = subOpen
+      ? [{ isBrief: true, icon: I('bot'), label: 'Prompt from Claude Opus 5.5', meta: `to ${subOpen.model}`, text: subOpen.prompt },
+         subOpen.running ? { isLive: true, duration: '38s', steps: subOpen.steps.length, stepsList: subOpen.steps } : work(`sub-${s.subagent}`, subOpen.state.replace('finished in ', ''), subOpen.steps.length, subOpen.steps),
+         ...(subOpen.final ? [{ isAgent: true, model: subOpen.model, time: 'Today', paras: subOpen.final.map(text => ({ text })), hasBullets: false, bullets: [], hasCode: false }] : [])]
+      : [...(T[scenario] || []), ...((s.sent[tid] || []).map(text => user('Just now', text)))];
+    tl = tl.filter(Boolean);
+    const timeline = tl.map((it, i) => ({ isUser: false, isWork: false, isLive: false, isAgent: false, isDiff: false, isBrief: false, isStarting: false, ...it, metaOpacity: s.hover === i ? '1' : '0',
+      enter: () => this.setState({ hover: i }), leave: () => this.setState(x => (x.hover === i ? { hover: null } : null)) }));
+
+    // --- tasks & queued
+    const taskSets = {
+      idle: [['c', 'Image token back to [Image #N]', '42s'], ['c', 'Usage limit: full Worked group, queueing, responsive banner', '3m 10s'], ['c', 'Backdrop setting applies to sidebar; panels/palette in new threads', '1m 05s'], ['o', 'Settings: tabbed layout + pickers instead of free text', ''], ['o', 'Git panel: PR details/CI, draft PRs, agent-opened PRs, comments', ''], ['o', 'Copy message with images (Moxen-aware paste, clipboard history)', '']],
+      running: [['c', 'Read sidebar, side panel and composer sources', '12s'], ['c', 'List every composer and notice state', '1m 02s'], ['c', 'Map side panel tabs to the desktop panel', '38s'], ['p', 'Draft the window shell: sidebar, chat, side panel', '24s'], ['o', 'Model, effort and permission pickers', ''], ['o', 'Answer panel and queued messages', '']]
+    };
+    taskSets.limit = taskSets.idle;
+    const tItems = subOpen ? [] : (taskSets[scenario] || []).map(([k, text, dur]) => ({ text, dur, active: k === 'p', notActive: k !== 'p',
+      icon: I(k === 'c' ? 'circle-check' : 'circle'), iconColor: k === 'c' ? '#4ade80' : '#3f3f46', color: k === 'c' ? '#8b8f98' : k === 'p' ? '#eceef2' : '#dcdfe4', durColor: k === 'p' ? '#fbbf24' : '#8b8f98' }));
+    const done = tItems.filter(t => t.iconColor === '#4ade80').length;
+    const activeTask = tItems.find(t => t.active) || tItems.find(t => t.iconColor !== '#4ade80');
+    const tasks = { items: tItems, pct: tItems.length ? `${Math.round(done / tItems.length * 100)}%` : '0%' };
+    const qBase = scenario === 'running' ? [
+      { id: 'q1', text: 'Also keep the ⌘K palette reachable from the chat header', extra: '', when: 'after this turn', whenColor: '#8b8f98', iconColor: '#8b8f98' },
+      { id: 'q2', text: 'Then run render-check on the new layout', extra: '+1 image', when: '11:00, after the reset', whenColor: '#fbbf24', iconColor: '#fbbf24' }
+    ] : scenario === 'handoff' ? [{ id: 'qh', text: 'Handoff · continue from the summary above', extra: '', when: '11:01, after the reset', whenColor: '#fbbf24', iconColor: '#fbbf24' }] : [];
+    const qExtra = (s.queuedExtra[tid] || []).map((text, i) => ({ id: `qx${i}`, text, extra: '', when: '11:00, after the reset', whenColor: '#fbbf24', iconColor: '#fbbf24' }));
+    const queued = subOpen ? [] : [...qBase, ...qExtra].filter(q => !s.queuedGone[`${tid}:${q.id}`]).map(q => ({ ...q, cancel: () => this.setState(x => ({ queuedGone: { ...x.queuedGone, [`${tid}:${q.id}`]: true } })) }));
+    const hasTasks = tItems.length > 0, hasQueued = queued.length > 0;
+    const slot = hasTasks && hasQueued ? s.slot % 2 : hasQueued ? 1 : 0;
+    const showTray = hasTasks || hasQueued;
+    const trayTabs = [];
+    if (hasTasks) trayTabs.push({ label: 'Tasks', count: `${done}/${tItems.length}`, sel: slot === 0, pick: () => this.setState({ slot: 0, trayCollapsed: false }) });
+    if (hasQueued) trayTabs.push({ label: 'Queued', count: `${queued.length}`, sel: slot === 1, pick: () => this.setState({ slot: 1, trayCollapsed: false }) });
+    trayTabs.forEach(t => { const one = trayTabs.length === 1; t.bg = t.sel && !one && !s.trayCollapsed ? '#202027' : 'transparent'; t.fg = t.sel || one ? '#eceef2' : '#8b8f98'; t.countColor = t.sel ? '#7dd3fc' : '#8b8f98'; });
+    const held = queued.filter(q => q.whenColor === '#fbbf24').length;
+    const trayPeek = s.trayCollapsed && slot === 0 && activeTask ? activeTask.text : '';
+
+    // --- notices
+    const notices = [];
+    if (!subOpen && scenario === 'limit') {
+      if (s.limitScheduled) notices.push({ icon: I('calendar-clock'), color: '#7dd3fc', title: 'Continues at 11:01', meta: 'after the Session limit resets', actions: [{ label: 'Cancel continue', color: '#8b8f98', weight: '400', run: () => this.setState({ limitScheduled: false }) }] });
+      else if (!s.limitDismissed) notices.push({ icon: I('clock'), color: '#fbbf24', title: 'Session limit reached', meta: 'resets at 11:00, in 2h 10m', actions: [
+        { label: 'Continue at reset', color: '#7dd3fc', weight: '500', run: () => this.setState({ limitScheduled: true }) },
+        { label: 'In a new thread', color: '#7dd3fc', weight: '500', run: () => this.continueInNew() },
+        { label: 'Dismiss', color: '#8b8f98', weight: '400', run: () => this.setState({ limitDismissed: true }) }] });
+    }
+    if (!subOpen && scenario === 'idle' && open && open.status !== 'settled' && !s.noticeGone) notices.push({ icon: I('circle-alert'), color: '#fbbf24', title: 'Resume with less context', meta: '387k tokens from earlier', actions: [
+      { label: 'Compact', color: '#7dd3fc', weight: '500', run: () => { this.setState({ noticeGone: true }); this.flash('Compacting the session…'); } },
+      { label: 'Keep full history', color: '#8b8f98', weight: '400', run: () => this.setState({ noticeGone: true }) }] });
+
+    // --- pickers
+    const models = [
+      { header: 'Claude Code', color: '#DE7356', rows: [['opus', 'Claude Opus 5.5', '1m context · default'], ['sonnet', 'Claude Sonnet 5', '1m context · fast'], ['haiku', 'Claude Haiku 4.5', '200k context']] },
+      { header: 'Codex', color: '#74AA9C', rows: [['gpt54', 'gpt-5.4', 'installation default'], ['gpt54m', 'gpt-5.4-mini', 'fast']] },
+      { header: 'OpenCode', color: '#8B5CF6', rows: [['muse', 'opencode/muse-spark-1.3', 'models.dev'], ['grok', 'grok-code-2', 'not signed in', true]] }
+    ];
+    const modelInfo = {}; models.forEach(sec => sec.rows.forEach(r => { modelInfo[r[0]] = { label: r[1], color: sec.color }; }));
+    const efforts = [['low', 'Low'], ['medium', 'Medium'], ['high', 'High'], ['xhigh', 'Extra high'], ['max', 'Max']];
+    const perms = [['approval', 'Approval required', 'ask before edits and commands'], ['edits', 'Auto-accept edits', 'ask before commands'], ['auto', 'Auto', 'the provider decides'], ['full', 'Full access', 'no prompts']];
+    const pf = s.providerFilter;
+    const q = s.pickerFilter.trim().toLowerCase();
+    const flat = [];
+    models.forEach(sec => sec.rows.forEach(r => flat.push({ id: r[0], label: r[1], meta: r[2], dis: !!r[3], provider: sec.header, color: sec.color })));
+    const shown = flat.filter(r => (pf === 'all' || r.provider === pf) && (!q || `${r.label} ${r.meta} ${r.provider}`.toLowerCase().includes(q)));
+    const hi = s.pickHi ?? s.model;
+    const modelRows = shown.map((r, i) => { const act = hi === r.id && !r.dis, sel = s.model === r.id;
+      return { label: r.label, meta: r.meta, provider: r.provider, color: r.color, kbd: i < 9 ? `⌘${i + 1}` : '',
+        bg: act ? '#df9f5f' : 'transparent', fg: act ? '#221503' : sel ? '#7dd3fc' : '#eceef2', metaFg: act ? '#221503' : '#8b8f98', kbdBg: act ? '#00000014' : '#202027',
+        checkColor: sel ? (act ? '#221503' : '#7dd3fc') : 'transparent', opacity: r.dis ? '0.45' : '1',
+        hover: () => this.setState({ pickHi: r.id }), pick: () => { if (!r.dis) this.setState({ model: r.id, picker: null, pickHi: null, pickerFilter: '' }); } }; });
+    const providerRail = [['all', 'All models', null], ...models.map(m => [m.header, m.header, m.color])].map(([k, label, color]) => ({
+      label, color, isAll: k === 'all', isProvider: k !== 'all', bg: pf === k ? '#202027' : 'transparent', bar: pf === k ? '#7dd3fc' : 'transparent',
+      fg: pf === k ? '#eceef2' : '#8b8f98', opacity: pf === k || pf === 'all' ? '1' : '0.55', pick: () => this.setState({ providerFilter: k, pickHi: null }) }));
+    const EC = { low: '#86efac', medium: '#7dd3fc', high: '#fbbf24', xhigh: '#DE7356', max: '#f87171' };
+    const ei = efforts.findIndex(e => e[0] === s.effort);
+    const pos = (i) => `calc(12px + (100% - 24px) * ${i / (efforts.length - 1)})`;
+    const effort = { label: efforts[ei][1], color: EC[s.effort], fill: EC[s.effort] + '40', fillW: `calc(24px + (100% - 24px) * ${ei / (efforts.length - 1)})`, knobLeft: pos(ei), resetOpacity: s.effort === 'medium' ? '0' : '1' };
+    const effortStops = efforts.map(([k, label], i) => ({ label, left: pos(i), dot: i <= ei ? EC[s.effort] : '#3f3f46',
+      shift: i === 0 ? 'translateX(-12px)' : i === efforts.length - 1 ? 'translateX(calc(-100% + 12px))' : 'translateX(-50%)',
+      fg: i === ei ? EC[s.effort] : '#8b8f98', weight: i === ei ? '600' : '400', pick: () => this.setState({ effort: k }) }));
+    const phi = s.pickHi ?? s.perm;
+    const permRows = perms.map(([k, label, meta]) => { const act = phi === k, sel = s.perm === k;
+      return { label, meta, bg: act ? '#df9f5f' : 'transparent', fg: act ? '#221503' : sel ? '#7dd3fc' : '#eceef2', metaFg: act ? '#221503' : '#8b8f98',
+        checkColor: sel ? (act ? '#221503' : '#7dd3fc') : 'transparent', hover: () => this.setState({ pickHi: k }), pick: () => this.setState({ perm: k, picker: null, pickHi: null }) }; });
+
+    const opts = [['Squash', 'one commit on main, PR title as subject'], ['Merge commit', 'keeps every commit, adds a merge'], ['Rebase', 'linear history, rewrites SHAs'], ['Custom answer…', '']];
+    const answerRows = opts.map((o, i) => { const act = i === s.answerHi, last = i === opts.length - 1;
+      return { key: last ? '✎' : String(i + 1), label: o[0], meta: o[1], bg: act ? '#df9f5f' : 'transparent', fg: act ? '#221503' : '#dcdfe4', metaFg: act ? '#221503' : '#8b8f98',
+        keyBg: act ? '#221503' : '#202027', keyFg: act ? '#df9f5f' : '#8b8f98', hover: () => this.setState({ answerHi: i }), pick: () => { if (!last) this.setState(x => ({ answered: { ...x.answered, q: o[0] } })); } }; });
+
+    // --- git
+    const ok = I('circle-check'), bad = I('circle-x');
+    const RUNS = {
+      pending: [['render-check', 'CI', '2m 10s', 'pending'], ['typecheck', 'CI', '41s', 'passed'], ['vitest', 'CI', '1m 52s', 'passed'], ['lint', 'CI', '18s', 'passed'], ['build-darwin', 'Nix', '6m 40s', 'passed'], ['build-linux', 'Nix', '5m 12s', 'passed'], ['dco', 'App', '2s', 'passed']],
+      draft: [['render-check', 'CI', '1m 04s', 'pending'], ['build-darwin', 'Nix', '3m 20s', 'pending'], ['typecheck', 'CI', '44s', 'passed'], ['vitest', 'CI', '2m 01s', 'passed'], ['lint', 'CI', '20s', 'passed'], ['dco', 'App', '2s', 'passed']],
+      failing: [['typecheck', 'CI', '39s', 'failed'], ['render-check', 'CI', '2m 31s', 'failed'], ['vitest', 'CI', '1m 49s', 'passed'], ['lint', 'CI', '17s', 'passed'], ['build-darwin', 'Nix', '6m 12s', 'passed'], ['build-linux', 'Nix', '5m 03s', 'passed'], ['dco', 'App', '2s', 'passed'], ['preview', 'App', '', 'skipped']],
+      passed: [['render-check', 'CI', '2m 02s', 'passed'], ['typecheck', 'CI', '40s', 'passed'], ['vitest', 'CI', '1m 50s', 'passed'], ['lint', 'CI', '18s', 'passed'], ['build-darwin', 'Nix', '6m 31s', 'passed'], ['build-linux', 'Nix', '5m 09s', 'passed'], ['dco', 'App', '2s', 'passed']],
+      fresh: [['render-check', 'CI', '', 'pending'], ['typecheck', 'CI', '', 'pending'], ['vitest', 'CI', '', 'pending'], ['lint', 'CI', '', 'pending']]
+    };
+    const PRS = {
+      418: { n: 418, title: 'Queue: send held messages together after the reset', state: 'open', review: 'approved', conflicts: false, add: 41, del: 12, files: 3, runs: 'pending' },
+      431: { n: 431, title: 'Desktop app: native shell over the TUI store', state: 'draft', review: null, conflicts: false, add: 612, del: 18, files: 14, runs: 'draft' },
+      422: { n: 422, title: 'Syntax highlighting for diff hunks', state: 'open', review: 'changes', conflicts: true, add: 233, del: 57, files: 9, runs: 'failing' },
+      405: { n: 405, title: 'Diffs: tree-sitter highlighting for every hunk', state: 'merged', review: 'approved', conflicts: false, add: 120, del: 31, files: 6, runs: 'passed', note: 'Merged into main 3d ago' },
+      399: { n: 399, title: 'Sidebar: backdrop applies to the threads pane', state: 'closed', review: null, conflicts: false, add: 14, del: 3, files: 2, runs: 'passed', note: 'Closed without merging 4d ago' }
+    };
+    const mk = (subject, body, sha, meta, checks, tone, files) => ({ subject, body, sha, meta, checks, checkColor: tone === 'pending' ? '#fbbf24' : tone === 'failed' ? '#f87171' : tone === 'passed' ? '#4ade80' : 'transparent',
+      checkIcon: tone === 'pending' ? I('circle-dot') : tone === 'failed' ? bad : ok, files, add: files.reduce((a, f) => a + f.add, 0), del: files.reduce((a, f) => a + f.del, 0) });
+    const REPOS = {
+      t3: { slug: 'arrrnmp/t3code-cli', root: '~/code/t3code-cli', forge: true, branches: ['main', 't3code/queue-together', 't3code/syntax-hl', 't3code/settings-tabs'],
+        commits: [
+          mk('queue: send held messages together after the reset', 'Messages held for a usage reset used to go out one at a time with a turn in between. They now leave with the continue prompt as one turn, in queue order, images included.', 'a41c9e2', 'arrrnmp · 2d ago', '6/7', 'pending', [F.thread, F.banner]),
+          mk('queuedpanel: one summary line for the batch', 'The panel title now reads the batch as a whole, with the held count, since the whole batch leaves together.', '7be0d13', 'arrrnmp · 2d ago', '7/7', 'passed', [F.queued]),
+          mk('usage banner: keep the full Worked group', 'Only the last step of the Worked group stayed visible under the usage banner. Keep all of it.', '19f2a0c', 'arrrnmp · 3d ago', '7/7', 'passed', [F.banner]),
+          mk('image tokens: render [Image #N] again', 'Pasted images render as numbered tokens in the TUI composer again, instead of their file names.', 'c3d8871', 'arrrnmp · 5d ago', '7/7', 'passed', [F.token])],
+        others: [{ n: 415, title: 'Syntax highlighting for markdown hunks', draft: false, tone: 'passed' }, { n: 409, title: 'Settings as tabs', draft: true, tone: 'failed' }] },
+      moxen: { slug: 'usemoxen/moxen', root: '~/code/moxen', forge: true, branches: ['main', 'moxen/desktop-shell', 'moxen/git-panel-pr', 'moxen/settings-tabs'],
+        commits: [
+          mk('desktop: window shell with sidebar, chat and side panel', 'First cut of the desktop surface over the same thread store the TUI reads.', 'e19a0b4', 'arrrnmp · 1h ago', '4/6', 'pending', [F.shell]),
+          mk('gitpanel: merge arms first and names the strategy', 'Merge is visible to others the moment it lands, so it now confirms in the tab with the strategy spelled out.', 'b7c21d9', 'arrrnmp · 1d ago', '7/7', 'passed', [F.gitp]),
+          mk('settings: tabs instead of one long list', 'Settings split into General, Models, Appearance and Keys.', '5d0e8aa', 'arrrnmp · 2d ago', '7/7', 'passed', [F.settings])],
+        others: [{ n: 428, title: 'Settings: tabbed layout + pickers', draft: true, tone: 'passed' }] },
+      dot: { slug: null, root: '~/dotfiles', forge: false, forgeReason: 'No forge for this remote: git.sr.ht is not supported yet.', branches: ['main'],
+        commits: [mk('nix: pin bun 1.3.13 in the devshell', '', '0a91f3c', 'arrrnmp · 3d ago', '', 'none', [F.nix])], others: [] }
+    };
+    const GIT = { t1: { branch: 'moxen/desktop-shell', status: '3 changed', pr: 431 }, t2: { branch: 'moxen/git-panel-pr', status: 'clean', pr: null }, t3: { branch: 'main', status: '1 changed', pr: null },
+      t4: { branch: 't3code/queue-together', status: '2 changed', pr: 418 }, t5: { branch: 't3code/syntax-hl', status: '1 conflicted', pr: 422, error: "gh: couldn't read review comments (HTTP 502). Refresh to retry." },
+      t6: { branch: 'main', status: 'clean', pr: null }, s1: { branch: 't3code/tree-sitter', status: 'clean', pr: 405 }, s2: { branch: 'moxen/backdrop', status: 'clean', pr: 399 } };
+    const repo = REPOS[pk];
+    const g0 = GIT[tid] || { branch: open ? open.branch : 'main', status: 'clean', pr: null };
+    const gOver = s.gitOver[tid] || {};
+    const gBranch = g0.branch;
+    let prObj = gOver.newPr || (g0.pr ? PRS[g0.pr] : null);
+    if (prObj && gOver.state) prObj = { ...prObj, state: gOver.state, note: gOver.note };
+    const notRepo = !!(open && open.noRepo);
+    const opener = open && open.noOpener ? null : modelInfo[s.model].label;
+    const runsFor = prObj ? RUNS[prObj.runs].map(([name, kind, dur, stt]) => ({ name, kind, dur: stt === 'pending' && !dur ? 'queued' : dur, pending: stt === 'pending', notPending: stt !== 'pending',
+      icon: stt === 'failed' ? bad : stt === 'skipped' ? I('circle') : ok, color: stt === 'failed' ? '#f87171' : stt === 'skipped' ? '#3f3f46' : '#4ade80', nameColor: stt === 'failed' ? '#eceef2' : stt === 'skipped' ? '#8b8f98' : '#dcdfe4' })) : [];
+    const nFail = runsFor.filter(r => r.color === '#f87171').length, nPend = runsFor.filter(r => r.pending).length, nPass = runsFor.filter(r => r.color === '#4ade80' && !r.pending).length;
+    const nCount = runsFor.filter(r => r.color !== '#3f3f46').length;
+    const tone = nFail ? 'failed' : nPend ? 'pending' : 'passed';
+    const STATE = { open: ['Open', '#4ade80', '#0f2a1a'], draft: ['Draft', '#a1a1aa', '#202027'], merged: ['Merged', '#c4b5fd', '#221a36'], closed: ['Closed', '#f87171', '#2e1516'] };
+    const REVIEW = { approved: ['Approved', '#4ade80'], changes: ['Changes requested', '#f87171'], required: ['Review required', '#fbbf24'] };
+    const pr = prObj ? {
+      ...prObj, stateLabel: STATE[prObj.state][0], stateColor: STATE[prObj.state][1], stateBg: STATE[prObj.state][2],
+      hasReview: !!prObj.review, reviewLabel: prObj.review ? REVIEW[prObj.review][0] : '', reviewColor: prObj.review ? REVIEW[prObj.review][1] : '#8b8f98',
+      active: prObj.state === 'open' || prObj.state === 'draft', done: prObj.state === 'merged' || prObj.state === 'closed', isDraft: prObj.state === 'draft', canMerge: prObj.state === 'open',
+      sumTitle: tone === 'failed' ? `${nFail} of ${nCount} checks failing` : tone === 'pending' ? `${nPass} of ${nCount} checks passed` : `All ${nCount} checks passed`,
+      sumSub: tone === 'failed' ? `${runsFor.filter(r => r.color === '#f87171').map(r => r.name).join(', ')} failed${nPend ? ` · ${nPend} running` : ''}` : tone === 'pending' ? `${runsFor.filter(r => r.pending).map(r => r.name).join(', ')} still running` : 'Ready to merge as far as CI goes',
+      sumPending: tone === 'pending', sumIcon: tone === 'pending' ? 'none' : tone === 'failed' ? bad : ok, sumColor: tone === 'failed' ? '#f87171' : '#4ade80', hasFailedRun: nFail > 0
+    } : {};
+    const git = {
+      loading: s.gitLoading, notRepo: !s.gitLoading && notRepo, repo: !s.gitLoading && !notRepo, root: open && open.noRepo ? '~/.config/zsh' : repo.root,
+      noForge: !repo.forge, forgeReason: repo.forgeReason || '', hasForge: repo.forge,
+      hasError: !!g0.error && !gOver.errorCleared, error: g0.error || '', hasBusy: !!s.gitBusy, busy: s.gitBusy || '',
+      branch: gBranch, hasPr: repo.forge && !!prObj, noPr: repo.forge && !prObj, opener: opener || '', hasOpener: !!opener, noOpener: !opener,
+      where: notRepo ? '~/.config/zsh' : repo.slug || repo.root, status: notRepo ? '' : g0.status, statusColor: g0.status === 'clean' ? '#8b8f98' : '#fbbf24', footBranch: notRepo ? 'not a repository' : gBranch
+    };
+    const busyNow = !!s.gitBusy;
+    const gitActions = {
+      agentDraft: () => { if (busyNow) return; this.gitDo(`${opener} is opening a draft pull request…`, 1600, x => ({ gitOver: { ...x.gitOver, [tid]: { newPr: { n: 433, title: open ? open.title : 'New pull request', state: 'draft', review: null, conflicts: false, add: 188, del: 22, files: 5, runs: 'fresh' } } } })); },
+      agentReady: () => { if (busyNow) return; this.gitDo(`${opener} is opening a pull request for review…`, 1600, x => ({ gitOver: { ...x.gitOver, [tid]: { newPr: { n: 433, title: open ? open.title : 'New pull request', state: 'open', review: 'required', conflicts: false, add: 188, del: 22, files: 5, runs: 'fresh' } } } })); },
+      createOpen: () => this.setState({ createOpen: true, createTitle: open ? open.title : '' }),
+      createCancel: () => this.setState({ createOpen: false }),
+      createTitleChange: (e) => this.setState({ createTitle: e.target.value }),
+      createSubmit: () => { const title = s.createTitle.trim() || (open ? open.title : 'New pull request'); this.setState({ createOpen: false }); this.gitDo(`Opening draft pull request #433…`, 1200, x => ({ gitOver: { ...x.gitOver, [tid]: { newPr: { n: 433, title, state: 'draft', review: null, conflicts: false, add: 188, del: 22, files: 5, runs: 'fresh' } } } })); },
+      commentStart: () => this.setState({ commentOpen: true, commentText: '' }),
+      commentCancel: () => this.setState({ commentOpen: false }),
+      commentChange: (e) => this.setState({ commentText: e.target.value }),
+      commentPost: () => { if (!s.commentText.trim()) return; const n = prObj ? prObj.n : ''; this.setState({ commentOpen: false }); this.gitDo(`Posting a comment on #${n}…`, 900, {}); setTimeout(() => this.flash(`Comment posted on #${n}`), 950); },
+      merge: (strategy) => () => { const n = prObj.n; this.gitDo(`Merging #${n} (${strategy})…`, 1400, x => ({ gitOver: { ...x.gitOver, [tid]: { ...(x.gitOver[tid] || {}), state: 'merged', note: `Merged into main just now (${strategy})` } } })); },
+      refresh: () => { this.setState(x => ({ gitLoading: true, gitOver: { ...x.gitOver, [tid]: { ...(x.gitOver[tid] || {}), errorCleared: true } } })); setTimeout(() => this.setState({ gitLoading: false }), 700); },
+      openUrl: () => this.flash(`Opened #${prObj ? prObj.n : ''} in the browser`),
+      openFailing: () => this.flash('Opened the failing run in the browser')
+    };
+    const commitData = repo.commits;
+    const ci = s.commit;
+    const cur = ci != null ? commitData[ci] : null;
+    const commits = commitData.map((c, i) => ({ ...c, open: () => this.setState({ commit: i, commitCollapsed: {} }) }));
+    const commit = cur ? { ...cur, pos: `${ci + 1} of ${commitData.length}`, fileCount: `${cur.files.length} file${cur.files.length === 1 ? '' : 's'} changed`, hasBody: !!cur.body, hasChecks: !!cur.checks,
+      newerColor: ci > 0 ? '#dcdfe4' : '#3f3f46', olderColor: ci < commitData.length - 1 ? '#dcdfe4' : '#3f3f46' } : {};
+    const commitFiles = cur ? cur.files.map(f => fileView(f, s.commitCollapsed, 'commitCollapsed')) : [];
+    const track = (b) => b === gBranch ? (b === 'main' ? 'in sync' : '↑2') : b === 'main' ? 'in sync' : '↓3';
+    const branches = repo.branches.slice().sort((a, b) => (a === gBranch ? -1 : b === gBranch ? 1 : 0)).map(b => ({ name: b, track: track(b), color: b === gBranch ? '#eceef2' : '#dcdfe4', trackColor: track(b) === 'in sync' ? '#8b8f98' : '#fbbf24', iconColor: b === gBranch ? '#7dd3fc' : '#8b8f98', bg: b === gBranch ? '#131316' : 'transparent' }));
+    const otherPrs = (repo.others || []).filter(o => !prObj || o.n !== prObj.n).map(o => ({ n: o.n, title: o.title, iconColor: o.draft ? '#8b8f98' : '#4ade80', checkColor: o.tone === 'failed' ? '#f87171' : '#4ade80', checkIcon: o.tone === 'failed' ? bad : ok, open: () => this.flash(`Opened #${o.n} in the browser`) }));
+
+    // --- side panel
+    const tabKey = s.tab ?? this.props.initialTab ?? 'git';
+    const runningBg = 2 - Object.keys(s.bgStopped).length;
+    const subList = subOpen || !open ? [] : Object.entries(SUBS).filter(([, v]) => v.parent === open.id).map(([sid, v]) => ({ ...v, stateColor: v.running ? '#fbbf24' : '#8b8f98', stateLabel: v.running ? '38s' : v.state.replace('finished', 'done'), open: () => openSub(sid) }));
+    const delegated = !open ? [] : (open.children || []).filter(c => c.kind === 'delegated').map(c => ({ title: c.label, model: c.label.startsWith('Summarize') ? 'gpt-5.4' : 'claude-sonnet-5', state: 'done', open: () => this.flash(`Opens the delegated thread “${c.label}”`) }));
+    const TABS = [['diff', 'Diff', turns.length ? String(turns.length) : ''], ['git', 'Git', ''], ['context', 'Context', '39%'], ['agents', 'Agents', subList.filter(x => x.running).length ? String(subList.filter(x => x.running).length) : ''], ['background', 'Background', runningBg ? String(runningBg) : '']];
+    const tabs = TABS.map(([k, label, badge]) => ({ label, badge, fg: k === tabKey ? '#eceef2' : '#8b8f98',
+      badgeColor: k === 'background' ? '#fbbf24' : k === tabKey ? '#7dd3fc' : '#8b8f98', bar: k === tabKey ? '#7dd3fc' : 'transparent', pick: () => this.setTab(k) }));
+    const diffFiles = turn ? turn.files.map(f => fileView(f, s.diffCollapsed, 'diffCollapsed')) : [];
+    const turnRows = turns.map(t => ({ ...t, fileLabel: `${t.files.length} file${t.files.length === 1 ? '' : 's'}`, pick: () => setTurn(t.n),
+      bg: turn && t.n === turn.n ? '#1c1c21' : 'transparent', fg: turn && t.n === turn.n ? '#7dd3fc' : '#eceef2' }));
+    const ti = turn ? turns.indexOf(turns.find(t => t.n === turn.n)) : -1;
+
+    const cats = [['Tool calls', '234k', 23.4, '#7dd3fc'], ['System prompt & tools', '136k', 13.6, '#c4b5fd'], ['Reasoning', '13k', 1.3, '#c3e88d'], ['Assistant messages', '3k', 0.3, '#fbbf24'], ['User messages', '994', 0.1, '#86efac']];
+    let acc = 0; const stops = [];
+    cats.forEach(([, , p, c]) => { stops.push(`${c} ${acc}% ${acc + p}%`); acc += p; });
+    stops.push(`#1c1c21 ${acc}% 100%`);
+    const ctxRing = `conic-gradient(${stops.join(', ')})`;
+    const ctxCats = cats.map(([name, tokens, p, color]) => ({ name, tokens, color, pct: `${p.toFixed(1)}%`, w: `${Math.max(1, p / 23.4 * 100)}%` }));
+    const ctxStats = [{ label: 'Cost so far', value: '$16.62', color: '#eceef2' }, { label: 'Free', value: '613k', color: '#eceef2' }, { label: 'Auto-compacts at', value: '967k', color: '#eceef2' }, { label: 'Until compaction', value: '580k', color: '#7dd3fc' }];
+    const tools = [['Bash', 220000, '220k'], ['Write', 11000, '11k'], ['TaskCreate', 861, '861'], ['Edit', 857, '857'], ['TaskUpdate', 438, '438'], ['WebFetch', 396, '396']].map(([name, n, v]) => ({ name, v, w: `${Math.max(1, n / 220000 * 100)}%` }));
+    const bgAll = [
+      { id: 'b1', kind: 'Shell', title: 'Dev server', dur: '12m', cmd: 'bun run dev --port 5173', icon: I('terminal') },
+      { id: 'b2', kind: 'Monitor', title: 'Watch CI for #418', dur: '4m', cmd: 'gh pr checks 418 --watch', icon: I('activity') }
+    ];
+    const bgTasks = bgAll.filter(b => !s.bgStopped[b.id]).map(b => ({ ...b, stop: () => this.setState(x => ({ bgStopped: { ...x.bgStopped, [b.id]: true } })) }));
+    const finished = [
+      ...bgAll.filter(b => s.bgStopped[b.id]).map(b => ({ title: b.title, kind: b.kind, cmd: b.cmd, dur: b.dur, result: 'stopped', resultColor: '#8b8f98', color: '#8b8f98', icon: I('square') })),
+      { title: 'Type check', kind: 'Shell', cmd: 'bun run check', dur: '48s', result: 'exit 0', resultColor: '#8b8f98', color: '#4ade80', icon: ok },
+      { title: 'Explore · list core forge modules', kind: 'Subagent', cmd: 'claude-haiku-4.5', dur: '42s', result: 'done', resultColor: '#8b8f98', color: '#4ade80', icon: ok },
+      { title: 'Render check', kind: 'Shell', cmd: 'bun run render-check --all', dur: '2m 04s', result: 'exit 1', resultColor: '#f87171', color: '#f87171', icon: bad }
+    ];
+
+    // --- header status
+    const statusPill = subOpen ? (subOpen.running ? { show: true, spin: true, hasIcon: false, label: 'Running · 38s', color: '#7dd3fc' } : { show: true, spin: false, hasIcon: false, label: subOpen.state.replace('finished', 'Finished'), color: '#8b8f98' })
+      : scenario === 'running' || scenario === 'fresh' || scenario === 'creating' ? { show: true, spin: true, hasIcon: false, label: scenario === 'running' ? 'Working · 1m 12s' : scenario === 'fresh' ? 'Working · 3s' : 'Creating…', color: '#7dd3fc' }
+      : scenario === 'question' ? { show: true, spin: false, hasIcon: true, icon: I('message-circle-question'), label: 'Waiting on you', color: '#fbbf24' }
+      : scenario === 'limit' ? { show: true, spin: false, hasIcon: true, icon: I('clock'), label: s.limitScheduled ? 'Continues at 11:01' : 'Limit · resets 11:00', color: '#fbbf24' }
+      : scenario === 'handoff' ? { show: true, spin: false, hasIcon: true, icon: I('calendar-clock'), label: 'Starts at 11:01', color: '#fbbf24' }
+      : { show: false, spin: false, hasIcon: false, icon: 'none', label: '', color: '#8b8f98' };
+
+    // --- actions (palette + menu)
+    const ACT = {
+      new: ['New thread', 'square-pen', '⌘N'], newIn: ['New thread in project…', 'folder', ''], rename: ['Rename thread', 'pencil', ''], regen: ['Regenerate title', 'sparkles', ''],
+      compact: ['Compact session', 'layers', ''], continueNew: ['Continue in a new thread', 'messages-square', ''], export: ['Export thread to markdown', 'file-down', ''],
+      copyPath: ['Copy project path', 'folder', ''], copyBranch: ['Copy branch', 'git-branch', ''], copyId: ['Copy thread ID', 'hash', ''], copyLast: ['Copy last assistant message', 'copy', ''],
+      archive: ['Archive thread', 'archive', ''], delete: ['Delete thread', 'trash-2', ''], bg: ['View background tasks', 'terminal', ''], panel: ['Toggle side panel', 'panel-right', '⌘⌥B'],
+      tabDiff: ['Show Diff', 'diff', ''], tabGit: ['Show Git', 'git-branch', ''], tabContext: ['Show Context', 'gauge', ''], tabAgents: ['Show Agents', 'bot', '']
+    };
+    const hasThread = !!open && !isNewView;
+    const threadKeys = hasThread ? ['rename', 'regen', 'compact', 'continueNew', 'export', 'copyPath', 'copyBranch', 'copyId', 'copyLast', 'archive', 'delete'] : [];
+    const appKeys = ['new', 'newIn', 'bg', 'panel', 'tabDiff', 'tabGit', 'tabContext', 'tabAgents'];
+    const pq = s.paletteQ.trim().toLowerCase();
+    const threadHits = (pq ? all.filter(t => t.title.toLowerCase().includes(pq) || P[t.p].name.includes(pq)) : threads.filter(t => t.id !== s.openId).slice(0, 4)).slice(0, 6);
+    const actHit = (k) => !pq || ACT[k][0].toLowerCase().includes(pq);
+    const pSections = [];
+    if (threadHits.length) pSections.push({ header: pq ? 'Threads' : 'Jump to', items: threadHits.map(t => ({ isThread: true, badge: P[t.p].badge, badgeColor: P[t.p].color, label: t.title, meta: t.status === 'settled' ? 'settled' : t.age, run: () => { this.setState({ palette: false }); this.openThread(t.id); } })) });
+    const tk = threadKeys.filter(actHit); if (tk.length) pSections.push({ header: 'This thread', items: tk.map(k => ({ key: k })) });
+    const ak = appKeys.filter(actHit); if (ak.length) pSections.push({ header: 'App', items: ak.map(k => ({ key: k })) });
+    const pFlat = [];
+    pSections.forEach(sec => { sec.items = sec.items.map(it => {
+      const idx = pFlat.length;
+      const base = it.key ? { isThread: false, isAction: true, badge: '', badgeColor: 'transparent', icon: I(ACT[it.key][1]), label: ACT[it.key][0], meta: ACT[it.key][2],
+        run: () => { if (it.key === 'delete') this.setState({ paletteConfirm: true }); else this.runAction(it.key); } } : { isAction: false, icon: 'none', ...it };
+      const act = idx === s.paletteHi;
+      const danger = it.key === 'delete';
+      const row = { ...base, bg: act ? '#df9f5f' : 'transparent', fg: act ? '#221503' : danger ? '#f87171' : '#eceef2', metaFg: act ? '#221503' : '#8b8f98', iconColor: act ? '#221503' : danger ? '#f87171' : '#8b8f98',
+        hover: () => this.setState({ paletteHi: idx }) };
+      pFlat.push(row); return row;
+    }); });
+    this._pFlat = pFlat;
+    const menuSecs = hasThread ? [['rename', 'regen', 'compact', 'continueNew', 'export'], ['copyPath', 'copyBranch', 'copyId', 'copyLast'], ['archive', 'delete']].map((keys, i) => ({
+      border: i === 0 ? 'none' : '1px solid #27272a', items: keys.map(k => {
+        const danger = k === 'delete';
+        const confirm = danger && s.menuConfirm;
+        return { label: confirm ? 'Click again to delete' : ACT[k][0], icon: I(ACT[k][1]), color: danger ? '#f87171' : '#dcdfe4', iconColor: danger ? '#f87171' : '#8b8f98', bg: confirm ? '#2e1516' : 'transparent',
+          run: () => { if (danger && !s.menuConfirm) this.setState({ menuConfirm: true }); else this.runAction(k); } };
+      }) })) : [];
+
+    const newT = s.newThread || { p: 'moxen', checkout: 'Local' };
+    const projRows = pkeys.map(k => ({ badge: P[k].badge, color: P[k].color, name: P[k].name, path: P[k].path, check: k === newT.p ? '#7dd3fc' : 'transparent',
+      pick: () => this.setState(x => ({ newThread: { ...x.newThread, p: k }, projPop: false })) }));
+    const checkoutSeg = ['Local', 'Worktree'].map(c => ({ label: c, bg: newT.checkout === c ? '#27272a' : 'transparent', fg: newT.checkout === c ? '#eceef2' : '#8b8f98', pick: () => this.setState(x => ({ newThread: { ...x.newThread, checkout: c } })) }));
+
+    const inLimit = scenario === 'limit' && !subOpen;
+    return {
+      noop, stop: (e) => e.stopPropagation(), modes, groups, chatRef: this.chatRef, onChatScroll: this.onChatScroll,
+      isProjectMode: s.mode === 'project', curProject: P[pkeys[s.proj]],
+      prevProject: () => this.setState(x => ({ proj: (x.proj + 2) % 3 })), nextProject: () => this.setState(x => ({ proj: (x.proj + 1) % 3 })),
+      settledTotal: 9 + settled.length, settledOpen: s.settledOpen, settledRot: s.settledOpen ? 'none' : 'rotate(-90deg)',
+      toggleSettled: () => this.setState(x => ({ settledOpen: !x.settledOpen })),
+      settled: settled.map(t => { const o = t.id === s.openId; return { badge: P[t.p].badge, title: t.title, age: t.age, bg: o ? '#1c1c21' : 'transparent', open: () => this.openThread(t.id) }; }),
+      togglePanel: () => this.setState(x => ({ panelOpen: !x.panelOpen })), panelOpen: s.panelOpen,
+      panelBtnColor: s.panelOpen ? '#eceef2' : '#8b8f98', panelBtnBg: s.panelOpen ? '#17171b' : 'transparent',
+      openPalette: () => this.openPalette(), startNew: () => this.startNew(),
+      thread, statusPill, timeline, isNew: scenario === 'new', notNew: scenario !== 'new',
+      showTitle: !s.renaming, renaming: s.renaming, renameVal: s.renameVal,
+      startRename: () => { if (hasThread) this.setState({ renaming: true, renameVal: open.title }); },
+      renameChange: (e) => this.setState({ renameVal: e.target.value }),
+      renameKey: (e) => { if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur(); } else if (e.key === 'Escape') { e.stopPropagation(); this.setState({ renaming: false }); } },
+      renameCommit: () => this.setState(x => (x.renaming ? { renaming: false, titles: x.renameVal.trim() && open ? { ...x.titles, [open.id]: x.renameVal.trim() } : x.titles } : null)),
+      inSubagent: !!subOpen, sub: subOpen || {}, closeSubagent: () => this.setState({ subagent: null }), crumbTitle: () => { if (subOpen) this.setState({ subagent: null }); },
+      crumbTitleColor: subOpen ? '#8b8f98' : '#eceef2', crumbTitleWeight: subOpen ? '400' : '600',
+      hasMenu: hasThread, menuOpen: s.menu && hasThread, toggleMenu: () => this.setState(x => ({ menu: !x.menu, menuConfirm: false })), closeMenu: () => this.setState({ menu: false, menuConfirm: false }),
+      menuBtnBg: s.menu ? '#17171b' : 'transparent', menuRight: s.panelOpen ? '446px' : '42px', menuSecs,
+      showTray, trayTabs, trayCollapsed: s.trayCollapsed, trayPeek, trayRot: s.trayCollapsed ? 'rotate(180deg)' : 'none', trayToggleTitle: s.trayCollapsed ? 'Expand (⌃T)' : 'Collapse (⌃T)',
+      toggleTray: () => this.setState(x => ({ trayCollapsed: !x.trayCollapsed })),
+      showTaskMeter: hasTasks && slot === 0,
+      showTasks: showTray && !s.trayCollapsed && slot === 0, showQueued: showTray && !s.trayCollapsed && slot === 1, tasks, queued,
+      trayHint: slot === 1 ? (held ? `${held} held for the reset` : 'sent when this turn ends') : '',
+      notices,
+      showAnswer: scenario === 'question' && !subOpen, showComposer: scenario !== 'question' && !subOpen, showDock: !subOpen, dockBorder: scenario === 'question' && !subOpen ? '#fbbf2466' : '#27272a',
+      question: { header: 'Merge strategy', pos: '1 of 2', text: 'The PR has 7 commits. How should the Git tab merge by default when you press Merge?' },
+      answerRows, dismissAnswer: () => this.setState(x => ({ answered: { ...x.answered, q: 'dismissed' } })),
+      isRunning: scenario === 'running' || scenario === 'fresh', sendTitle: scenario === 'running' ? 'Steer (↵)' : inLimit ? 'Queue for the reset (↵)' : 'Send (↵)',
+      placeholder: scenario === 'new' ? 'Describe the task — @ to mention a file, ⌘V to paste an image' : scenario === 'running' || scenario === 'fresh' ? 'Steer the agent, or queue a follow-up' : inLimit ? 'Queue a message for when the limit resets' : 'Message the agent — @ to mention a file, ⌘V to paste an image',
+      hint: subOpen ? 'esc goes back to the thread' : scenario === 'running' || scenario === 'fresh' ? '↵ steers · ⇧↵ newline' : scenario === 'question' ? '↑↓ move · 1–9 pick · ↵ select · esc dismiss' : inLimit ? '↵ queues for the reset · ⇧↵ newline' : scenario === 'new' ? '↵ starts the thread · ⇧↵ newline' : '↵ sends · ⇧↵ newline',
+      composerText: s.composer, setComposer: (e) => this.setState({ composer: e.target.value }),
+      composerKey: (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); this.send(); } },
+      send: () => this.send(),
+      showJump: s.showJump && !isNewView, jumpBottom: () => this.scrollBottom(true),
+      modelChip: modelInfo[s.model], effortLabel: efforts[ei][1], permLabel: perms.find(e => e[0] === s.perm)[1],
+      openModel: () => this.setState({ picker: 'model', pickHi: null, pickerFilter: '' }), openPerm: () => this.setState({ picker: 'perm', pickHi: null }),
+      openContext: () => this.setTab('context'),
+      pickerOpen: !!s.picker || s.turnPicker || s.projPop || (s.menu && hasThread), modelPopOpen: s.picker === 'model', permPopOpen: s.picker === 'perm', modelRows, noModels: modelRows.length === 0, providerRail,
+      effort, effortStops, resetEffort: () => this.setState({ effort: 'medium' }), effortChipColor: EC[s.effort], permRows,
+      effortFor: modelInfo[s.model].label, searchPlaceholder: pf === 'all' ? 'Search all models' : `Search ${pf} models`,
+      modelChipBg: s.picker === 'model' ? '#202027' : 'transparent', permChipBg: s.picker === 'perm' ? '#202027' : 'transparent', pickerFilter: s.pickerFilter,
+      setFilter: (e) => this.setState({ pickerFilter: e.target.value, pickHi: null }),
+      closePicker: () => this.setState({ picker: null, pickHi: null, pickerFilter: '', turnPicker: false, projPop: false, menu: false, menuConfirm: false }),
+      projRows, projPop: s.projPop, toggleProjPop: () => this.setState(x => ({ projPop: !x.projPop })), newProject: { ...P[newT.p] }, checkoutSeg,
+      newFolder: () => { this.setState({ projPop: false }); this.flash('Opens a folder picker to add a project'); },
+      newCheckoutHint: newT.checkout === 'Worktree' ? `The thread gets its own worktree and a new branch from main, so it can't touch ${P[newT.p].path}.` : `The thread works in ${P[newT.p].path} directly, on whatever is checked out.`,
+      tabs, tabDiff: tabKey === 'diff', tabGit: tabKey === 'git', tabContext: tabKey === 'context', tabAgents: tabKey === 'agents', tabBackground: tabKey === 'background',
+      showPanelFooter: tabKey !== 'background',
+      diffEmpty: !turn, diffOpen: !!turn, hasTurns: turns.length > 0, noTurns: turns.length === 0, diffMeta: turns.length ? `${turns.length} turn${turns.length === 1 ? '' : 's'} with changes` : 'no changes yet',
+      turnRows, turn: turn || {}, turnsTotal: turns.length, turnPicker: s.turnPicker, toggleTurnPicker: () => this.setState(x => ({ turnPicker: !x.turnPicker })),
+      prevTurn: () => { if (ti > 0) setTurn(turns[ti - 1].n); }, nextTurn: () => { if (ti >= 0 && ti < turns.length - 1) setTurn(turns[ti + 1].n); },
+      prevTurnColor: ti > 0 ? '#dcdfe4' : '#3f3f46', nextTurnColor: ti >= 0 && ti < turns.length - 1 ? '#dcdfe4' : '#3f3f46',
+      closeDiff: () => this.setState(x => ({ diffTurn: { ...x.diffTurn, [tid]: null } })),
+      git, pr, ga: gitActions, gitRefresh: gitActions.refresh, commentOpen: s.commentOpen && !!prObj, commentText: s.commentText, createOpen: s.createOpen, createTitle: s.createTitle,
+      mergeIdle: !s.armed, mergeArmed: s.armed, armMerge: () => { if (!busyNow) this.setState({ armed: true }); }, disarm: () => this.setState({ armed: false }),
+      mergeSquash: prObj ? gitActions.merge('squash') : noop, mergeCommit: prObj ? gitActions.merge('merge commit') : noop,
+      gitMain: tabKey === 'git' && !cur, commitView: tabKey === 'git' && !!cur, commit, commitFiles, commits, hasCommits: commits.length > 0,
+      closeCommit: () => this.setState({ commit: null }),
+      prevCommit: () => this.setState(x => ({ commit: Math.max(0, x.commit - 1), commitCollapsed: {} })),
+      nextCommit: () => this.setState(x => ({ commit: Math.min(commitData.length - 1, x.commit + 1), commitCollapsed: {} })),
+      diffFiles, runs: runsFor, runsAll: s.runsAll, runsRot: s.runsAll ? 'none' : 'rotate(-90deg)', toggleRuns: () => this.setState(x => ({ runsAll: !x.runsAll })),
+      otherPrs, hasOtherPrs: otherPrs.length > 0, branches, branchCount: `${repo.branches.length} local`,
+      ctxRing, ctxCats, ctxStats, tools,
+      plan: [{ label: 'Session', pct: '42%', reset: '2h 10m' }, { label: 'Weekly', pct: '18%', reset: '4 days' }],
+      delegated, hasDelegated: delegated.length > 0, noDelegated: delegated.length === 0, delegatedCount: delegated.length || 'none yet',
+      subagents: subList, hasSubagents: subList.length > 0, noSubagents: subList.length === 0, subagentCount: subList.length || 'none yet',
+      bgTasks, bgCount: bgTasks.length || '', bgEmpty: bgTasks.length === 0,
+      finished, finishedCount: finished.length, finishedOpen: s.finishedOpen, finishedRot: s.finishedOpen ? 'none' : 'rotate(-90deg)',
+      toggleFinished: () => this.setState(x => ({ finishedOpen: !x.finishedOpen })),
+      paletteOpen: s.palette, paletteQ: s.paletteQ, paletteSections: pSections, paletteEmpty: pFlat.length === 0, paletteConfirm: s.paletteConfirm, confirmTitle: open ? open.title : '',
+      closePalette: () => this.setState({ palette: false }),
+      paletteChange: (e) => this.setState({ paletteQ: e.target.value, paletteHi: 0, paletteConfirm: false }),
+      paletteKey: (e) => {
+        const n = this._pFlat.length;
+        if (e.key === 'ArrowDown') { e.preventDefault(); this.setState(x => ({ paletteHi: n ? (x.paletteHi + 1) % n : 0 })); }
+        else if (e.key === 'ArrowUp') { e.preventDefault(); this.setState(x => ({ paletteHi: n ? (x.paletteHi - 1 + n) % n : 0 })); }
+        else if (e.key === 'Enter') { e.preventDefault(); if (this.state.paletteConfirm) this.runAction('delete'); else if (this._pFlat[this.state.paletteHi]) this._pFlat[this.state.paletteHi].run(); }
+        else if (e.key === 'Escape') { e.stopPropagation(); this.setState({ palette: false }); }
+      },
+      confirmDelete: () => this.runAction('delete'), cancelDelete: () => this.setState({ paletteConfirm: false }),
+      hasToast: !!s.toast, toast: s.toast || ''
+    };
+  }
+}
+
+</script>
+</body>
+</html>

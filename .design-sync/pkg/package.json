@@ -1,0 +1,10 @@
+{
+  "name": "@moxen/tui",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "module": "dist/index.js",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "description": "Moxen's terminal UI components, rendered in the browser through a DOM shim for @opentui/react. Built by .design-sync/pkg/build.ts; never published."
+}

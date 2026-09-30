@@ -1,0 +1,189 @@
+{
+  "projectId": "6196c2e9-71df-4a89-8e58-594880d72fad",
+  "shape": "package",
+  "pkg": "@moxen/tui",
+  "globalName": "MoxenTUI",
+  "buildCmd": "bun .design-sync/pkg/build.ts",
+  "entry": ".design-sync/pkg/dist/index.js",
+  "srcDir": "../../src/tui",
+  "cssEntry": "dist/styles.css",
+  "docsMap": {
+    "Terminal": "../docs/Terminal.md",
+    "Box": "../docs/Box.md",
+    "Text": "../docs/Text.md",
+    "ScrollBox": "../docs/ScrollBox.md",
+    "Markdown": "../docs/Markdown.md",
+    "Code": "../docs/Code.md",
+    "Diff": "../docs/Diff.md",
+    "Input": "../docs/Input.md",
+    "Textarea": "../docs/Textarea.md",
+    "HoverButton": "../docs/groups/chrome.md",
+    "NoticeBanner": "../docs/groups/chrome.md",
+    "Pager": "../docs/groups/chrome.md",
+    "LoadingScreen": "../docs/groups/chrome.md",
+    "MinSizeGate": "../docs/groups/chrome.md",
+    "MonitoringBackdrop": "../docs/groups/chrome.md",
+    "ModalShell": "../docs/groups/modals.md",
+    "RenameModal": "../docs/groups/modals.md",
+    "PickerModal": "../docs/groups/modals.md",
+    "SettingsModal": "../docs/groups/modals.md",
+    "SideQuestionModal": "../docs/groups/modals.md",
+    "BackgroundTasksModal": "../docs/groups/modals.md",
+    "Timeline": "../docs/groups/chat.md",
+    "Composer": "../docs/groups/chat.md",
+    "QueuedPanel": "../docs/groups/chat.md",
+    "TasksPanel": "../docs/groups/chat.md",
+    "AnswerPanel": "../docs/groups/chat.md",
+    "SubagentBar": "../docs/groups/chat.md",
+    "Sidebar": "../docs/groups/sidebar.md",
+    "SidePanelFrame": "../docs/groups/side-panel.md",
+    "SideTabBar": "../docs/groups/side-panel.md",
+    "Heading": "../docs/groups/side-panel.md",
+    "ActionText": "../docs/groups/side-panel.md",
+    "DiffEmptyTab": "../docs/groups/side-panel.md",
+    "DiffPanel": "../docs/groups/side-panel.md",
+    "FileSection": "../docs/groups/side-panel.md",
+    "GitTab": "../docs/groups/side-panel.md",
+    "GitFooter": "../docs/groups/side-panel.md",
+    "ContextTab": "../docs/groups/side-panel.md",
+    "AgentsTab": "../docs/groups/side-panel.md",
+    "BackgroundTab": "../docs/groups/side-panel.md"
+  },
+  "dtsPropsFor": {
+    "Terminal": "  /** Columns. Default 120. */\n  width?: number;\n  /** Rows. Default 36. */\n  height?: number;\n  /** Fill behind the grid. Default SURFACE.base. */\n  background?: string;\n  children?: React.ReactNode;",
+    "Box": "  style?: {\n    flexDirection?: \"column\" | \"row\" | \"column-reverse\" | \"row-reverse\";\n    flexGrow?: number; flexShrink?: number; flexBasis?: number | string; flexWrap?: \"wrap\" | \"no-wrap\";\n    alignItems?: \"flex-start\" | \"center\" | \"flex-end\" | \"stretch\"; alignSelf?: string;\n    justifyContent?: \"flex-start\" | \"center\" | \"flex-end\" | \"space-between\" | \"space-around\";\n    width?: number | string; height?: number | string; minWidth?: number; minHeight?: number; maxWidth?: number; maxHeight?: number;\n    padding?: number; paddingX?: number; paddingY?: number; paddingTop?: number; paddingRight?: number; paddingBottom?: number; paddingLeft?: number;\n    margin?: number; marginX?: number; marginY?: number; marginTop?: number; marginRight?: number; marginBottom?: number; marginLeft?: number;\n    gap?: number; rowGap?: number; columnGap?: number;\n    position?: \"relative\" | \"absolute\"; top?: number; left?: number; right?: number; bottom?: number; zIndex?: number;\n    overflow?: \"visible\" | \"hidden\"; backgroundColor?: string;\n  };\n  backgroundColor?: string;\n  /** true for all four sides, or a list of sides. */\n  border?: boolean | (\"top\" | \"right\" | \"bottom\" | \"left\")[];\n  borderStyle?: \"single\" | \"rounded\" | \"double\" | \"heavy\";\n  borderColor?: string;\n  title?: string; titleColor?: string; titleAlignment?: \"left\" | \"center\" | \"right\";\n  bottomTitle?: string; bottomTitleAlignment?: \"left\" | \"center\" | \"right\";\n  opacity?: number;\n  /** Chrome sets selectable={false}; only readable text stays selectable. */\n  selectable?: boolean;\n  onMouseDown?: (event: unknown) => void; onMouseUp?: (event: unknown) => void;\n  onMouseOver?: () => void; onMouseOut?: () => void;\n  id?: string;\n  children?: React.ReactNode;",
+    "Text": "  fg?: string;\n  bg?: string;\n  /** TextAttributes bitmask. */\n  attributes?: number;\n  wrapMode?: \"word\" | \"char\" | \"none\";\n  content?: string;\n  selectable?: boolean;\n  style?: { width?: number | string; height?: number; flexGrow?: number; flexShrink?: number; marginTop?: number; marginLeft?: number; paddingLeft?: number };\n  onMouseDown?: (event: unknown) => void;\n  onMouseOver?: () => void; onMouseOut?: () => void;\n  children?: React.ReactNode;",
+    "ScrollBox": "  style?: { flexGrow?: number; height?: number; width?: number | string; zIndex?: number };\n  contentOptions?: { paddingLeft?: number; paddingRight?: number; paddingTop?: number; paddingBottom?: number };\n  stickyScroll?: boolean;\n  stickyStart?: \"top\" | \"bottom\";\n  verticalScrollbarOptions?: { showArrows?: boolean; trackOptions?: { foregroundColor?: string; backgroundColor?: string } };\n  backgroundColor?: string;\n  children?: React.ReactNode;",
+    "Markdown": "  content: string;\n  /** markdownSyntaxStyle() */\n  syntaxStyle: unknown;\n  fg?: string;\n  streaming?: boolean;\n  selectable?: boolean;\n  style?: { flexGrow?: number; width?: number | string; marginTop?: number };",
+    "Code": "  content: string;\n  filetype?: string;\n  /** markdownSyntaxStyle() */\n  syntaxStyle?: unknown;\n  fg?: string;\n  wrapMode?: \"word\" | \"char\" | \"none\";\n  style?: { flexGrow?: number; width?: number | string; height?: number };",
+    "Diff": "  /** A unified diff (one file's hunks). */\n  diff: string;\n  view?: \"unified\" | \"split\";\n  filetype?: string;\n  syntaxStyle?: unknown;\n  fg?: string;\n  showLineNumbers?: boolean;\n  wrapMode?: \"word\" | \"char\" | \"none\";\n  addedBg?: string; removedBg?: string;\n  addedContentBg?: string; removedContentBg?: string;\n  addedLineNumberBg?: string; removedLineNumberBg?: string;\n  lineNumberFg?: string;",
+    "Input": "  value?: string;\n  placeholder?: string;\n  focused?: boolean;\n  maxLength?: number;\n  textColor?: string; backgroundColor?: string;\n  focusedTextColor?: string; focusedBackgroundColor?: string;\n  placeholderColor?: string;\n  onInput?: (value: string) => void;\n  onSubmit?: (value: string) => void;\n  style?: { width?: number | string; flexGrow?: number };",
+    "Textarea": "  initialValue?: string;\n  placeholder?: string;\n  focused?: boolean;\n  textColor?: string; backgroundColor?: string;\n  focusedTextColor?: string; focusedBackgroundColor?: string;\n  placeholderColor?: string;\n  wrapMode?: \"word\" | \"char\" | \"none\";\n  style?: { minHeight?: number; maxHeight?: number; flexGrow?: number; backgroundColor?: string };\n  onContentChange?: () => void;\n  onSubmit?: () => void;\n  onKeyDown?: (key: { name: string; ctrl: boolean; shift: boolean; meta: boolean; preventDefault(): void }) => void;\n  ref?: React.Ref<unknown>;"
+  },
+  "libOverrides": {
+    "source-kit.mjs": "group from docsMap category, not the src dir (TUI folders are features/ and ui/, not design groups)"
+  },
+  "overrides": {
+    "ActionText": {
+      "cardMode": "column"
+    },
+    "AgentsTab": {
+      "cardMode": "column"
+    },
+    "AnswerPanel": {
+      "cardMode": "column"
+    },
+    "BackgroundTab": {
+      "cardMode": "column"
+    },
+    "BackgroundTasksModal": {
+      "cardMode": "column"
+    },
+    "Box": {
+      "cardMode": "column"
+    },
+    "Code": {
+      "cardMode": "column"
+    },
+    "Composer": {
+      "cardMode": "column"
+    },
+    "ContextTab": {
+      "cardMode": "column"
+    },
+    "Diff": {
+      "cardMode": "column"
+    },
+    "DiffEmptyTab": {
+      "cardMode": "column"
+    },
+    "DiffPanel": {
+      "cardMode": "column"
+    },
+    "FileSection": {
+      "cardMode": "column"
+    },
+    "GitFooter": {
+      "cardMode": "column"
+    },
+    "GitTab": {
+      "cardMode": "column"
+    },
+    "Heading": {
+      "cardMode": "column"
+    },
+    "HoverButton": {
+      "cardMode": "column"
+    },
+    "Input": {
+      "cardMode": "column"
+    },
+    "LoadingScreen": {
+      "cardMode": "column"
+    },
+    "Markdown": {
+      "cardMode": "column"
+    },
+    "MinSizeGate": {
+      "cardMode": "column"
+    },
+    "ModalShell": {
+      "cardMode": "column"
+    },
+    "MonitoringBackdrop": {
+      "cardMode": "column"
+    },
+    "NoticeBanner": {
+      "cardMode": "column"
+    },
+    "Pager": {
+      "cardMode": "column"
+    },
+    "PickerModal": {
+      "cardMode": "column"
+    },
+    "QueuedPanel": {
+      "cardMode": "column"
+    },
+    "RenameModal": {
+      "cardMode": "column"
+    },
+    "ScrollBox": {
+      "cardMode": "column"
+    },
+    "SettingsModal": {
+      "cardMode": "column"
+    },
+    "SidePanelFrame": {
+      "cardMode": "column"
+    },
+    "SideQuestionModal": {
+      "cardMode": "column"
+    },
+    "SideTabBar": {
+      "cardMode": "column"
+    },
+    "Sidebar": {
+      "cardMode": "column"
+    },
+    "SubagentBar": {
+      "cardMode": "column"
+    },
+    "TasksPanel": {
+      "cardMode": "column"
+    },
+    "Terminal": {
+      "cardMode": "column"
+    },
+    "Text": {
+      "cardMode": "column"
+    },
+    "Textarea": {
+      "cardMode": "column"
+    },
+    "Timeline": {
+      "cardMode": "column"
+    }
+  },
+  "readmeHeader": ".design-sync/conventions.md"
+}
