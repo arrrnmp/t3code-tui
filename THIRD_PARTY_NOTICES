@@ -8,57 +8,12 @@ stays AGPL-3.0-only. Never relicense vendored files; never strip notices.
 
 ## Vendored code
 
-### 1. OpenCode xAI auth plugin — MIT, (c) 2025 opencode
-
-- Upstream: `opencode/opencode`, `packages/opencode/src/plugin/xai.ts`
-  at commit `d870e22` (v1.18.31 era).
-- Vendored as: `src/providers/opencode/plugins/xai.ts`, handed to the
-  server through our own single-export entry module
-  `src/providers/opencode/plugins/xai.plugin.ts` (not vendored).
-- Adaptation: the three import lines only, rewired to the local
-  `./shims.js` (same `OAUTH_DUMMY_KEY` value, same `InstallationVersion`
-  fallback semantics, same plugin SPI shapes), plus one strictness-only
-  token: `parts[1] ?? ""` in `accessTokenIsExpiring` (our
-  `noUncheckedIndexedAccess` is stricter than upstream's config; the
-  `parts.length < 2` guard above means the fallback never fires at
-  runtime). All other lines, including the `referrer: "opencode"`
-  device-code parameter, are byte-identical to upstream.
-- Upstream MIT license: copyright (c) 2025 opencode; permission text is
-  the standard MIT text quoted at the bottom of this file.
-
-### 2. OpenCode Codex auth plugin (minus WebSocket branch) — MIT, (c) 2025 opencode
-
-- Upstream: `opencode/opencode`, `packages/opencode/src/plugin/openai/codex.ts`
-  at commit `d870e22` (v1.18.31 era).
-- Vendored as: `src/providers/opencode/plugins/codex.ts`, handed to the
-  server through our own single-export entry module
-  `src/providers/opencode/plugins/codex.plugin.ts` (not vendored).
-- Adaptations:
-  1. Import lines rewired to the local `./shims.js` (same values/
-     signatures; `OauthCallbackPage` is a minimal same-signature
-     replacement for `packages/core/src/oauth/page.ts`, which renders
-     branded OpenCode pages — behavior beyond the loopback callback is
-     unchanged).
-  2. Experimental WebSocket transport branch removed: the `./ws-pool`
-     import, the `experimentalWebSockets` option, `websocketFetch`
-     creation/passthrough, the `dispose`/`event` hooks that only managed
-     its lifecycle, and the `TITLE_HEADER` hack in `chat.headers`.
-     Upstream's default HTTP/SSE path is untouched.
-  3. Strictness-only tokens (zero runtime effect; our
-     `noUncheckedIndexedAccess` / `exactOptionalPropertyTypes` are
-     stricter than upstream's config): `parts[1] ?? ""` in
-     `parseJwtClaims` (guarded by the `parts.length !== 3` check above),
-     `body: init?.body ?? null` in the loader fetch (`fetch`
-     treats `null` and `undefined` bodies identically), and
-     `{ accountId?: string | undefined }` in the `authWithAccount` cast
-     (a type assertion only; upstream's looser config accepts the
-     shorter spelling).
-- Upstream MIT license: copyright (c) 2025 opencode; permission text is
-  the standard MIT text quoted at the bottom of this file.
+None at present. (The OpenCode xAI and Codex auth plugins previously vendored
+here were removed: OpenCode v2 ships those logins built in.)
 
 ---
 
-Standard MIT license text (applies to entries above once vendoring lands;
+Standard MIT license text (applies to any entry added above;
 copyright lines are per-entry):
 
 ```

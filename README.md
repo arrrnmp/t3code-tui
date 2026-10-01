@@ -4,7 +4,7 @@
 
 ## Requirements
 
-Bun (it manages packages and runs everything) and at least one provider CLI: `claude` (`claude auth login`), `codex` (`codex login`), `grok` (`grok login`), or `opencode` (`opencode auth login` or provider API keys).
+Bun (it manages packages and runs everything) and at least one provider CLI: `claude` (`claude auth login`), `codex` (`codex login`), `grok` (`grok login`), or `opencode` v2 or newer (`opencode auth login`, including `openai` for ChatGPT and `xai` for SuperGrok, or provider API keys).
 
 ## Install
 
@@ -308,7 +308,7 @@ Every command supports human-readable output. `--json` produces `{ "ok": true, "
 
 ## Security
 
-There are no bearer tokens anywhere in this stack: provider CLIs own their own logins (`claude auth login`, `codex login`, `grok login`, `opencode auth login`), and this CLI never reads their secrets — it only observes credential *presence* (env vars, stored-auth file) for status display. Threads live as local JSONL under `~/.moxen` (override with `MOXEN_STORE_ROOT`); `doctor` reports store writability alongside binary and auth status.
+There are no bearer tokens anywhere in this stack: provider CLIs own their own logins (`claude auth login`, `codex login`, `grok login`, `opencode auth login`), and this CLI never reads their secrets — it only observes credential *presence and type* (env vars, and OpenCode's `opencode auth list`) for status display. Threads live as local JSONL under `~/.moxen` (override with `MOXEN_STORE_ROOT`); `doctor` reports store writability alongside binary and auth status.
 
 ## License
 

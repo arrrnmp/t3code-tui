@@ -275,15 +275,33 @@ export function buildSidebarSections(state: ShellState, options: SidebarOptions)
   for (const thread of live) {
     (threadStatus(thread, options.now) === "settled" ? settled : active).push(thread);
   }
-  active.sort(byRecency);
-  settled.sort(byRecency);
+  // An active subthread whose parent is settled (legacy data, or a task
+  // delegated from a settled thread) would otherwise surface as a top-level
+  // row that reads as an unrelated thread. Rule: the settled ancestors are
+  // pulled into the active list as dim header rows, so the family stays
+  // nested and visibly belongs to something settled. While they head a live
+  // family they are not repeated in the Settled section.
+  const byId = new Map(live.map((thread) => [thread.id, thread]));
+  const anchors = new Set<string>();
+  for (const thread of active) {
+    const seen = new Set([thread.id]);
+    for (let up = byId.get(thread.parentThreadId ?? ""); up !== undefined && !seen.has(up.id); up = byId.get(up.parentThreadId ?? "")) {
+      seen.add(up.id);
+      if (threadStatus(up, options.now) === "settled") anchors.add(up.id);
+    }
+  }
+  const anchored = settled.filter((thread) => anchors.has(thread.id));
+  const settledRest = settled.filter((thread) => !anchors.has(thread.id));
+  const listed = [...active, ...anchored];
+  listed.sort(byRecency);
+  settledRest.sort(byRecency);
 
   const projectId = mode === "project" ? (options.projectId ?? options.fallbackProjectId ?? null) : null;
-  const visible = mode === "project" && projectId !== null ? active.filter((thread) => thread.projectId === projectId) : active;
+  const visible = mode === "project" && projectId !== null ? listed.filter((thread) => thread.projectId === projectId) : listed;
   // `project` mode claims to show one project's threads; the settled section
   // must honor that too, or it silently leaks every other project's history.
   const visibleSettled =
-    mode === "project" && projectId !== null ? settled.filter((thread) => thread.projectId === projectId) : settled;
+    mode === "project" && projectId !== null ? settledRest.filter((thread) => thread.projectId === projectId) : settledRest;
 
   let groups: SidebarGroup[] = [];
   if (mode === "grouped") {

@@ -26,6 +26,7 @@ import type { ImageAttachmentUpload } from "../core/attachments.js";
 import { CliError } from "../core/errors.js";
 import type {
   CancelledTask,
+  ChecklistStep,
   DelegateRequest,
   Delegation,
   DescribedTask,
@@ -33,6 +34,7 @@ import type {
   EnsureProjectRequest,
   Handover,
   HandoverRequest,
+  RecordedChecklist,
   RevertResult,
   ThreadList,
   ThreadListQuery,
@@ -178,6 +180,8 @@ export type CommandBody =
   | { readonly type: "thread.task.cancel"; readonly parentThreadId: string; readonly taskId: string }
   /** Stop one background task (a `run_in_background` command, a Monitor watch, a background subagent). */
   | { readonly type: "thread.background.stop"; readonly threadId: string; readonly taskId: string }
+  /** The agent's checklist, for a provider with none of its own (moxen's `todos` tool). The whole list. */
+  | { readonly type: "thread.plan.set"; readonly threadId: string; readonly plan: readonly ChecklistStep[] }
   | ({ readonly type: "project.ensure" } & EnsureProjectRequest)
   | {
       readonly type: "model.visibility.set";
@@ -265,6 +269,7 @@ export interface CommandResults {
   "thread.delegate": Delegation;
   "thread.task.cancel": CancelledTask;
   "thread.background.stop": { readonly stopped: true; readonly taskId: string };
+  "thread.plan.set": RecordedChecklist;
   "project.ensure": EnsuredProject;
   "model.visibility.set": { readonly hidden: boolean };
   "settings.set": SettingsSnapshot & Accepted;
@@ -580,6 +585,20 @@ function requireField(value: unknown, command: string, field: string): string {
   return text;
 }
 
+const CHECKLIST_STATUSES: ReadonlySet<string> = new Set(["pending", "in_progress", "completed"]);
+
+function decodeChecklist(value: unknown, command: string): ChecklistStep[] {
+  if (!Array.isArray(value)) throw new CliError("INVALID_THREAD_OPTION", `${command} requires plan: an array of {step, status}.`, { exitCode: 2 });
+  return value.map((entry, index) => {
+    const record = asRecord(entry) ?? {};
+    const status = asString(record.status) ?? "";
+    if (!CHECKLIST_STATUSES.has(status)) {
+      throw new CliError("INVALID_THREAD_OPTION", `${command} plan[${index}].status must be pending, in_progress or completed.`, { exitCode: 2 });
+    }
+    return { step: requireField(record.step, command, `plan[${index}].step`), status: status as ChecklistStep["status"] };
+  });
+}
+
 function decodeAnswers(value: unknown, command: string): UserInputAnswers {
   const record = asRecord(value);
   if (record === null) {
@@ -795,6 +814,8 @@ export function decodeCommand(value: unknown): Command {
         threadId: requireThreadId(record.threadId),
         taskId: requireField(record.taskId, type, "taskId"),
       };
+    case "thread.plan.set":
+      return { ...meta, type, threadId: requireThreadId(record.threadId), plan: decodeChecklist(record.plan, type) };
     case "project.ensure":
       return {
         ...meta,

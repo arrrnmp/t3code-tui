@@ -223,6 +223,23 @@ describe("delegated threads in the sidebar", () => {
       ["task-a-1", 1],
       ["other", 0],
     ]);
+
+    // A settled parent with live subtasks (legacy data) stays as a dim header
+    // above them instead of turning them into orphaned top-level rows, and is
+    // not repeated in the Settled section.
+    const orphaned = buildSidebarSections(
+      shellWith([
+        thread("parent", { settledAt: ago(5_000) }),
+        thread("task-a", { parentThreadId: "parent", createdAt: ago(30_000) }),
+        thread("done", { settledAt: ago(5_000) }),
+      ]),
+      { settledExpanded: true, settledLimit: 10, now: NOW },
+    );
+    expect(orphaned.active.map((row) => [row.thread.id, row.depth, row.status])).toEqual([
+      ["parent", 0, "settled"],
+      ["task-a", 1, "active"],
+    ]);
+    expect(orphaned.settled.map((row) => row.thread.id)).toEqual(["done"]);
   });
 
   it("lists native subagents after the delegated threads, the connectors running through both", () => {

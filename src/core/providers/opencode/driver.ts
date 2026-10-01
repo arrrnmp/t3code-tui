@@ -1,18 +1,22 @@
 /**
  * OpenCode driver: `ProviderAdapter` over `opencode serve` + the generated
- * SDK (serve-first, ARCHITECTURE.md §8 option (a)).
+ * v2 client (serve-first; see the providers table in ARCHITECTURE.md).
  *
  * One server per working directory (shared across that cwd's threads),
  * one native session per thread, one SSE `event.subscribe` pump per
- * server demuxed by `sessionID`. Turns run through `session.promptAsync`
- * and settle on `session.idle` / `session.error`; permission and question
- * requests park until `respondToRequest` / `respondToUserInput` resolve
- * them (`permission.reply` once/always/reject, `question.reply`/`reject`).
- * Rollback forks the native session; compaction is native
- * (`session.summarize`). Token usage is read best-effort off the latest
- * assistant message at turn end — OpenCode streams no usage channel, so
- * mid-turn usage stays silent (the §13 "per-message only" row).
- * Auth is never ours: the CLI's own login plus the vendored plugins.
+ * server demuxed by `sessionID`. The transport translates v2's events into
+ * the vocabulary read here (`translate.ts`). Turns run through
+ * `session.prompt` and settle on `session.idle` / `session.error` (v2's
+ * `session.execution.*`, once no steered input is still queued); permission
+ * and question requests park until `respondToRequest` / `respondToUserInput`
+ * resolve them (`permission.reply` once/always/reject, a question form is
+ * replied to or cancelled). v2 prompts carry only text and files, so the
+ * model, agent (plan mode) and runtime instructions are session state,
+ * applied before a prompt only when they changed. Rollback forks the native
+ * session; compaction is native (`session.compact`). Token usage is read
+ * best-effort off the latest assistant message at turn end, so mid-turn
+ * usage stays silent (the §13 "per-message only" row).
+ * Auth is never ours: the CLI's own login.
  */
 import { randomUUID } from "node:crypto";
 
@@ -22,7 +26,7 @@ import * as Stream from "effect/Stream";
 
 import { CliError } from "../../errors.js";
 import { plainSkill, type SkillInventory, type SkillSummary } from "../../catalog/summary.js";
-import type { InteractionMode, ModelSelection, RuntimeMode } from "../../types.js";
+import type { InteractionMode, ModelSelection, ProviderOptionSelection, RuntimeMode } from "../../types.js";
 import type {
   ApprovalRequestId,
   ContextBreakdown,
@@ -37,11 +41,12 @@ import type {
   ProviderThreadSnapshot,
   ProviderTurnStartResult,
   ProviderUserInputAnswers,
+  SubagentHistoryItem,
   ThreadId,
   TokenUsageDelta,
   TurnId,
 } from "../spi.js";
-import { outOfProcess, type McpServerSpec } from "../../mcp.js";
+import { outOfProcessWithChecklist, type McpServerSpec } from "../../mcp.js";
 import { opencodeContextBreakdown } from "./context.js";
 import {
   isOpencodeAuthErrorText,
@@ -49,16 +54,20 @@ import {
   opencodeSignedOutMessage,
   type OpencodeSettings,
 } from "./config.js";
-import { isFreeOpencodeModel, providerEnvNames, readStoredAuthTypes } from "./catalog.js";
+import { isFreeOpencodeModel, providerEnvNames, readStoredAuthTypes, storedAuthTypeFor } from "./catalog.js";
 import {
   newOpencodeMessageId,
   SpawnOpencodeTransport,
   type OpencodeContextSettings,
   type OpencodeMcpConfig,
+  type OpencodeModelInfo,
+  type OpencodeModelRef,
   type OpencodeServerConnection,
+  type OpencodeSessionState,
   type OpencodeSubscribedEvent,
   type OpencodeTransport,
 } from "./transport.js";
+import type { OpencodeMessage } from "./translate.js";
 
 export interface OpenCodeDriverOptions {
   readonly settings?: Partial<OpencodeSettings>;
@@ -66,6 +75,8 @@ export interface OpenCodeDriverOptions {
   readonly transport?: OpencodeTransport;
   /** Silence budget per turn before it fails loudly (default 10 minutes, mirroring the Grok watchdog). */
   readonly stallTimeoutMs?: number;
+  /** How long an interrupt waits for the server to confirm before settling the turn itself (default 3 s). */
+  readonly interruptAckTimeoutMs?: number;
 }
 
 /** Default `stallTimeoutMs`: a turn with zero provider events for this long is failed, never left running. */
@@ -102,6 +113,13 @@ interface OpenCodeTurn {
   /** Setup step to append if the server rejects this turn (see `missingCredentialHint`). */
   credentialHint: string | null;
   usage: TokenUsageDelta;
+  /** When the server last said anything about this turn; the stall watchdog measures silence from here. */
+  lastActivityAt: number;
+  /** Set once an interrupt is on its way: the server's idle then acknowledges it rather than completes the turn. */
+  interrupting: boolean;
+  /** The server has confirmed the interrupt (recorded even when it beats the HTTP reply, before anyone waits). */
+  interruptAcked: boolean;
+  interruptAck: (() => void) | null;
 }
 
 type ParkedKind = "permission" | "question";
@@ -123,10 +141,16 @@ interface OpenCodeSession {
   instanceId: string;
   /** Raw model slug; parsed per send so instance-id context applies. */
   modelSlug: string | null;
+  /** The thread's model options (reasoning effort); read as a v2 variant when the model has one. */
+  modelOptions: ReadonlyArray<ProviderOptionSelection> | undefined;
   runtimeMode: RuntimeMode;
   interactionMode: InteractionMode;
-  /** Runtime instructions, sent as `system` with every prompt (OpenCode keeps none per session). */
+  /** Runtime instructions, kept as the session's `moxen` instruction entry (v2 prompts carry no `system`). */
   instructions: string | null;
+  /** moxen's MCP servers, re-registered on a replacement server (see `dropConnection`). */
+  mcpServers: readonly McpServerSpec[];
+  /** What the native session is already set to; a prompt only changes what differs. */
+  applied: AppliedSessionState;
   turns: Map<TurnId, OpenCodeTurn>;
   waiters: Map<TurnId, Array<{ resolve: (outcome: OpenCodeTurnOutcome) => void; reject: (cause: unknown) => void }>>;
   parked: Map<string, ParkedOpenCode>;
@@ -134,6 +158,69 @@ interface OpenCodeSession {
   context: ContextWindowUsage | null;
   startedAt: string;
 }
+
+/** The native session's model, agent and `moxen` instruction entry, as last known. `undefined` = not known. */
+interface AppliedSessionState {
+  model: OpencodeModelRef | undefined;
+  agent: string | undefined;
+  instructions: string | null | undefined;
+}
+
+/** A child session OpenCode's `subagent` tool started for a thread's session. */
+interface OpenCodeChild {
+  readonly parent: OpenCodeSession;
+  readonly agentType: string;
+  readonly description: string | null;
+  readonly background: boolean;
+  stopped: boolean;
+}
+
+/** A `subagent` call's result without its `<subagent …>` wrapper: the child's report. */
+function subagentReport(output: string | null): string | null {
+  if (!output) return null;
+  const report = output.replace(/^\s*<subagent\b[^>]*>/u, "").replace(/<\/subagent>\s*$/u, "").trim();
+  return report.length > 0 ? report : null;
+}
+
+/** The text of the newest assistant message that said anything. */
+function lastAssistantText(messages: ReadonlyArray<OpencodeMessage>): string | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]!;
+    if (message.info.role !== "assistant") continue;
+    const text = message.parts
+      .flatMap((part) => (part.type === "text" && typeof part.text === "string" ? [part.text] : []))
+      .join("")
+      .trim();
+    if (text.length > 0) return text;
+  }
+  return null;
+}
+
+function isoAt(value: unknown): string | null {
+  return typeof value === "number" && Number.isFinite(value) ? new Date(value).toISOString() : null;
+}
+
+/** A child session's timeline as subagent history: its prompt, thoughts, tool calls and words. */
+function subagentHistoryItems(messages: ReadonlyArray<OpencodeMessage>): SubagentHistoryItem[] {
+  const items: SubagentHistoryItem[] = [];
+  for (const message of messages) {
+    const at = isoAt(asRecord(message.info.time)?.created);
+    const user = message.info.role === "user";
+    for (const part of message.parts) {
+      const id = asString(part.id) ?? `${asString(message.info.id) ?? "message"}:${items.length}`;
+      if ((part.type === "text" || part.type === "reasoning") && typeof part.text === "string" && part.text.trim()) {
+        items.push({ kind: user ? "prompt" : part.type === "reasoning" ? "reasoning" : "text", id, at, text: part.text });
+      } else if (part.type === "tool" && !user) {
+        const started = isoAt(asRecord(asRecord(part.state)?.time)?.start);
+        items.push({ kind: "tool", id, at: started ?? at, tool: asString(part.tool) ?? "tool", raw: part });
+      }
+    }
+  }
+  return items;
+}
+
+/** The instruction entry key runtime instructions live under. */
+const INSTRUCTIONS_KEY = "moxen";
 
 /**
  * The turn's answer: the text of its last assistant message. OpenCode opens
@@ -148,42 +235,49 @@ function answerText(parts: ReadonlyMap<string, { messageId: string | null; text:
   return all.filter((part) => part.messageId === last.messageId).map((part) => part.text).join("");
 }
 
-/** Upstream `ProviderTransform.OUTPUT_TOKEN_MAX` and `session/overflow.ts` `COMPACTION_BUFFER`. */
-const OUTPUT_TOKEN_MAX = 32_000;
-const COMPACTION_BUFFER = 20_000;
+/**
+ * OpenCode v2's auto-compaction trigger for a model: the usable window (the
+ * input limit when the model has one, else the context limit) less a buffer —
+ * `compaction.buffer` when configured, else 10% of the window, never under
+ * 16k on windows of 32k and up. 200k → 180k, 128k → 112k, 20k → 18k. Null
+ * when there is no usable window (v2 never auto-compacts then).
+ */
+export function opencodeCompactionThreshold(
+  limit: { readonly context: number; readonly input?: number },
+  buffer: number | null,
+): number | null {
+  const usable = limit.input || limit.context;
+  if (!(usable > 0)) return null;
+  const reserved = buffer !== null ? buffer : Math.max(Math.floor(usable * 0.1), usable >= 32_000 ? 16_000 : 0);
+  return Math.max(0, usable - reserved);
+}
 
 /**
- * The context window after a turn, the way OpenCode itself counts it: the
- * latest assistant message's `input + cache.read + cache.write` (upstream
- * `acp/usage.ts` `contextTokens`), against the model's `limit.context`. The
- * auto-compact threshold is upstream's `usable()` (`session/overflow.ts`).
+ * The context window after a turn, the way OpenCode v2 itself counts it: the
+ * latest assistant message's `input + cache.read + cache.write + output +
+ * reasoning`, against the model's `limit.context`, with the auto-compact
+ * threshold from `opencodeCompactionThreshold`.
  */
 export function opencodeContextOf(
   messages: ReadonlyArray<{ info: Record<string, unknown> }>,
   settings: OpencodeContextSettings | null,
 ): ContextWindowUsage | null {
-  const info = [...messages].reverse().find((message) => message.info.role === "assistant")?.info;
+  const info = [...messages].reverse().find((message) => message.info.role === "assistant" && asRecord(message.info.tokens))?.info;
   const tokens = asRecord(info?.tokens);
   if (!info || !tokens) return null;
   const cache = asRecord(tokens.cache);
   const number = (value: unknown): number => (typeof value === "number" && Number.isFinite(value) ? value : 0);
   const cacheRead = number(cache?.read);
-  const used = number(tokens.input) + cacheRead + number(cache?.write);
+  const used = number(tokens.input) + cacheRead + number(cache?.write) + number(tokens.output) + number(tokens.reasoning);
   if (used <= 0) return null;
   const providerId = asString(info.providerID);
   const modelId = asString(info.modelID);
   const limit = providerId && modelId ? settings?.limits.get(`${providerId}/${modelId}`) : undefined;
-  let threshold: number | null = null;
-  if (limit && limit.context > 0) {
-    const maxOutput = Math.min(limit.output, OUTPUT_TOKEN_MAX) || OUTPUT_TOKEN_MAX;
-    const reserved = settings?.reserved ?? Math.min(COMPACTION_BUFFER, maxOutput);
-    threshold = limit.input ? Math.max(0, limit.input - reserved) : Math.max(0, limit.context - maxOutput);
-  }
   return {
     usedTokens: used,
-    maxTokens: limit?.context ?? null,
+    maxTokens: limit && limit.context > 0 ? limit.context : null,
     cachedInputTokens: cacheRead,
-    autoCompactThreshold: threshold,
+    autoCompactThreshold: limit ? opencodeCompactionThreshold(limit, settings?.buffer ?? null) : null,
     compactsAutomatically: settings ? settings.autoCompact : null,
   };
 }
@@ -193,6 +287,8 @@ function lastUserAnswered(messages: ReadonlyArray<{ info: Record<string, unknown
   const lastUser = [...messages].reverse().find((message) => message.info.role === "user");
   const userId = lastUser ? asString(lastUser.info.id) : null;
   if (!userId) return true;
+  // The timeline's own `idle` marker after the prompt: answered, even when the run left no reply.
+  if (lastUser?.info.settled === true) return true;
   return messages.some((message) =>
     message.info.role === "assistant" &&
     message.info.parentID === userId &&
@@ -246,6 +342,35 @@ export function parseOpencodeModel(
   return null;
 }
 
+/** Timeline items read when a turn goes idle (see `onSessionIdle`). */
+const IDLE_READ_ITEMS = 60;
+
+/** Option ids a thread's reasoning effort may be stored under. */
+const EFFORT_OPTION_IDS: ReadonlySet<string> = new Set(["reasoningEffort", "effort", "reasoning", "variant"]);
+
+/**
+ * The v2 variant for a thread's reasoning effort: the option's value, when
+ * this model lists a variant with that id (a variant the model lacks is a
+ * model-resolution error on the server, so it is never sent).
+ */
+function variantFor(
+  options: ReadonlyArray<ProviderOptionSelection> | undefined,
+  model: OpencodeModelInfo,
+): string | null {
+  const value = options?.find((option) => EFFORT_OPTION_IDS.has(option.id) && typeof option.value === "string")?.value;
+  return typeof value === "string" && model.variants.includes(value) ? value : null;
+}
+
+/** Same model and variant; "no variant" and the server's `default` are one. */
+function sameModel(applied: OpencodeModelRef | undefined, target: OpencodeModelRef): boolean {
+  return (
+    applied !== undefined &&
+    applied.providerID === target.providerID &&
+    applied.modelID === target.modelID &&
+    (applied.variant ?? "default") === (target.variant ?? "default")
+  );
+}
+
 export class OpenCodeDriver implements ProviderAdapter<CliError> {
   readonly provider = "opencode" as const;
   readonly capabilities: ProviderAdapterCapabilities = {
@@ -257,24 +382,39 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
       this.attempt("OPENCODE_COMPACT_FAILED", `Could not compact the session for thread ${threadId}`, async () => {
         const session = this.requireSession(threadId);
         const connection = await this.connectionFor(session);
-        await connection.summarizeSession(
-          session.nativeSessionId,
-          parseOpencodeModel(modelSelection ?? undefined, session.instanceId) ?? undefined,
-        );
+        if (modelSelection) {
+          // v2's compact runs on the session's own model, so switch first —
+          // through the applied-state cache, which a direct switch would leave stale.
+          session.instanceId = modelSelection.instanceId;
+          session.modelSlug = modelSelection.model;
+          session.modelOptions = modelSelection.options;
+          const wanted = parseOpencodeModel(modelSelection, session.instanceId);
+          await this.applySessionState(session, connection, wanted, undefined, null);
+        }
+        await connection.summarizeSession(session.nativeSessionId);
       }),
     type: "native" as const,
   };
 
   private readonly settings: OpencodeSettings;
   private readonly baseEnv: NodeJS.ProcessEnv;
+  /**
+   * Child sessions OpenCode's `subagent` tool started, by session id. Kept
+   * after they stop so the call's later updates (which still name the
+   * child) do not start it again.
+   */
+  private readonly children = new Map<string, OpenCodeChild>();
   private readonly transport: OpencodeTransport;
   private readonly stallTimeoutMs: number;
+  private readonly interruptAckTimeoutMs: number;
   private readonly stallTimers = new Map<TurnId, ReturnType<typeof setTimeout>>();
   private readonly sessions = new Map<ThreadId, OpenCodeSession>();
   private readonly connections = new Map<string, Promise<OpencodeServerConnection>>();
+  /** The connection behind each `connections` entry once it resolved, for identity checks. */
+  private readonly liveConnections = new Map<string, OpencodeServerConnection>();
   /** `name:config` already registered per server connection (see `registerMcpServers`). */
   private readonly mcpRegistered = new WeakMap<OpencodeServerConnection, Set<string>>();
-  private readonly pumps = new Map<string, { controller: AbortController; done: Promise<void> }>();
+  private readonly pumps = new Map<string, { controller: AbortController; ready: Promise<void>; done: Promise<void> }>();
   private readonly queue = Effect.runSync(Queue.unbounded<ProviderRuntimeEvent>());
 
   constructor(options: OpenCodeDriverOptions = {}) {
@@ -282,6 +422,7 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
     this.baseEnv = options.env ?? process.env;
     this.transport = options.transport ?? new SpawnOpencodeTransport();
     this.stallTimeoutMs = options.stallTimeoutMs ?? OPENCODE_STALL_TIMEOUT_MS;
+    this.interruptAckTimeoutMs = options.interruptAckTimeoutMs ?? 3000;
   }
 
   get streamEvents(): Stream.Stream<ProviderRuntimeEvent> {
@@ -319,7 +460,13 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
   private async connectionForSession(threadId: ThreadId, workingDirectory: string): Promise<OpencodeServerConnection> {
     const key = workingDirectory;
     const existing = this.connections.get(key);
-    if (existing) return await existing;
+    if (existing) {
+      const connection = await existing;
+      // A pump that died (dropped stream) is restarted before anything is sent:
+      // v2 replays nothing, so an event stream that is not live loses answers.
+      await this.ensurePump(key, connection);
+      return connection;
+    }
     const pending = this.transport.ensureServer({
       settings: this.settings,
       workingDirectory,
@@ -328,7 +475,10 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
     this.connections.set(key, pending);
     try {
       const connection = await pending;
-      this.startPump(key, connection).catch(() => undefined);
+      this.liveConnections.set(key, connection);
+      // A spawned server that exits is forgotten, so the next call respawns it.
+      void connection.closed.then(() => this.dropConnection(key, connection, "the server exited"));
+      await this.ensurePump(key, connection);
       return connection;
     } catch (cause) {
       if (this.connections.get(key) === pending) this.connections.delete(key);
@@ -354,7 +504,8 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
       done = new Set();
       this.mcpRegistered.set(connection, done);
     }
-    for (const server of servers.map(outOfProcess)) {
+    // v2 has no `todowrite`: moxen's server lends its checklist tool.
+    for (const server of servers.map(outOfProcessWithChecklist)) {
       const config: OpencodeMcpConfig =
         server.type === "http"
           ? { type: "remote", url: server.url, ...(Object.keys(server.headers).length > 0 ? { headers: server.headers } : {}) }
@@ -372,6 +523,24 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
         // Retried on the next session start.
       }
     }
+  }
+
+  /**
+   * Forget a server that is gone (its process exited, or its event stream
+   * died) so the next call starts a fresh one instead of failing against the
+   * dead one forever. Turns open on it fail; the connection's caches (MCP
+   * registered, context settings, model list) are keyed by the connection and
+   * go with it. A no-op when the key already holds a different connection.
+   */
+  private dropConnection(key: string, connection: OpencodeServerConnection, reason: string): void {
+    if (this.liveConnections.get(key) !== connection) return;
+    this.liveConnections.delete(key);
+    this.connections.delete(key);
+    const pump = this.pumps.get(key);
+    this.pumps.delete(key);
+    pump?.controller.abort();
+    this.failServerTurns(key, `Lost the OpenCode server (${reason.slice(0, 200)}).`);
+    void connection.dispose().catch(() => undefined);
   }
 
   private async connectionFor(session: OpenCodeSession): Promise<OpencodeServerConnection> {
@@ -393,17 +562,93 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
     return await pending;
   }
 
+  /** `model.list`, fetched once per connection and again when a model is not in it (a provider connected since). */
+  private readonly modelLists = new WeakMap<OpencodeServerConnection, Promise<ReadonlyArray<OpencodeModelInfo>>>();
+
+  private async modelListFor(connection: OpencodeServerConnection, refresh: boolean): Promise<ReadonlyArray<OpencodeModelInfo>> {
+    let pending = this.modelLists.get(connection);
+    if (!pending || refresh) {
+      pending = connection.listModels();
+      pending.catch(() => this.modelLists.delete(connection));
+      this.modelLists.set(connection, pending);
+    }
+    return await pending;
+  }
+
   /**
-   * `system` and `agent` for one prompt. Plan mode runs OpenCode's built-in
-   * read-only `plan` agent (upstream `agent/agent.ts`); otherwise the
-   * session's default agent answers, as before.
+   * The server does not validate `session.switchModel`: a bogus model is
+   * accepted and only fails the next run. So the model is checked against
+   * `model.list` here and the send fails clearly. A list that cannot be read
+   * skips the check (the server then answers `Model unavailable`).
    */
-  private promptExtras(session: OpenCodeSession, interactionMode?: InteractionMode): { system?: string; agent?: string } {
+  private async resolveModel(
+    connection: OpencodeServerConnection,
+    model: { providerID: string; modelID: string },
+    options: ReadonlyArray<ProviderOptionSelection> | undefined,
+    credentialHint: string | null,
+  ): Promise<OpencodeModelRef> {
+    const find = (list: ReadonlyArray<OpencodeModelInfo>) =>
+      list.find((entry) => entry.providerID === model.providerID && entry.modelID === model.modelID);
+    let info: OpencodeModelInfo | undefined;
+    try {
+      info = find(await this.modelListFor(connection, false));
+      if (!info) info = find(await this.modelListFor(connection, true));
+    } catch {
+      return model;
+    }
+    if (!info) {
+      throw new CliError(
+        "OPENCODE_MODEL_UNAVAILABLE",
+        `OpenCode has no model "${model.providerID}/${model.modelID}".${credentialHint ? ` ${credentialHint}` : " Check the model id, or connect its provider with `opencode auth login`."}`,
+        { details: { providerID: model.providerID, modelID: model.modelID } },
+      );
+    }
+    const variant = variantFor(options, info);
+    return { ...model, ...(variant ? { variant } : {}) };
+  }
+
+  /**
+   * Bring the native session to this send's model, agent and instructions.
+   * v2 prompts carry none of them, so they are session state; each call is
+   * made only when the state it sets differs from what is already applied.
+   * Plan mode runs OpenCode's built-in read-only `plan` agent and leaving it
+   * returns to `build`; a session on any other agent (the user's
+   * `default_agent`) is left alone.
+   */
+  private async applySessionState(
+    session: OpenCodeSession,
+    connection: OpencodeServerConnection,
+    wantedModel: { providerID: string; modelID: string } | null,
+    interactionMode: InteractionMode | undefined,
+    credentialHint: string | null,
+  ): Promise<void> {
     if (interactionMode) session.interactionMode = interactionMode;
-    return {
-      ...(session.instructions ? { system: session.instructions } : {}),
-      ...(session.interactionMode === "plan" ? { agent: "plan" } : {}),
-    };
+    const nativeId = session.nativeSessionId;
+    const applied = session.applied;
+    if (wantedModel) {
+      const target = await this.resolveModel(connection, wantedModel, session.modelOptions, credentialHint);
+      if (!sameModel(applied.model, target)) {
+        await connection.switchModel(nativeId, target);
+        applied.model = target;
+      }
+    }
+    const planning = session.interactionMode === "plan";
+    if (planning && applied.agent !== "plan") {
+      await connection.switchAgent(nativeId, "plan");
+      applied.agent = "plan";
+    } else if (!planning && applied.agent === "plan") {
+      await connection.switchAgent(nativeId, "build");
+      applied.agent = "build";
+    }
+    if (applied.instructions !== session.instructions) {
+      try {
+        await connection.setInstructions(nativeId, INSTRUCTIONS_KEY, session.instructions);
+      } catch (cause) {
+        // Clearing an entry the session never had is not a failure.
+        if (session.instructions !== null) throw cause;
+      }
+      applied.instructions = session.instructions;
+    }
   }
 
   /**
@@ -438,7 +683,8 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
     const session = this.sessions.get(threadId);
     if (!session?.context) return null;
     const connection = await this.connectionFor(session);
-    const messages = await connection.sessionMessages(session.nativeSessionId).catch(() => []);
+    // Only what the model still sees: nothing before the last compaction.
+    const messages = await connection.sessionContext(session.nativeSessionId).catch(() => []);
     return opencodeContextBreakdown(session.context, messages);
   };
 
@@ -455,8 +701,9 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
       // than replaced by an empty session.
       const cursor = existing?.nativeSessionId ?? input.resumeCursor;
       const resumed = cursor ? await connection.getSession(cursor).catch(() => null) : null;
-      const nativeSessionId =
-        resumed?.id ?? (await connection.createSession({ title: `moxen ${input.threadId}` })).sessionID;
+      const native: OpencodeSessionState =
+        resumed ?? (await connection.createSession({}));
+      const nativeSessionId = native.sessionID;
       const session: OpenCodeSession = {
         threadId: input.threadId,
         nativeSessionId,
@@ -464,9 +711,14 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
         closed: false,
         instanceId: input.modelSelection?.instanceId ?? "opencode",
         modelSlug: input.modelSelection?.model ?? null,
+        modelOptions: input.modelSelection?.options,
         runtimeMode: input.runtimeMode ?? "full-access",
         interactionMode: input.interactionMode ?? "default",
         instructions: input.instructions ?? null,
+        mcpServers: input.mcpServers ?? [],
+        // A session we just made has no instruction entry; a resumed one may
+        // still hold the previous process's, which the first send reconciles.
+        applied: { model: native.model, agent: native.agent, instructions: resumed ? undefined : null },
         turns: new Map(),
         waiters: new Map(),
         parked: new Map(),
@@ -479,6 +731,16 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
 
   readonly resumeCursor = (threadId: ThreadId): string | null =>
     this.sessions.get(threadId)?.nativeSessionId ?? null;
+
+  readonly sessionTitle = async (cursor: string, workingDirectory: string): Promise<string | null> =>
+    await (await this.connectionForSession(`title:${cursor}` as ThreadId, workingDirectory)).sessionTitle(cursor);
+
+  readonly renameSession = async (cursor: string, workingDirectory: string, title: string): Promise<void> => {
+    await (await this.connectionForSession(`title:${cursor}` as ThreadId, workingDirectory)).renameSession(cursor, title);
+  };
+
+  readonly regenerateSessionTitle = async (cursor: string, workingDirectory: string): Promise<string | null> =>
+    await (await this.connectionForSession(`title:${cursor}` as ThreadId, workingDirectory)).regenerateSessionTitle(cursor);
 
   /** A whole copy of a native session, on the server for `workingDirectory` (where it lives). */
   readonly forkSession = async (cursor: string, workingDirectory: string): Promise<string> => {
@@ -497,6 +759,7 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
       if (input.modelSelection) {
         session.instanceId = input.modelSelection.instanceId;
         session.modelSlug = input.modelSelection.model;
+        session.modelOptions = input.modelSelection.options;
       }
       const model = session.modelSlug
         ? parseOpencodeModel(
@@ -517,25 +780,26 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
         lastTextMessageId: null,
         credentialHint: null,
         usage: emptyUsage(),
+        lastActivityAt: Date.now(),
+        interrupting: false,
+        interruptAcked: false,
+        interruptAck: null,
       };
       session.turns.set(turn.id, turn);
-      const connection = await this.connectionFor(session);
       try {
-        turn.credentialHint = await this.missingCredentialHint(model);
-        await connection.promptAsync({
+        const connection = await this.connectionFor(session);
+        // A replacement server (see `dropConnection`) has lost the runtime MCP registrations.
+        await this.registerMcpServers(connection, session.mcpServers);
+        turn.credentialHint = await this.missingCredentialHint(model, connection);
+        await this.applySessionState(session, connection, model, input.interactionMode, turn.credentialHint);
+        await connection.prompt({
           sessionID: session.nativeSessionId,
           messageID: userMessageId,
-          ...(model ? { model } : {}),
-          ...this.promptExtras(session, input.interactionMode),
-          parts: [
-            { type: "text", text: input.prompt },
-            ...(input.images ?? []).map((image) => ({
-              type: "file" as const,
-              mime: image.mimeType,
-              filename: image.name,
-              url: `data:${image.mimeType};base64,${image.data}`,
-            })),
-          ],
+          text: input.prompt,
+          files: (input.images ?? []).map((image) => ({
+            uri: `data:${image.mimeType};base64,${image.data}`,
+            name: image.name,
+          })),
         });
       } catch (cause) {
         this.clearStallTimer(turn.id);
@@ -555,13 +819,14 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
    * not: it answers `session.error` within seconds ("Model not found:
    * <provider>/<model>" when the provider never loaded, or a 401 for a
    * rejected key). The silence that motivated the gate came from our own
-   * broken plugin entry modules, fixed in `plugins/*.plugin.ts`.
+   * vendored plugin modules, which no longer exist (v2 has the ChatGPT and
+   * SuperGrok logins built in).
    *
    * Blocking on this guess is strictly worse than letting the server
    * answer, because the guess only models two of the credential
-   * arrangements upstream honors — `env[]` names and `auth.json` — and
-   * misses `opencode.json`'s `provider.<id>.options.apiKey`, plugin
-   * OAuth stored under another id, and anything a newer catalog adds.
+   * arrangements upstream honors — `env[]` names and stored logins — and
+   * misses `opencode.json`'s `provider.<id>.options.apiKey`, OAuth stored
+   * under another id, and anything a newer catalog adds.
    * Each miss blocks a model the server would have served: exactly the
    * `opencode/muse-spark-1.3-contributor-free` report this replaced.
    *
@@ -574,14 +839,15 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
    */
   private async missingCredentialHint(
     model: { providerID: string; modelID: string } | null,
+    connection: OpencodeServerConnection,
   ): Promise<string | null> {
     if (!model) return null;
     if (await isFreeOpencodeModel(model.providerID, model.modelID)) return null;
     const envNames = await providerEnvNames(model.providerID);
     if (envNames === null) return null;
-    const stored = readStoredAuthTypes(this.baseEnv);
-    const storedHit = Object.keys(stored).some((key) => key.toLowerCase() === model.providerID.toLowerCase());
-    if (storedHit) return null;
+    // Renamed provider ids (`azure-cognitive-services` → `azure`, …) count as the same credential.
+    const stored = await this.storedAuthTypes(connection);
+    if (storedAuthTypeFor(stored, model.providerID) !== undefined) return null;
     if (envNames.some((name) => (this.baseEnv[name] ?? "").trim().length > 0)) return null;
     const how = envNames.length > 0
       ? `set ${envNames.join(" or ")}`
@@ -589,19 +855,60 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
     return `No credential found for provider "${model.providerID}" — ${how}, or run \`opencode auth login\`.`;
   }
 
+  /**
+   * Credential types as the server we already talk to knows them (connection
+   * types only). Only when that cannot answer do we run the CLI, which is
+   * async, `--standalone` and cached (see `readStoredAuthTypes`).
+   */
+  private async storedAuthTypes(connection: OpencodeServerConnection): Promise<Record<string, string>> {
+    try {
+      return await connection.storedAuthTypes();
+    } catch {
+      return await readStoredAuthTypes(this.baseEnv, { binaryPath: this.settings.binaryPath });
+    }
+  }
+
+  /**
+   * Cancel what this turn still has queued on the server: its own prompt and
+   * any steer that was not yet delivered. An interrupt discards the turn, so
+   * a leftover steer must not reach the model with the next turn. Delivered
+   * items cannot be cancelled; those requests fail and are ignored.
+   */
+  private async cancelQueuedInput(session: OpenCodeSession, connection: OpencodeServerConnection, turn: OpenCodeTurn): Promise<void> {
+    const ids = [turn.userMessageId, ...turn.steerMessageIds];
+    await Promise.all(ids.map((id) => connection.cancelInbox(session.nativeSessionId, id).catch(() => undefined)));
+  }
+
   readonly interruptTurn = (threadId: ThreadId, _turnId?: TurnId): Effect.Effect<void, CliError> =>
     this.attempt("OPENCODE_TURN_FAILED", `Could not interrupt the turn on thread ${threadId}`, async () => {
       const session = this.requireSession(threadId);
+      const turn = this.openTurn(session);
+      if (turn) turn.interrupting = true;
       // Parked permission/question prompts hold the turn open server-side;
       // reject them first so abort settles instead of hanging.
       await this.rejectParked(session, "Interrupted.");
       try {
         const connection = await this.connectionFor(session);
+        if (turn) await this.cancelQueuedInput(session, connection, turn);
         await connection.abortSession(session.nativeSessionId);
       } catch (cause) {
         if (!session.closed) throw cause;
       }
-      this.settleOpenTurn(session, "interrupted", "Interrupted.");
+      // The server confirms an interrupt with its own event, which arrives
+      // after this call returns. Settling before it would let a prompt sent
+      // right away be completed by the old run's confirmation.
+      // (It may already have: the event can beat the HTTP reply.)
+      if (turn && turn.status === "running" && !turn.interruptAcked) {
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, this.interruptAckTimeoutMs);
+          (timer as { unref?: () => void }).unref?.();
+          turn.interruptAck = () => {
+            clearTimeout(timer);
+            resolve();
+          };
+        });
+      }
+      if (!turn || this.openTurn(session) === turn) this.settleOpenTurn(session, "interrupted", "Interrupted.");
     });
 
   async awaitTurn(threadId: ThreadId, turnId: TurnId, signal?: AbortSignal): Promise<OpenCodeTurnOutcome> {
@@ -668,7 +975,8 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
           });
         }
         const connection = await this.connectionFor(session);
-        await connection.replyToQuestion(parked.nativeId, answersFor({}, parked.detail));
+        // Cancelling the form is how v2 says "no answer"; a reply with none is invalid.
+        await connection.rejectQuestion(session.nativeSessionId, parked.nativeId);
         session.parked.delete(requestId);
         this.publish({ type: "user-input.request.resolved", provider: this.provider, threadId, requestId });
         return;
@@ -684,7 +992,7 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
         : decision.kind === "acceptForSession"
           ? ("always" as const)
           : ("reject" as const);
-      await connection.replyToPermission(parked.nativeId, reply);
+      await connection.replyToPermission(session.nativeSessionId, parked.nativeId, reply);
       session.parked.delete(requestId);
       this.publish({ type: "permission.request.resolved", provider: this.provider, threadId, requestId });
     });
@@ -708,7 +1016,7 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
         });
       }
       const connection = await this.connectionFor(session);
-      await connection.replyToQuestion(parked.nativeId, answersFor(answers, parked.detail));
+      await connection.replyToQuestion(session.nativeSessionId, parked.nativeId, answersFor(answers, parked.detail));
       session.parked.delete(requestId);
       this.publish({ type: "user-input.request.resolved", provider: this.provider, threadId, requestId });
     });
@@ -777,8 +1085,16 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
         });
       }
       const forkPoint = prompts[prompts.length - numTurns];
+      const previous = session.applied;
       const forked = await connection.forkSession(session.nativeSessionId, forkPoint);
       session.nativeSessionId = forked.sessionID;
+      // The fork copies the session's state (instructions included); what the
+      // server does not report about it is what it was.
+      session.applied = {
+        model: forked.model ?? previous.model,
+        agent: forked.agent ?? previous.agent,
+        instructions: previous.instructions,
+      };
       return await Effect.runPromise(this.readThread(threadId));
     });
 
@@ -794,6 +1110,7 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
         this.pumps.clear();
         const connections = [...this.connections.values()];
         this.connections.clear();
+        this.liveConnections.clear();
         for (const pending of connections) {
           await pending.then((connection) => connection.dispose()).catch(() => undefined);
         }
@@ -803,24 +1120,53 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
 
   // -- event pump ----------------------------------------------------------
 
-  private async startPump(key: string, connection: OpencodeServerConnection): Promise<void> {
-    if (this.pumps.has(key)) return;
+  /**
+   * The one event pump per server, demuxed by session. Resolves once the
+   * subscription is live (v2 replays nothing, so nothing may be sent before
+   * that), never rejects. A pump that ends without being stopped fails the
+   * turns open on its server — their answers can no longer arrive — and the
+   * next call to the server starts a fresh one.
+   */
+  private ensurePump(key: string, connection: OpencodeServerConnection): Promise<void> {
+    const existing = this.pumps.get(key);
+    if (existing) return existing.ready;
     const controller = new AbortController();
-    const done = (async () => {
+    let markReady: () => void = () => undefined;
+    const ready = new Promise<void>((resolve) => {
+      markReady = resolve;
+    });
+    const entry = { controller, ready, done: Promise.resolve() };
+    this.pumps.set(key, entry);
+    entry.done = (async () => {
       try {
         const subscription = await connection.subscribeEvents({ signal: controller.signal });
+        markReady();
+        // Enqueue only: the shared iterator waits for this loop, and a
+        // subscriber that falls behind is cut off, so handlers never await.
         for await (const event of subscription.stream) {
           if (controller.signal.aborted) break;
           this.onServerEvent(event, key);
         }
-      } catch {
-        // Abort or a dropped SSE stream ends the pump; turns already
-        // running stay running until idle/error or an explicit interrupt.
+        if (!controller.signal.aborted) this.onPumpLost(key, "the stream ended");
+      } catch (cause) {
+        if (!controller.signal.aborted) this.onPumpLost(key, cause instanceof Error ? cause.message : String(cause));
+      } finally {
+        markReady();
+        if (this.pumps.get(key) === entry) this.pumps.delete(key);
       }
     })();
-    this.pumps.set(key, { controller, done });
-    await done.catch(() => undefined);
-    if (this.pumps.get(key)?.controller === controller) this.pumps.delete(key);
+    return ready;
+  }
+
+  private onPumpLost(key: string, reason: string): void {
+    this.failServerTurns(key, `Lost the OpenCode event stream (${reason.slice(0, 200)}).`);
+    // A server whose stream died is not trusted again: the next call starts a fresh one.
+    const connection = this.liveConnections.get(key);
+    if (connection) this.dropConnection(key, connection, `event stream lost: ${reason}`);
+  }
+
+  private failServerTurns(key: string, message: string): void {
+    this.onServerError(key, { type: "session.error", properties: { error: { message } } });
   }
 
   private sessionForNative(nativeSessionId: string): OpenCodeSession | null {
@@ -833,16 +1179,21 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
   private onServerEvent(event: OpencodeSubscribedEvent, serverKey: string): void {
     const nativeSessionId = asString(event.properties.sessionID);
     if (!nativeSessionId) {
-      // The server also publishes `session.error` with no session attached
-      // — plugin install/resolution/compatibility failures and instance
-      // bootstrap faults (upstream `publishPluginError`). Dropping those
-      // strands every turn on that server until the stall watchdog fires,
-      // ten minutes later, with nothing to show for it.
+      // A fault with no session attached: v2's `location.shutdown`, or a
+      // lost event stream (both arrive as `session.error`, see `translate.ts`
+      // and `ensurePump`). Dropping those strands every turn on that server
+      // until the stall watchdog fires, ten minutes later, with nothing to
+      // show for it.
       if (event.type === "session.error") this.onServerError(serverKey, event);
       return;
     }
     const session = this.sessionForNative(nativeSessionId);
-    if (!session) return;
+    if (!session) {
+      this.onChildEvent(nativeSessionId, event, serverKey);
+      return;
+    }
+    const active = this.openTurn(session);
+    if (active) active.lastActivityAt = Date.now();
     switch (event.type) {
       case "message.part.updated":
         this.onPartUpdated(session, event);
@@ -862,6 +1213,9 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
         break;
       case "session.idle":
         this.onSessionIdle(session);
+        break;
+      case "session.interrupted":
+        this.onSessionInterrupted(session, event);
         break;
       case "session.error":
         this.onSessionError(session, event);
@@ -942,12 +1296,133 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
         tool,
         raw: part,
       });
+      if (tool === "subagent") this.onSubagentCall(session, turn.id, part);
     }
   }
+
+  /**
+   * OpenCode's `subagent` tool runs a child session: a native subagent. Its
+   * first progress update names the child (`metadata.sessionID`). A
+   * foreground call ends with the child's report as its result; a
+   * background call returns at launch, so its child's own idle ends it.
+   */
+  private onSubagentCall(session: OpenCodeSession, turnId: TurnId, part: Record<string, unknown>): void {
+    const state = asRecord(part.state) ?? {};
+    const childId = asString(asRecord(state.metadata)?.sessionID);
+    const input = asRecord(state.input) ?? {};
+    const status = asString(state.status);
+    const finished = status === "completed" || status === "error";
+    if (!childId) return;
+    let child = this.children.get(childId);
+    if (!child) {
+      child = {
+        parent: session,
+        agentType: asString(input.agent) ?? "subagent",
+        description: asString(input.description),
+        background: input.background === true,
+        stopped: false,
+      };
+      this.children.set(childId, child);
+      this.publishSubagent(child, childId, turnId, "started", null);
+    }
+    if (finished && !child.background && !child.stopped) {
+      child.stopped = true;
+      this.publishSubagent(child, childId, turnId, "stopped", status === "completed" ? subagentReport(asString(state.output)) : null);
+    }
+  }
+
+  /**
+   * An event from a session no thread owns. A subagent's own prompts are
+   * answered here — nobody sees them, so left alone they would hang the
+   * child and the call waiting on it. Its ending is news.
+   */
+  private onChildEvent(childId: string, event: OpencodeSubscribedEvent, serverKey: string): void {
+    if (event.type === "permission.asked" || event.type === "question.asked") {
+      void this.answerChildRequest(childId, event, serverKey);
+      return;
+    }
+    const child = this.children.get(childId);
+    if (!child || child.stopped || !child.background) return;
+    const ended =
+      event.type === "session.idle" ||
+      event.type === "session.error" ||
+      (event.type === "session.interrupted" && event.properties.pendingInbox !== true);
+    if (!ended) return;
+    child.stopped = true;
+    const turnId = this.openTurn(child.parent)?.id ?? null;
+    if (event.type !== "session.idle") {
+      this.publishSubagent(child, childId, turnId, "stopped", null);
+      return;
+    }
+    // Its report is its last word; best effort, the stop is news either way.
+    void this.connectionFor(child.parent)
+      .then((connection) => connection.sessionMessages(childId, { tail: IDLE_READ_ITEMS }))
+      .then((messages) => lastAssistantText(messages))
+      .catch(() => null)
+      .then((report) => this.publishSubagent(child, childId, turnId, "stopped", report));
+  }
+
+  /**
+   * Subagents run with full access, always: a permission is allowed (once —
+   * never saved as a project rule), and a question, which no one could
+   * see, is dismissed so the child carries on without it. Only a child of
+   * one of this driver's sessions: a shared server runs other clients'
+   * sessions too. A child seen before its call named it is looked up.
+   */
+  private async answerChildRequest(childId: string, event: OpencodeSubscribedEvent, serverKey: string): Promise<void> {
+    const requestId = asString(event.properties.id);
+    if (!requestId) return;
+    const connection = this.liveConnections.get(serverKey);
+    if (!connection) return;
+    try {
+      if (!this.children.has(childId)) {
+        const parentId = (await connection.getSession(childId))?.parentID;
+        if (!parentId || !this.sessionForNative(parentId)) return;
+      }
+      if (event.type === "permission.asked") await connection.replyToPermission(childId, requestId, "once");
+      else await connection.rejectQuestion(childId, requestId);
+    } catch {
+      // Best effort: the child's own call fails or times out as it would have.
+    }
+  }
+
+  private publishSubagent(child: OpenCodeChild, agentId: string, turnId: TurnId | null, status: "started" | "stopped", lastMessage: string | null): void {
+    this.publish({
+      type: "subagent.updated",
+      provider: this.provider,
+      threadId: child.parent.threadId,
+      turnId,
+      agentId,
+      agentType: child.agentType,
+      status,
+      lastMessage,
+      ...(status === "started" ? { description: child.description } : {}),
+    });
+  }
+
+  /** A child session's conversation, for the subagent view. */
+  readonly subagentHistory = async (threadId: ThreadId, agentId: string): Promise<readonly SubagentHistoryItem[] | null> => {
+    const session = this.sessions.get(threadId);
+    if (!session || session.closed) return null;
+    const connection = await this.connectionFor(session);
+    const child = await connection.getSession(agentId).catch(() => null);
+    // Only this thread's own subagents: a child of its session.
+    if (!child || child.parentID !== session.nativeSessionId) return null;
+    return subagentHistoryItems(await connection.sessionMessages(agentId));
+  };
 
   private onPermissionAsked(session: OpenCodeSession, event: OpencodeSubscribedEvent): void {
     const nativeId = asString(event.properties.id);
     if (!nativeId || session.parked.has(nativeId)) return;
+    if (session.runtimeMode === "full-access") {
+      // Full access means no prompts. v2 still asks by default for paths
+      // outside the project and for `.env` reads; allow them once, never
+      // saving a project rule. A configured `deny` never reaches here.
+      void this.connectionFor(session)
+        .then((connection) => connection.replyToPermission(session.nativeSessionId, nativeId, "once"))
+        .catch(() => undefined);
+      return;
+    }
     const permission = asString(event.properties.permission) ?? "tool";
     session.parked.set(nativeId, {
       threadId: session.threadId,
@@ -960,7 +1435,7 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
       provider: this.provider,
       threadId: session.threadId,
       requestId: nativeId,
-      raw: event.properties,
+      raw: { ...event.properties, toolName: permission },
     });
   }
 
@@ -995,14 +1470,50 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
     });
   }
 
+  /**
+   * `session.execution.interrupted`. Our own interrupt is acknowledged, always.
+   * Otherwise the server stopped the run itself: for `inactivity` and
+   * `superseded` that is a failure, never a completed turn; any other reason
+   * (a dismissed form's cancel, a shutdown) ends the turn like a finished run
+   * — unless a steer is still queued, whose run will settle it.
+   */
+  private onSessionInterrupted(session: OpenCodeSession, event: OpencodeSubscribedEvent): void {
+    const turn = this.openTurn(session);
+    if (!turn) return;
+    if (turn.interrupting) {
+      turn.interruptAcked = true;
+      turn.interruptAck?.();
+      return;
+    }
+    const reason = asString(event.properties.reason);
+    if (reason === "inactivity" || reason === "superseded") {
+      this.settleOpenTurn(
+        session,
+        "failed",
+        reason === "inactivity"
+          ? "OpenCode stopped the run after a period of inactivity."
+          : "OpenCode replaced this run with another prompt on the same session.",
+      );
+      return;
+    }
+    if (event.properties.pendingInbox === true) return;
+    this.onSessionIdle(session);
+  }
+
   private onSessionIdle(session: OpenCodeSession): void {
     const turn = this.openTurn(session);
     if (!turn) return;
+    if (turn.interrupting) {
+      turn.interruptAcked = true;
+      turn.interruptAck?.();
+      return;
+    }
     let settle = true;
     // Best-effort usage: read the latest assistant message tokens off the
     // server. Failures stay silent — usage is advisory, never load-bearing.
     void this.connectionFor(session)
-      .then((connection) => connection.sessionMessages(session.nativeSessionId))
+      // The newest items are all this reads: the last reply's usage and whether the last prompt is answered.
+      .then((connection) => connection.sessionMessages(session.nativeSessionId, { tail: IDLE_READ_ITEMS }))
       .then(async (messages) => {
         // A steer that landed as the loop was finishing starts a second run
         // (and a second idle). The turn is over only once its latest user
@@ -1031,11 +1542,11 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
   }
 
   /**
-   * Mid-turn steering. OpenCode's prompt loop runs until the last assistant
-   * message answers the *latest* user message (upstream `session/prompt.ts`
-   * `runLoop`), and a prompt sent to a busy session joins the running loop
-   * (`SessionRunState.ensureRunning`). So a second `promptAsync` is taken
-   * up at the next step boundary of the same run — no restart.
+   * Mid-turn steering. A prompt sent to a busy v2 session is delivered as
+   * `steer` (the default) and taken up at the next step boundary of the same
+   * run — no restart. If it lands as the run finishes, the run ends and a
+   * second one delivers it; the translator holds the idle until nothing is
+   * queued, so the turn still settles once.
    */
   readonly steerTurn = (threadId: ThreadId, text: string): Effect.Effect<void, CliError> =>
     this.attempt("OPENCODE_STEER_FAILED", `Could not steer the turn on thread ${threadId}`, async () => {
@@ -1046,21 +1557,13 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
           details: { threadId },
         });
       }
-      const model = session.modelSlug
-        ? parseOpencodeModel({ instanceId: session.instanceId, model: session.modelSlug }, session.instanceId)
-        : null;
       const messageID = newOpencodeMessageId();
       // Registered before the send so no echoed part is read as answer text.
       turn.steerMessageIds.add(messageID);
       const connection = await this.connectionFor(session);
       try {
-        await connection.promptAsync({
-          sessionID: session.nativeSessionId,
-          messageID,
-          ...(model ? { model } : {}),
-          ...this.promptExtras(session),
-          parts: [{ type: "text", text }],
-        });
+        // The session's model, agent and instructions are already those of the running turn.
+        await connection.prompt({ sessionID: session.nativeSessionId, messageID, text });
       } catch (cause) {
         turn.steerMessageIds.delete(messageID);
         throw cause;
@@ -1094,6 +1597,7 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
     const open = this.openTurn(session);
     if (open) {
       this.clearStallTimer(open.id);
+      open.interruptAck?.();
       open.status = status;
       open.error = status === "completed" ? null : detail;
       if (status !== "completed") open.text = open.text || detail;
@@ -1124,7 +1628,7 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
    * followed by zero events, where the sync endpoint 500s). Without
    * this the turn reads `running` forever.
    */
-  private armStallTimer(session: OpenCodeSession, turn: OpenCodeTurn): void {
+  private armStallTimer(session: OpenCodeSession, turn: OpenCodeTurn, delayMs = this.stallTimeoutMs): void {
     this.clearStallTimer(turn.id);
     const timer = setTimeout(() => {
       this.stallTimers.delete(turn.id);
@@ -1132,13 +1636,19 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
       if (!current || current.closed) return;
       const open = current.turns.get(turn.id);
       if (!open || open.status !== "running") return;
+      // Any event since the timer was armed is proof of life: wait out the rest of the silence budget.
+      const silentFor = Date.now() - open.lastActivityAt;
+      if (silentFor < this.stallTimeoutMs) {
+        this.armStallTimer(current, open, this.stallTimeoutMs - silentFor);
+        return;
+      }
       this.settleOpenTurn(
         current,
         "failed",
         `No response from the provider for ${Math.round(this.stallTimeoutMs / 60000)} minutes — ` +
           "the turn was failed. Check authentication and network, then retry.",
       );
-    }, this.stallTimeoutMs);
+    }, delayMs);
     (timer as { unref?: () => void }).unref?.();
     this.stallTimers.set(turn.id, timer);
   }
@@ -1151,8 +1661,8 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
     for (const request of parked) {
       try {
         connection = connection ?? (await this.connectionFor(session));
-        if (request.kind === "permission") await connection.replyToPermission(request.nativeId, "reject");
-        else await connection.rejectQuestion(request.nativeId);
+        if (request.kind === "permission") await connection.replyToPermission(session.nativeSessionId, request.nativeId, "reject");
+        else await connection.rejectQuestion(session.nativeSessionId, request.nativeId);
       } catch {
         // Best effort: abort still proceeds below.
       }
@@ -1176,15 +1686,42 @@ export class OpenCodeDriver implements ProviderAdapter<CliError> {
 }
 
 /**
- * Map our flat `Record<question, answer>` onto the server's per-question
- * `string[][]`: match by question header, else by `q<index>`, else leave
- * that question unanswered (empty selection).
+ * Split a multiselect answer back into its values. The panel joins them with
+ * `", "`; a value that itself contains `", "` survives when it is one of the
+ * field's option labels (longest match first), else each piece stands alone.
+ */
+function splitMultiselect(joined: string, labels: readonly string[]): string[] {
+  const tokens = joined.split(", ");
+  const known = new Set(labels);
+  const values: string[] = [];
+  let at = 0;
+  while (at < tokens.length) {
+    let taken = 1;
+    for (let end = tokens.length; end > at + 1; end -= 1) {
+      if (known.has(tokens.slice(at, end).join(", "))) {
+        taken = end - at;
+        break;
+      }
+    }
+    values.push(tokens.slice(at, at + taken).join(", "));
+    at += taken;
+  }
+  return values.filter((value) => value.length > 0);
+}
+
+/**
+ * Map the panel's flat `Record<question id, answer>` onto the server's
+ * per-question `string[][]`. The panel keys each answer by the question's
+ * own text (`requestactivity.ts`: `id` is the text, `"<text> (n)"` for a
+ * repeat), so that comes first; then the header, then `q<index>`. A question
+ * with no answer gets an empty selection. A multiselect answer arrives joined
+ * with `", "` and is split back into its values.
  */
 export function answersFor(
   answers: ProviderUserInputAnswers,
   questionsJson: string,
 ): ReadonlyArray<ReadonlyArray<string>> {
-  let questions: ReadonlyArray<{ header?: unknown }>;
+  let questions: readonly unknown[];
   try {
     const parsed = JSON.parse(questionsJson) as unknown;
     questions = Array.isArray(parsed) ? parsed : [];
@@ -1192,10 +1729,24 @@ export function answersFor(
     questions = [];
   }
   if (questions.length === 0) return Object.values(answers).map((value) => [value]);
-  return questions.map((question, index) => {
-    const header = typeof question?.header === "string" ? question.header : `q${index}`;
-    const direct = answers[header] ?? answers[`q${index}`];
-    return direct === undefined ? [] : [direct];
+  const seen = new Set<string>();
+  return questions.map((entry, index) => {
+    const question = asRecord(entry);
+    // Mirrors `normalizeQuestions` in requestactivity.ts, id for id.
+    const text = question ? (asString(question.question) ?? asString(question.prompt) ?? asString(question.text)) : null;
+    const id = text === null ? null : seen.has(text) ? `${text} (${index + 1})` : text;
+    if (text !== null) seen.add(text);
+    const key = [id, question ? asString(question.header) : null, `q${index}`].find(
+      (candidate) => candidate !== null && answers[candidate] !== undefined,
+    );
+    const answer = key === undefined || key === null ? undefined : answers[key];
+    if (answer === undefined || answer === "") return [];
+    if (question?.multiple !== true && question?.multiSelect !== true) return [answer];
+    const labels = (Array.isArray(question.options) ? question.options : []).flatMap((option) => {
+      const record = asRecord(option);
+      return [asString(record?.label), asString(record?.value)].filter((label): label is string => label !== null);
+    });
+    return splitMultiselect(answer, labels);
   });
 }
 
@@ -1206,7 +1757,8 @@ function latestAssistantUsage(
     const info = messages[index]?.info;
     if (!info || info.role !== "assistant") continue;
     const tokens = asRecord(info.tokens);
-    if (!tokens) return null;
+    // A step cut short reports no tokens; the reply before it still does.
+    if (!tokens) continue;
     const cache = asRecord(tokens.cache);
     const number = (value: unknown): number => (typeof value === "number" && Number.isFinite(value) ? value : 0);
     return {

@@ -58,6 +58,7 @@ import { toThreadEnvelope } from "./project.js";
 import type { ThreadStore } from "./store.js";
 import { readThread } from "./threads.js";
 import {
+  adoptProviderTitle,
   createThread,
   deleteThread,
   delegationForChild,
@@ -70,6 +71,7 @@ import {
   promoteDueScheduledTurn,
   sendTurn,
   turnPrompt,
+  updateThreadMeta,
   type SendTurnResult,
 } from "./threads.js";
 import { armScheduledTurn } from "./schedule.js";
@@ -1199,6 +1201,39 @@ async function deliverTaskNotifications(ctx: OperationContext, parentThreadId: s
   });
 }
 
+/**
+ * Rename a thread, or have its title regenerated. A name is pushed to the
+ * provider's own session title too where the provider can take it (best
+ * effort: a failed push never fails the rename). Regeneration is the
+ * provider's own (Claude's `/rename`, OpenCode's title agent) where it has
+ * one, else moxen's seed from the first message; moxen never asks a model
+ * for a title itself.
+ */
+export async function retitleThread(
+  ctx: OperationContext,
+  threadId: string,
+  change: { readonly title: string } | { readonly regenerate: true },
+): Promise<void> {
+  const thread = await ctx.store.readThreadRecord(threadId);
+  if (thread === null) {
+    await updateThreadMeta(ctx.store, threadId, "title" in change ? { title: change.title } : { regenerateTitle: true });
+    return;
+  }
+  const driver = ctx.driverFor(thread.modelSelection.instanceId);
+  const cursor = thread.providerSessions?.[driverKey(thread.modelSelection.instanceId)] ?? null;
+  const cwd = thread.env.path.trim() || process.cwd();
+  if ("title" in change) {
+    const updated = await updateThreadMeta(ctx.store, threadId, { title: change.title });
+    if (cursor !== null) await driver.renameSession?.(cursor, cwd, updated.title).catch(() => undefined);
+    return;
+  }
+  if (cursor !== null && driver.regenerateSessionTitle) {
+    const title = await driver.regenerateSessionTitle(cursor, cwd).catch(() => null);
+    if (title && (await adoptProviderTitle(ctx.store, threadId, title, { force: true })) !== null) return;
+  }
+  await updateThreadMeta(ctx.store, threadId, { regenerateTitle: true });
+}
+
 /** Whether a steer would reach the parent's live provider turn from this process. */
 async function canSteer(ctx: OperationContext, thread: StoredThread): Promise<boolean> {
   const driver = ctx.driverFor(thread.modelSelection.instanceId);
@@ -1353,6 +1388,7 @@ export async function delegate(ctx: OperationContext, request: DelegateRequest):
       id: childThreadId,
       projectId: parent.projectId,
       title,
+      ...(request.title?.trim() ? { titleSource: "user" as const } : {}),
       modelSelection,
       runtimeMode,
       interactionMode,
@@ -1485,5 +1521,44 @@ export async function cancelTask(ctx: OperationContext, rawParentThreadId: strin
     interruptRequested: true,
     stateAfter: state,
   };
+}
+
+/** One checklist item, as the tasks panel reads it (`turn.plan.updated`'s `plan`). */
+export interface ChecklistStep {
+  readonly step: string;
+  readonly status: "pending" | "in_progress" | "completed";
+}
+
+export interface RecordedChecklist {
+  readonly threadId: string;
+  /** The turn it was recorded on: the running one, else the latest. Null before any turn. */
+  readonly turnId: string | null;
+  readonly steps: number;
+}
+
+/**
+ * An agent's checklist, for a provider that keeps none of its own (OpenCode
+ * v2 has no `todowrite`): recorded as the thread's plan the way a native
+ * checklist is, so the tasks panel shows it. The whole list each time.
+ */
+export async function recordChecklist(
+  ctx: OperationContext,
+  rawThreadId: string,
+  plan: readonly ChecklistStep[],
+): Promise<RecordedChecklist> {
+  const thread = await inspectThread(ctx.store, rawThreadId);
+  const turns = await ctx.store.readTurns(thread.id);
+  const turn = [...turns].reverse().find((entry) => entry.status === "running") ?? turns.at(-1) ?? null;
+  await ctx.store.appendLedger(thread.id, "activity", {
+    id: ctx.store.newId(),
+    threadId: thread.id,
+    turnId: turn?.id ?? null,
+    kind: "turn.plan.updated",
+    summary: "Plan updated",
+    payload: { plan: plan.map((entry) => ({ step: entry.step, status: entry.status })) },
+    createdAt: ctx.store.nowIso(),
+  });
+  ctx.store.emit(thread.id, "activity");
+  return { threadId: thread.id, turnId: turn?.id ?? null, steps: plan.length };
 }
 

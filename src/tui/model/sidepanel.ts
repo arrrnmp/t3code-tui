@@ -65,11 +65,13 @@ export interface NativeSubagentRow {
   stoppedAt: string | null;
 }
 
-const AGENT_TOOLS = new Set(["Agent", "Task"]);
+/** Claude's Agent tool (once Task), and OpenCode's `subagent`. */
+const AGENT_TOOLS = new Set(["Agent", "Task", "subagent"]);
 
 /**
- * The provider's own subagents in this thread (Claude's Agent tool), latest
- * state per agent, newest first.
+ * The provider's own subagents in this thread (Claude's Agent tool,
+ * OpenCode's `subagent`), latest state per agent, newest first. OpenCode
+ * names the description as the subagent starts; Claude's is paired below.
  *
  * The start hook names the agent type but not the call that spawned it, so
  * each subagent is paired with the Agent calls of its turn and type in
@@ -102,7 +104,8 @@ export function nativeSubagents(activities: readonly ActivityEnvelope[]): Native
       const data = (payload.data ?? {}) as Record<string, unknown>;
       if (typeof data.tool !== "string" || !AGENT_TOOLS.has(data.tool) || typeof payload.toolCallId !== "string") continue;
       const input = (((data.state ?? {}) as Record<string, unknown>).input ?? {}) as Record<string, unknown>;
-      const type = typeof input.subagent_type === "string" && input.subagent_type ? input.subagent_type : "general-purpose";
+      const named = typeof input.subagent_type === "string" && input.subagent_type ? input.subagent_type : typeof input.agent === "string" && input.agent ? input.agent : null;
+      const type = named ?? "general-purpose";
       const key = `${activity.turnId ?? ""}|${type}`;
       const byCall = calls.get(key) ?? new Map<string, string | null>();
       const description = typeof input.description === "string" && input.description.trim() ? input.description.trim() : null;
@@ -119,8 +122,8 @@ export function nativeSubagents(activities: readonly ActivityEnvelope[]): Native
     // the driver learned to drop them.
     if (previous === undefined && payload.status !== "started") continue;
     const agentType = typeof payload.agentType === "string" ? payload.agentType : (previous?.agentType ?? "agent");
-    let description = previous?.description ?? null;
-    if (previous === undefined) {
+    let description = previous?.description ?? (typeof payload.description === "string" && payload.description.trim() ? payload.description.trim() : null);
+    if (previous === undefined && description === null) {
       const key = `${activity.turnId ?? ""}|${agentType}`;
       const index = claimed.get(key) ?? 0;
       claimed.set(key, index + 1);

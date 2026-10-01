@@ -37,9 +37,11 @@ import type {
   ProviderRuntimeEvent,
   ProviderSendTurnInput,
   ProviderSessionStartInput,
+  ProviderSessionTitles,
   ProviderUserInputAnswers,
   SideAnswer,
   SideQuestionInput,
+  SubagentHistoryItem,
 } from "../providers/spi.js";
 import { CliError } from "../errors.js";
 import type { InteractionMode, ModelSelection, ProvidersConfig, RuntimeMode } from "../types.js";
@@ -49,7 +51,7 @@ import {
   pinCheckpointRef,
   pruneCheckpointRefs,
 } from "../checkpoints/git.js";
-import { completeTurn, failTurn, holdPromotedTurn, interruptTurn, openTurn, startBackgroundTurn, turnPrompt, updateThreadMeta } from "./threads.js";
+import { adoptProviderTitle, completeTurn, failTurn, holdPromotedTurn, interruptTurn, openTurn, startBackgroundTurn, turnPrompt, updateThreadMeta } from "./threads.js";
 import { recordNativeSubagent } from "./subagents.js";
 import { ThreadStore } from "./store.js";
 import { toolActivityRow, type ToolRuntimeEvent } from "./toolactivity.js";
@@ -57,7 +59,7 @@ import { userInputActivityRow, type UserInputRuntimeEvent } from "./requestactiv
 import type { StoredAttachment, StoredThread, TurnUsage } from "./types.js";
 
 /** Structural driver surface the runner needs. All four drivers satisfy it. */
-export interface TurnDriver {
+export interface TurnDriver extends ProviderSessionTitles {
   hasSession(threadId: string): Effect.Effect<boolean, CliError>;
   startSession(input: ProviderSessionStartInput): Effect.Effect<unknown, CliError>;
   sendTurn(input: ProviderSendTurnInput): Effect.Effect<{ threadId: string; turnId: string }, CliError>;
@@ -91,6 +93,12 @@ export interface TurnDriver {
   steerTurn?(threadId: string, text: string): Effect.Effect<void, CliError>;
   /** Skills and slash commands the provider resolves for `workingDirectory`. */
   skillInventory?(workingDirectory: string): Promise<SkillInventory>;
+  /**
+   * A native subagent's conversation, for providers that keep it in their
+   * own session store (OpenCode's child sessions). Null when it cannot be
+   * read right now.
+   */
+  subagentHistory?(threadId: string, agentId: string): Promise<readonly SubagentHistoryItem[] | null>;
   /** Background work running in the thread's live session (Claude: commands, Monitor watches, subagents). */
   backgroundTasks?(threadId: string): readonly BackgroundTaskSummary[];
   stopBackgroundTask?(threadId: string, taskId: string): Effect.Effect<void, CliError>;
@@ -436,6 +444,7 @@ function subagentPayload(event: Extract<ProviderRuntimeEvent, { type: "subagent.
     agentType: event.agentType,
     status: event.status,
     lastMessage: event.lastMessage,
+    ...(event.description ? { description: event.description } : {}),
   };
 }
 
@@ -578,6 +587,33 @@ async function persistResumeCursor(store: ThreadStore, driver: TurnDriver, threa
       await store.writeThreadRecord({ ...thread, providerSessions: { ...thread.providerSessions, [key]: cursor } });
     })
     .catch(() => undefined);
+}
+
+/**
+ * Adopt the provider's own session title for the thread, once per settled
+ * run (no polling). Only drivers whose provider keeps a title have
+ * `sessionTitle`; a thread the user named is left alone. Best effort.
+ */
+const TITLE_SYNC_TIMEOUT_MS = 5_000;
+
+async function syncProviderTitle(store: ThreadStore, driver: TurnDriver, threadId: string, cwd: string | null): Promise<void> {
+  if (!driver.sessionTitle) return;
+  try {
+    const thread = await store.readThreadRecord(threadId);
+    const cursor = driver.resumeCursor?.(threadId) ?? null;
+    if (thread === null || thread.titleSource === "user" || cursor === null) return;
+    // Bounded like the context reading: a slow provider costs the title, never the caller awaiting the run.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const title = await Promise.race([
+      driver.sessionTitle(cursor, cwd ?? (thread.env.path.trim() || process.cwd())),
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), TITLE_SYNC_TIMEOUT_MS);
+      }),
+    ]).finally(() => clearTimeout(timer));
+    if (title) await adoptProviderTitle(store, threadId, title);
+  } catch {
+    // The title is a nicety; the turn's outcome is already recorded.
+  }
 }
 
 /**
@@ -912,6 +948,7 @@ async function runExecuteTurn(args: ExecuteTurnArgs): Promise<void> {
     // Again at the end: some providers only report the handle once the
     // first reply lands (Claude's `init` arrives with it).
     await persistResumeCursor(store, driver, threadId);
+    await syncProviderTitle(store, driver, threadId, cwd);
   }
 }
 

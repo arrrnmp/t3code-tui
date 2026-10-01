@@ -392,7 +392,7 @@ describe("DirectConnection subscriptions", () => {
           threadId: "thread-stream",
           message: { text: "hi" },
         });
-        await waitFor("prompt on the wire", async () => transport.servers[0]?.callsTo("session.promptAsync").length === 1);
+        await waitFor("prompt on the wire", async () => transport.servers[0]?.callsTo("session.prompt").length === 1);
         // The subscription bridge attaches on the thread poll interval;
         // pushed events have no replay, so let it attach first. (In
         // production the snapshot polls converge anything missed here.)
@@ -445,7 +445,7 @@ describe("DirectConnection subscriptions", () => {
           threadId: "thread-tools",
           message: { text: "run it" },
         });
-        await waitFor("prompt on the wire", async () => transport.servers[0]?.callsTo("session.promptAsync").length === 1);
+        await waitFor("prompt on the wire", async () => transport.servers[0]?.callsTo("session.prompt").length === 1);
         await new Promise((resolve) => setTimeout(resolve, 250));
         const part = (status: string) => ({
           type: "message.part.updated" as const,

@@ -5,8 +5,15 @@ import { workingMs, type TurnWaits, type WaitSpan } from "./waits.js";
 export interface TurnGroup {
   id: string;
   turnId: string | null;
-  /** Prompts that opened the turn. */
+  /** Prompts that opened the turn, then any sent while it ran (`nudges`). */
   prompts: TimelineEntry[];
+  /**
+   * The prompts that arrived once the turn was already working — a steer
+   * sent mid-run, a delegated task's notification. A subset of `prompts`;
+   * the expanded transcript places them where they landed in the work
+   * instead of above it.
+   */
+  nudges: TimelineEntry[];
   /** Tool calls and intermediate replies, hidden until the group is expanded. */
   work: TimelineEntry[];
   /** The finished reply that closed the turn, always shown. */
@@ -65,6 +72,7 @@ export function groupTurns(entries: readonly TimelineEntry[], waits: TurnWaits =
       id: entry.turnId ?? entry.id,
       turnId: entry.turnId,
       prompts: [],
+      nudges: [],
       work: [],
       reply: null,
       live: null,
@@ -116,6 +124,7 @@ export function groupTurns(entries: readonly TimelineEntry[], waits: TurnWaits =
         current = open(entry);
       } else {
         demoteStaleReply(current, entry);
+        if (current.work.length > 0 || current.reply !== null || current.live !== null) current.nudges.push(entry);
       }
       current.prompts.push(entry);
       continue;
@@ -394,6 +403,14 @@ export interface WorkSegment {
    * no message has landed after these tools yet.
    */
   message: TimelineEntry | null;
+  /**
+   * Folds behind a one-line summary. Summaries are there to backtrack
+   * through the messages the agent wrote while it worked, so only a turn
+   * with at least one such message folds its segments; one that only ran
+   * tools before its reply shows them flat — the Worked fold already hid
+   * them once, a second click to reach them says nothing.
+   */
+  folds: boolean;
 }
 
 /**
@@ -409,7 +426,7 @@ export function segmentWork(
   const segments: WorkSegment[] = [];
   let tools: TimelineEntry[] = [];
   const flush = (message: TimelineEntry | null): void => {
-    if (tools.length > 0 || message !== null) segments.push({ tools, message });
+    if (tools.length > 0 || message !== null) segments.push({ tools, message, folds: false });
     tools = [];
   };
   for (const entry of work) {
@@ -423,6 +440,8 @@ export function segmentWork(
       last.message = closing;
     }
   }
+  const interim = segments.some((segment) => segment.message !== null && segment.message !== closing);
+  for (const segment of segments) segment.folds = interim && segment.message !== null;
   return segments;
 }
 

@@ -116,6 +116,26 @@ describe("nativeSubagents", () => {
       a4: null,
     });
   });
+
+  it("lists OpenCode's subagents, named by the description they start with", () => {
+    const at = "2026-09-25T09:00:00.000Z";
+    const row = (id: string, payload: Record<string, unknown>) =>
+      ({ id, kind: "subagent", summary: "", tone: "info", turnId: "t", createdAt: at, payload }) as unknown as ActivityEnvelope;
+    const rows = nativeSubagents([
+      {
+        id: "0",
+        kind: "tool-call.started",
+        summary: "subagent",
+        tone: "tool",
+        turnId: "t",
+        createdAt: at,
+        payload: { toolCallId: "call_sub", data: { tool: "subagent", state: { input: { agent: "explore", description: "From the call" } } } },
+      } as unknown as ActivityEnvelope,
+      row("1", { agentId: "ses_child", agentType: "explore", status: "started", description: "Find one file in /tmp" }),
+      row("2", { agentId: "ses_child", agentType: "explore", status: "stopped", lastMessage: "Found /tmp/x" }),
+    ]);
+    expect(rows).toMatchObject([{ agentId: "ses_child", agentType: "explore", description: "Find one file in /tmp", running: false, lastMessage: "Found /tmp/x" }]);
+  });
 });
 
 describe("contextShares", () => {

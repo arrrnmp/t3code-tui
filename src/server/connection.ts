@@ -42,6 +42,7 @@ import {
 } from "../core/forge/forge.js";
 import { toWsConfigPayload } from "./config-payload.js";
 import { MOXEN_MCP_SERVER_NAME, moxenMcpServerSpec } from "./mcp/main.js";
+import { MOXEN_CHECKLIST_ARG, MOXEN_CHECKLIST_QUERY } from "./mcp/stdio.js";
 import { startMcpHttpServer, type McpHttpServer } from "./mcp/http.js";
 import { MOXEN_MCP_INSTRUCTIONS } from "./mcp/stdio.js";
 import { callMoxenTool, MOXEN_TOOLS } from "./mcp/tools.js";
@@ -76,6 +77,7 @@ import {
   armPendingScheduledTurns,
   cancelTask,
   delegate,
+  recordChecklist,
   describeTask,
   ensureProject,
   handover,
@@ -84,6 +86,7 @@ import {
   listThreadsView,
   readThreadView,
   resolveProjectView,
+  retitleThread,
   revertThread,
   runDueScheduledTurn,
   startTurn,
@@ -193,6 +196,11 @@ export class DirectConnection implements ClientApi {
     const fallback = this.mcpHttp
       ? { name: MOXEN_MCP_SERVER_NAME, type: "http" as const, ...this.mcpHttp.specFor(threadId), alwaysLoad: true }
       : { ...this.moxenStdioFor(threadId), alwaysLoad: true };
+    // The same endpoint, also offering `todos`: for a provider with no checklist.
+    const checklist =
+      fallback.type === "http"
+        ? { ...fallback, url: `${fallback.url}?${MOXEN_CHECKLIST_QUERY}` }
+        : { ...fallback, args: [...fallback.args, MOXEN_CHECKLIST_ARG] };
     return {
       name: MOXEN_MCP_SERVER_NAME,
       type: "in-process",
@@ -200,6 +208,7 @@ export class DirectConnection implements ClientApi {
       tools: MOXEN_TOOLS,
       call: (tool, args) => callMoxenTool(this, threadId, tool, args),
       fallback,
+      checklist,
       // Delegation is what these tools are for: never behind a tool search.
       alwaysLoad: true,
     };
@@ -562,10 +571,8 @@ export class DirectConnection implements ClientApi {
         await deleteThread(await this.store(), command.threadId);
         return accepted;
       case "thread.meta.update":
-        await updateThreadMeta(await this.store(), command.threadId, {
-          ...(command.title !== undefined ? { title: command.title } : {}),
-          ...(command.regenerateTitle === true ? { regenerateTitle: true } : {}),
-        });
+        if (command.title !== undefined) await retitleThread(await this.context(), command.threadId, { title: command.title });
+        else if (command.regenerateTitle === true) await retitleThread(await this.context(), command.threadId, { regenerate: true });
         return accepted;
       case "thread.model-selection.set":
         await updateThreadMeta(await this.store(), command.threadId, { modelSelection: command.modelSelection });
@@ -590,6 +597,8 @@ export class DirectConnection implements ClientApi {
       }
       case "thread.task.cancel":
         return await cancelTask(await this.context(), command.parentThreadId, command.taskId);
+      case "thread.plan.set":
+        return await recordChecklist(await this.context(), command.threadId, command.plan);
       case "thread.background.stop": {
         const driver = await this.sessionDriver(command.threadId);
         if (!driver?.stopBackgroundTask) {
@@ -957,8 +966,12 @@ export class DirectConnection implements ClientApi {
         const usage = driver.contextUsage ? await driver.contextUsage(query.threadId).catch(() => null) : null;
         return { live: true, breakdown: usage ? { ...usage, categories: [], estimated: false } : null };
       }
-      case "thread.subagent":
-        return await subagentTranscript(await this.store(), query.threadId, query.agentId);
+      case "thread.subagent": {
+        // OpenCode keeps each subagent as a child session only its live driver can read.
+        const driver = await this.sessionDriver(query.threadId);
+        const readHistory = driver?.subagentHistory ? (agentId: string) => driver.subagentHistory!(query.threadId, agentId) : undefined;
+        return await subagentTranscript(await this.store(), query.threadId, query.agentId, readHistory);
+      }
       case "usage.limits":
         return { providers: usageLimitsSnapshot() };
       case "settings.read":

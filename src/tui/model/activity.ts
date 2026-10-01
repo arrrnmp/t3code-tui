@@ -294,7 +294,7 @@ export function activityFilePath(activity: ActivityEnvelope): string | null {
   const input = asRecord(state.input) ?? asRecord(data.input) ?? {};
   const files = Array.isArray(data.files) ? data.files : [];
   const firstFile = asString(asRecord(files[0])?.path);
-  const inputPath = asString(input.file_path) ?? asString(input.filePath);
+  const inputPath = asString(input.file_path) ?? asString(input.filePath) ?? asString(input.path);
   const title = asString(payload.title) ?? asString(activity.summary) ?? "";
   const titlePath = looksLikePath(title) ? title : null;
   return firstFile ?? inputPath ?? titlePath;
@@ -456,7 +456,9 @@ function buildFileDiff(
   // line is "added" by construction — skip the differ and report the true
   // total directly rather than the truncated count below.
   if (oldString === null) {
-    const lines = (newString ?? "").split("\n");
+    // A final newline ends the last line; it doesn't start another.
+    const content = newString ?? "";
+    const lines = (content.endsWith("\n") ? content.slice(0, -1) : content).split("\n");
     const capped = lines.length > MAX_CREATED_FILE_LINES;
     const shown = capped ? lines.slice(0, MAX_CREATED_FILE_LINES).join("\n") : (newString ?? "");
     const diff = createPatch(fileName, "", withTrailingNewline(shown), undefined, undefined, { context: 3 });
@@ -626,10 +628,41 @@ function moxenToolView(
 /** A background subagent's run, as its task reports it. */
 const SUBAGENT_OUTCOME: Record<string, string> = {
   started: "working in the background",
+  launched: "sent to the background",
   completed: "finished",
   failed: "failed",
   stopped: "stopped",
 };
+
+/**
+ * An OpenCode `subagent` call's outcome in `SUBAGENT_OUTCOME` terms. The
+ * result opens `<subagent sessionID=… state="completed">`; a background call
+ * returns at launch with nothing after it to say when the child ends.
+ * Null for anything else (Claude's rows have no `agent` input).
+ */
+function opencodeSubagentState(state: Record<string, unknown>, input: Record<string, unknown>, running: boolean): string | null {
+  if (running || asString(input.agent) === null) return null;
+  if (state.status === "failed") return "failed";
+  if (input.background === true) return "launched";
+  const said = /<subagent\b[^>]*\bstate="([a-z_]+)"/u.exec(asString(state.output) ?? "")?.[1];
+  return said === "failed" || said === "error" ? "failed" : said === "cancelled" || said === "interrupted" ? "stopped" : null;
+}
+
+/**
+ * The tools a Code Mode script calls, in order, repeats counted:
+ * `search ×3`, `moxen.delegate, read`. Catalog tools are `tools.<ns>.<name>`
+ * (`tools.opencode.*` reads as its bare name); `search` finds them. A script
+ * that calls none reads as its first line.
+ */
+function codeModeCalls(code: string): string {
+  const counts = new Map<string, number>();
+  for (const match of code.matchAll(/(?<![\w.])(tools\.[\w.]+|search)\s*\(/gu)) {
+    const name = match[1]!.replace(/^tools\./u, "").replace(/^opencode\./u, "");
+    counts.set(name, (counts.get(name) ?? 0) + 1);
+  }
+  if (counts.size === 0) return firstLine(code) ?? "";
+  return [...counts].map(([name, count]) => (count > 1 ? `${name} ×${count}` : name)).join(", ");
+}
 
 /** `mcp__linear__create_issue` → `linear: create_issue` — the raw
     double-underscore server/tool encoding reads poorly verbatim. */
@@ -723,7 +756,8 @@ export function describeActivity(activity: ActivityEnvelope): ActivityView {
     // title as a path when it actually looks like one.
     const files = Array.isArray(data.files) ? data.files : [];
     const firstFile = asString(asRecord(files[0])?.path);
-    const inputPath = asString(input.file_path) ?? asString(input.filePath);
+    // OpenCode v2's `edit`/`write` name the file `path`.
+    const inputPath = asString(input.file_path) ?? asString(input.filePath) ?? asString(input.path);
     const titlePath = looksLikePath(title) ? title : null;
     // In-flight rows ("edit" title, empty input) genuinely have no path yet;
     // completed provider-native rows recover it from the `detail` echo.
@@ -771,16 +805,19 @@ export function describeActivity(activity: ActivityEnvelope): ActivityView {
     const display = tool ?? "tool";
     const name = display.toLowerCase();
     const moxenTool = moxenToolName(display);
+    // moxen's checklist (lent to OpenCode, which has none): the tasks panel shows it.
+    if (moxenTool === "todos") return { kind: "todos", title, items: decodeTodos(input.todos), running };
     if (moxenTool !== null) return moxenToolView(moxenTool, input, jsonResult(state, payload), payload, running);
     // Claude's Agent tool: say which subagent and what for, not its whole
     // prompt (the subagent reads that; the transcript needs the gist).
-    if (name === "agent" || name === "task") {
-      const type = asString(input.subagent_type);
+    // OpenCode's `subagent` tool is the same thing: `agent` names which one.
+    if (name === "agent" || name === "task" || name === "subagent") {
+      const type = asString(input.subagent_type) ?? asString(input.agent);
       const description = asString(input.description);
       if (type !== null || description !== null) {
         // A background subagent's own run, folded in from its task rows
         // (`withSubagentState`): the call returns at launch, the work after.
-        const background = asString(payload.backgroundStatus);
+        const background = asString(payload.backgroundStatus) ?? opencodeSubagentState(state, input, running);
         const ended = background === null ? undefined : SUBAGENT_OUTCOME[background];
         const busy = background === null ? running : background === "started";
         return {
@@ -807,7 +844,10 @@ export function describeActivity(activity: ActivityEnvelope): ActivityView {
       // they render `Read(…)` until the completed row resolves — a bare
       // title like "Tool call" is never a path and must not leak in.
       const readPath =
-        asString(input.file_path) ?? asString(input.filePath) ?? (looksLikePath(title) ? title : null) ?? "…";
+        asString(input.file_path) ?? asString(input.filePath) ?? asString(input.path) ?? (looksLikePath(title) ? title : null) ?? "…";
+      // OpenCode v2's `read` lists a directory too, and says so up front.
+      const output = asString(state.output) ?? asString(payload.detail) ?? "";
+      if (readPath !== "…" && output.startsWith("Read directory ")) return { kind: "list", path: shortenPath(readPath), running };
       return {
         kind: "read",
         path: readPath === "…" ? readPath : shortenPath(readPath),
@@ -851,6 +891,14 @@ export function describeActivity(activity: ActivityEnvelope): ActivityView {
     }
     if (CHECKLIST_TOOLS.has(short)) {
       return { kind: "todos", title, items: decodeTodos(input.todos), running };
+    }
+    // OpenCode's Code Mode: a script that calls tools from its catalog. The
+    // row says which tools it reached for, not the script.
+    if (name === "execute" && asString(input.code) !== null) {
+      const calls = codeModeCalls(asString(input.code)!);
+      // A script that only updates moxen's checklist is checklist bookkeeping.
+      if (/^moxen\.todos(?: ×\d+)?$/u.test(calls)) return { kind: "todos", title: "Updated checklist", items: [], running };
+      return { kind: "tool", tool: running ? "Running code" : "Ran code", detail: calls, running };
     }
     // OpenCode's own web tools (`webfetch`/`websearch`/`mcp-websearch`) and
     // Claude's `WebFetch`/`WebSearch` normally arrive under the dedicated
