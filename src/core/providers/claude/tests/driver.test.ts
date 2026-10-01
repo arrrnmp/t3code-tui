@@ -393,7 +393,13 @@ describe("claude driver compaction, limits, rollback", () => {
   });
 
   it("rolls back via fork and validates input", async () => {
-    const api = new FakeSessionApi([historyUser("u-1", "one"), historyToolResult("tr-1"), historyUser("u-2", "two")]);
+    // The trailing `/rename` is a logged local command (native title regeneration), not a prompt.
+    const api = new FakeSessionApi([
+      historyUser("u-1", "one"),
+      historyToolResult("tr-1"),
+      historyUser("u-2", "two"),
+      historyUser("u-cmd", "<command-name>/rename</command-name>"),
+    ]);
     const transport = new FakeTransport([[initMessage()]]);
     const driver = new ClaudeDriver({ transport, sessionApi: api });
     await Effect.runPromise(driver.startSession(START));
@@ -685,5 +691,30 @@ describe("claude MCP injection", () => {
     const driver = new ClaudeDriver({ transport, sessionApi: new FakeSessionApi() });
     await Effect.runPromise(driver.startSession(START));
     expect(transport.created[0]!.options.mcpServers).toBeUndefined();
+  });
+});
+
+describe("claude driver native session titles", () => {
+  it("reads and renames the session title, and regenerates it through a bare /rename", async () => {
+    const api = new FakeSessionApi();
+    const transport = new FakeTransport([[successResult("")]]);
+    const driver = new ClaudeDriver({ transport, sessionApi: api });
+
+    expect(await driver.sessionTitle("session-1", "/work")).toBeNull();
+    await driver.renameSession("session-1", "/work", "Mine");
+    expect(api.renames).toEqual([{ sessionId: "session-1", title: "Mine", dir: "/work" }]);
+    expect(await driver.sessionTitle("session-1", "/work")).toBe("Mine");
+
+    // The CLI answers `/rename` itself and writes the new title to the session file.
+    api.titles.set("session-1", "Auto title");
+    expect(await driver.regenerateSessionTitle("session-1", "/work")).toBe("Auto title");
+    const query = transport.created[0]!;
+    expect(transport.stringPrompts).toEqual(["/rename"]);
+    expect(query.options).toMatchObject({ cwd: "/work", resume: "session-1", tools: [], maxTurns: 1 });
+    expect(query.options.forkSession).toBeUndefined();
+    expect(query.closed).toBe(true);
+
+    const failing = new ClaudeDriver({ transport: new FakeTransport([[errorResult("error_max_turns")]]), sessionApi: api });
+    await expect(failing.regenerateSessionTitle("session-1", "/work")).rejects.toThrow("could not retitle");
   });
 });

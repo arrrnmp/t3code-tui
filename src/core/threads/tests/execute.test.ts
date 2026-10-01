@@ -11,7 +11,8 @@ import { OpenCodeDriver } from "../../providers/opencode/driver.js";
 import { FakeOpencodeTransport } from "../../providers/opencode/tests/fakes.js";
 import type { ProviderRuntimeEvent } from "../../providers/spi.js";
 import { openThreadStore } from "../store.js";
-import { createThread, readThread } from "../threads.js";
+import { adoptProviderTitle, createThread, readThread } from "../threads.js";
+import { retitleThread, type OperationContext } from "../operations.js";
 import { driverForInstance, ensureDriverSession, executeTurn, watchDriverSession, type TurnDriver } from "../execute.js";
 import { recordUsageWindows, resetUsageLimitsForTests } from "../../usage/limits.js";
 
@@ -73,8 +74,8 @@ describe("executeTurn", () => {
     });
     const deadline = Date.now() + 3000;
     for (;;) {
-      if ((transport.servers[0]?.callsTo("session.promptAsync").length ?? 0) > 0) break;
-      if (Date.now() > deadline) throw new Error("promptAsync was never called");
+      if ((transport.servers[0]?.callsTo("session.prompt").length ?? 0) > 0) break;
+      if (Date.now() > deadline) throw new Error("prompt was never called");
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
     await transport.servers[0]?.push({
@@ -121,8 +122,8 @@ describe("executeTurn", () => {
     });
     const deadline = Date.now() + 3000;
     for (;;) {
-      if ((transport.servers[0]?.callsTo("session.promptAsync").length ?? 0) > 0) break;
-      if (Date.now() > deadline) throw new Error("promptAsync was never called");
+      if ((transport.servers[0]?.callsTo("session.prompt").length ?? 0) > 0) break;
+      if (Date.now() > deadline) throw new Error("prompt was never called");
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
     const toolPart = (status: string, output?: string) => ({
@@ -176,7 +177,7 @@ describe("executeTurn", () => {
       await import("../threads.js")
     ).sendTurn(store, thread.id, { prompt: "do it" });
 
-    const transport = new FakeOpencodeTransport({ failMethods: { "session.promptAsync": "nope" } });
+    const transport = new FakeOpencodeTransport({ failMethods: { "session.prompt": "nope" } });
     const failing = new OpenCodeDriver({ transport, env: { ANTHROPIC_API_KEY: "test-key" } });
     await Effect.runPromise(failing.startSession({ threadId: thread.id, workingDirectory: root }));
     await executeTurn({
@@ -198,7 +199,7 @@ describe("executeTurn", () => {
  * empty provider conversation under the old transcript.
  */
 describe("provider session resume", () => {
-  async function ranThread() {
+  async function ranThread(nativeTitle: string | null = null) {
     const root = await mkdtemp(path.join(os.tmpdir(), "moxen-resume-"));
     cleanup.push(() => rm(root, { recursive: true, force: true }));
     const store = await openThreadStore(root);
@@ -221,19 +222,40 @@ describe("provider session resume", () => {
       workingDirectory: root,
     });
     const deadline = Date.now() + 3000;
-    while ((transport.servers[0]?.callsTo("session.promptAsync").length ?? 0) === 0) {
-      if (Date.now() > deadline) throw new Error("promptAsync was never called");
+    while ((transport.servers[0]?.callsTo("session.prompt").length ?? 0) === 0) {
+      if (Date.now() > deadline) throw new Error("prompt was never called");
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
+    transport.servers[0]!.title = nativeTitle;
     await transport.servers[0]?.push({ type: "session.idle", properties: { sessionID: "opencode-session-1" } });
     await running;
-    return { store, threadId: thread.id };
+    return { store, threadId: thread.id, driver, server: transport.servers[0]!, root };
   }
 
   it("records the native session on the thread, keyed by driver", async () => {
     const { store, threadId } = await ranThread();
     const record = await store.readThreadRecord(threadId);
     expect(record?.providerSessions).toEqual({ opencode: "opencode-session-1" });
+  });
+
+  it("adopts the provider's title unless the user named the thread, and renames and regenerates natively", async () => {
+    const { store, threadId, driver, server, root } = await ranThread("Native title");
+    // Untitled on creation, so OpenCode's own title agent names the session.
+    expect(server.callsTo("session.create").map((call) => call.args)).toEqual([{}]);
+    expect(await store.readThreadRecord(threadId)).toMatchObject({ title: "Native title", titleSource: "provider" });
+
+    const ctx = { store, storeRoot: root, config: {}, driverFor: () => driver } as unknown as OperationContext;
+    await retitleThread(ctx, threadId, { title: "  Mine " });
+    expect(await store.readThreadRecord(threadId)).toMatchObject({ title: "Mine", titleSource: "user" });
+    expect(server.title).toBe("Mine");
+    expect(await adoptProviderTitle(store, threadId, "Native again")).toBeNull();
+
+    await retitleThread(ctx, threadId, { regenerate: true });
+    expect(await store.readThreadRecord(threadId)).toMatchObject({ title: "Regenerated title", titleSource: "provider" });
+
+    // A provider with no native regeneration keeps moxen's seed from the first message.
+    await retitleThread({ ...ctx, driverFor: () => ({}) as TurnDriver }, threadId, { regenerate: true });
+    expect(await store.readThreadRecord(threadId)).toMatchObject({ title: "remember 7", titleSource: "seed" });
   });
 
   it("resumes that session from a fresh driver instead of starting an empty one", async () => {
@@ -570,7 +592,7 @@ describe("a turn that fails while a limit stands", () => {
       env: { mode: "local", path: root, branch: null },
     });
     const { turn } = await (await import("../threads.js")).sendTurn(store, thread.id, { prompt: "queued after the hit" });
-    const transport = new FakeOpencodeTransport({ failMethods: { "session.promptAsync": "usage limit" } });
+    const transport = new FakeOpencodeTransport({ failMethods: { "session.prompt": "usage limit" } });
     const driver = new OpenCodeDriver({ transport, env: { ANTHROPIC_API_KEY: "test-key" } });
     await Effect.runPromise(driver.startSession({ threadId: thread.id, workingDirectory: root }));
     const limited: Array<{ turnId: string; resetsAt: string | null }> = [];

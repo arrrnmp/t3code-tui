@@ -34,6 +34,7 @@ import {
   loadModelsDevCatalog,
   presentApiKeyEnvs,
   readStoredAuthTypes,
+  storedAuthTypeFor,
   type LoadedModelsDevCatalog,
   type ModelsDevModel,
   type ModelsDevProvider,
@@ -87,6 +88,12 @@ export interface DirectCatalogOptions {
   readonly storeRoot?: string;
   readonly listers?: Partial<Record<"codex" | "grok", () => NativeModelLister>>;
   readonly modelsDev?: () => Promise<LoadedModelsDevCatalog>;
+  /**
+   * The `opencode` executable to ask for stored credentials. No setting feeds
+   * this today (the OpenCode driver is built with its defaults too), so it is
+   * the bare `opencode` on PATH until one exists.
+   */
+  readonly opencodeBinaryPath?: string;
 }
 
 
@@ -188,19 +195,20 @@ function opencodeEfforts(model: ModelsDevModel): EffortDescriptor[] {
  * provider refuses every request, so it is listed disabled with no models
  * rather than offering a long tail of models the user cannot run.
  */
-function opencodeProviders(
+async function opencodeProviders(
   loaded: LoadedModelsDevCatalog,
   env: NodeJS.ProcessEnv,
   installed: boolean,
   isHidden: (instanceId: string, slug: string) => boolean,
-): ProviderSummary[] {
-  const stored = readStoredAuthTypes(env);
+  binaryPath?: string,
+): Promise<ProviderSummary[]> {
+  const stored = installed ? await readStoredAuthTypes(env, { binaryPath }) : {};
   return loaded.catalog.map((provider: ModelsDevProvider) => {
     const keyEnvs = presentApiKeyEnvs(provider, env);
-    const storedType = stored[provider.id];
+    const storedType = storedAuthTypeFor(stored, provider.id);
     const credential = storedType === "oauth"
       ? "oauth"
-      : storedType === "api"
+      : storedType === "api" || storedType === "env"
         ? "api-key"
         : typeof storedType === "string"
           ? storedType
@@ -330,8 +338,12 @@ export async function buildDirectProviders(options: DirectCatalogOptions = {}): 
     skills: [],
   };
 
-  const opencode = opencodeProviders(modelsDev, env, opencodeInstalled, (instanceId, slug) =>
-    isModelHidden(prefs, instanceId, slug),
+  const opencode = await opencodeProviders(
+    modelsDev,
+    env,
+    opencodeInstalled,
+    (instanceId, slug) => isModelHidden(prefs, instanceId, slug),
+    options.opencodeBinaryPath,
   );
   const compat = opencodeCompatInstance(modelsDev, opencodeInstalled);
 

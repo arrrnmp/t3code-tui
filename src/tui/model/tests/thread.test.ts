@@ -426,6 +426,48 @@ describe("timeline tool-call collapsing", () => {
     const view = describeActivity(timeline(state)[0]!.activity!);
     expect(view).toMatchObject({ kind: "command", command: "ls -la", exit: 2, failed: true, running: false });
   });
+  it("follows a background OpenCode subagent call through its child's start and stop", () => {
+    const call = {
+      id: "a1",
+      tone: "tool",
+      kind: "tool-call.completed",
+      summary: "subagent",
+      turnId: "turn-1",
+      createdAt: "2026-09-22T07:34:01.000Z",
+      payload: {
+        itemType: "dynamic_tool_call",
+        status: "completed",
+        toolCallId: "call_sub",
+        title: "subagent",
+        data: {
+          tool: "subagent",
+          state: {
+            status: "completed",
+            input: { agent: "explore", description: "Map auth", prompt: "…", background: true },
+            output: '<subagent sessionID="ses_child" state="running">',
+          },
+        },
+      },
+    };
+    const child = (id: string, status: string, createdAt: string) => ({
+      id,
+      tone: "info",
+      kind: "subagent",
+      summary: `explore ${status}`,
+      turnId: "turn-1",
+      createdAt,
+      payload: { toolCallId: "subagent:ses_child", agentId: "ses_child", agentType: "explore", status },
+    });
+    const view = (activities: unknown[]) => {
+      const state = applyThreadFrame(emptyThreadState(), snapshotWith({ thread: { id: "t1", activities } }));
+      return describeActivity(timeline(state).find((entry) => entry.id === "a1")!.activity!);
+    };
+    expect(view([call])).toMatchObject({ kind: "agent", title: "explore", state: "sent to the background", running: false });
+    expect(view([call, child("s1", "started", "2026-09-22T07:34:02.000Z")])).toMatchObject({ state: "working in the background", running: true });
+    expect(
+      view([call, child("s1", "started", "2026-09-22T07:34:02.000Z"), child("s2", "stopped", "2026-09-22T07:35:00.000Z")]),
+    ).toMatchObject({ state: "finished", running: false });
+  });
 });
 
 describe("timeline lifecycle filtering", () => {

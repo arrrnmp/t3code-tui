@@ -26,10 +26,19 @@ export interface ThreadEnv {
   readonly branch: string | null;
 }
 
+/**
+ * Where a thread's title came from: `seed` is moxen's own (a placeholder or
+ * the first message's line), `provider` the provider's native session title,
+ * `user` an explicit name. A provider title never replaces a `user` one.
+ */
+export type ThreadTitleSource = "seed" | "provider" | "user";
+
 export interface StoredThread {
   readonly id: string;
   readonly projectId: string;
   readonly title: string;
+  /** Absent on threads stored before titles were tracked; read as `seed`. */
+  readonly titleSource?: ThreadTitleSource;
   readonly modelSelection: ModelSelection;
   readonly runtimeMode: RuntimeMode;
   readonly interactionMode: InteractionMode;
@@ -230,6 +239,8 @@ export interface CreateThreadInput {
   readonly id?: string;
   readonly projectId: string;
   readonly title: string;
+  /** `user` for a title someone chose, which the provider's own title then leaves alone. */
+  readonly titleSource?: ThreadTitleSource;
   readonly modelSelection: ModelSelection;
   readonly runtimeMode?: RuntimeMode;
   readonly interactionMode?: InteractionMode;

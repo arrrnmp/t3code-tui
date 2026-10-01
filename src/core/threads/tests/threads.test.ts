@@ -215,6 +215,39 @@ describe("settlement and snooze", () => {
     expect(threadStatus(unsettled)).toBe("active");
   });
 
+  it("settles and unsettles a whole family from any member, all or nothing", async () => {
+    const store = await testStore();
+    const make = async (title: string, parentThreadId?: string) => {
+      const created = await createThread(store, { projectId: "p", title, modelSelection: MODEL });
+      if (parentThreadId) {
+        const at = created.createdAt;
+        await store.appendDelegation({ id: `d-${title}`, parentThreadId, childThreadId: created.id, prompt: title, status: "running", createdAt: at, updatedAt: at });
+      }
+      return created;
+    };
+    const root = await make("root");
+    const child = await make("child", root.id);
+    const grandchild = await make("grandchild", child.id);
+    const other = await make("other");
+    const statuses = async () =>
+      (await Promise.all([root, child, grandchild, other].map((t) => inspectThread(store, t.id)))).map((t) => threadStatus(t));
+
+    // A running grandchild blocks settling from the root, the child or itself — and nothing is written.
+    const sent = await sendTurn(store, grandchild.id, { prompt: "work" });
+    for (const start of [root, child, grandchild]) {
+      const error = await settleThread(store, start.id).catch((caught: unknown) => caught as CliError);
+      expect((error as CliError).code).toBe("THREAD_SETTLE_BLOCKED");
+      expect((error as CliError).details).toMatchObject({ threadId: start.id, blockedThreadIds: [grandchild.id] });
+    }
+    expect(await statuses()).not.toContain("settled");
+
+    await completeTurn(store, grandchild.id, sent.turn.id);
+    expect((await settleThread(store, child.id)).id).toBe(child.id);
+    expect(await statuses()).toEqual(["settled", "settled", "settled", "active"]);
+    await unsettleThread(store, grandchild.id);
+    expect(await statuses()).toEqual(["active", "active", "active", "active"]);
+  });
+
   it("snoozes into the future and treats expiry as active", async () => {
     let now = Date.parse("2026-09-20T12:00:00.000Z");
     const bus = createEventBus<BackendEvent>();

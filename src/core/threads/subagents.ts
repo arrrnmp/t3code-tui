@@ -1,5 +1,6 @@
 /**
- * A thread's native subagents (Claude's Agent tool), kept on the thread
+ * A thread's native subagents (Claude's Agent tool, OpenCode's `subagent`
+ * tool), kept on the thread
  * record so the shell — which reads records, never activity ledgers — can
  * list them under their thread the way it lists delegated threads.
  *
@@ -12,6 +13,7 @@
  * finished, `KEEP` in all.
  */
 import { readClaudeSubagent } from "../providers/claude/subagents.js";
+import type { SubagentHistoryItem } from "../providers/spi.js";
 import type { ActivityEnvelope, MessageEnvelope } from "../types.js";
 import { toolActivityRow } from "./toolactivity.js";
 import type { StoredNativeSubagent, StoredThread } from "./types.js";
@@ -48,7 +50,7 @@ export function applySubagentActivity(
       const entry: StoredNativeSubagent = {
         agentId,
         agentType,
-        description: prior?.description ?? null,
+        description: prior?.description ?? text(payload.description),
         status: "running",
         startedAt: prior?.startedAt ?? row.createdAt,
         stoppedAt: null,
@@ -121,14 +123,28 @@ function resultText(content: unknown): string {
   return content.map((part) => (typeof (part as { text?: unknown })?.text === "string" ? (part as { text: string }).text : "")).join("\n");
 }
 
+/** Reads a subagent's history from a live driver that keeps it (OpenCode). */
+export type SubagentHistoryReader = (agentId: string) => Promise<readonly SubagentHistoryItem[] | null>;
+
 /**
  * A native subagent's conversation as one turn: its prompt, its tool calls
  * (mapped exactly as the live driver's are, so they render the same), its
- * thinking, and its reply. Only Claude keeps per-subagent transcripts.
+ * thinking, and its reply. Claude keeps per-subagent transcripts on disk;
+ * OpenCode keeps each subagent as a child session its live driver reads
+ * (`readHistory`).
  */
-export async function subagentTranscript(store: ThreadStore, threadId: string, agentId: string): Promise<SubagentTranscript> {
+export async function subagentTranscript(
+  store: ThreadStore,
+  threadId: string,
+  agentId: string,
+  readHistory?: SubagentHistoryReader,
+): Promise<SubagentTranscript> {
   const thread = await store.readThreadRecord(threadId);
   const agent = thread?.nativeSubagents?.find((entry) => entry.agentId === agentId) ?? null;
+  if (thread !== null && thread.providerSessions?.["opencode"] !== undefined && readHistory !== undefined) {
+    const history = await readHistory(agentId).catch(() => null);
+    if (history !== null) return { available: true, agent, ...historyEnvelopes(threadId, agentId, history, agent?.startedAt ?? thread.createdAt) };
+  }
   const sessionId = thread?.providerSessions?.["claude"];
   if (thread === null || sessionId === undefined) return { available: false, agent, messages: [], activities: [] };
   const transcript = await readClaudeSubagent(sessionId, agentId, thread.env.path);
@@ -187,6 +203,49 @@ export async function subagentTranscript(store: ThreadStore, threadId: string, a
     activities.push({ id: `tool:${toolUseId}`, threadId, turnId, kind: row.kind, summary: row.summary, tone: "tool", createdAt: call.at, payload: row.payload });
   }
   return { available: true, agent, messages, activities };
+}
+
+/** Driver-read history (OpenCode) in the envelope shapes, its tools mapped as live ones are. */
+function historyEnvelopes(
+  threadId: string,
+  agentId: string,
+  history: readonly SubagentHistoryItem[],
+  startedAt: string,
+): { messages: MessageEnvelope[]; activities: ActivityEnvelope[] } {
+  const turnId = `subagent:${agentId}`;
+  const base = Date.parse(startedAt);
+  const messages: MessageEnvelope[] = [];
+  const activities: ActivityEnvelope[] = [];
+  history.forEach((item, index) => {
+    const at = item.at ?? new Date((Number.isNaN(base) ? 0 : base) + index).toISOString();
+    if (item.kind === "tool") {
+      const row = toolActivityRow({ type: "tool.execute.completed", provider: "opencode", threadId, turnId, tool: item.tool, raw: item.raw });
+      if (row !== null) activities.push({ id: `tool:${item.id}`, threadId, turnId, kind: row.kind, summary: row.summary, tone: "tool", createdAt: at, payload: row.payload });
+    } else if (item.kind === "reasoning") {
+      activities.push({
+        id: item.id,
+        threadId,
+        turnId,
+        kind: "reasoning",
+        summary: "Thought",
+        tone: "info",
+        createdAt: at,
+        payload: { itemType: "reasoning", toolCallId: `reasoning:${item.id}`, status: "completed", text: item.text, durationMs: null },
+      });
+    } else {
+      messages.push({
+        id: item.id,
+        role: item.kind === "prompt" ? "user" : "assistant",
+        text: item.text,
+        turnId,
+        streaming: false,
+        createdAt: at,
+        updatedAt: at,
+        ...(item.kind === "prompt" ? { origin: "subagent-prompt" } : {}),
+      });
+    }
+  });
+  return { messages, activities };
 }
 
 /**

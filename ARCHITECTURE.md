@@ -13,7 +13,7 @@ built; the code and its tests are the spec now.
 |---|---|---|---|
 | 1 | Claude Code | Official `claude` CLI via `@anthropic-ai/claude-agent-sdk` | Claude Pro/Max subscription (inherited CLI login), API key, Bedrock |
 | 2 | Codex | Local `codex app-server`, stdio JSON-RPC | ChatGPT Plus/Pro subscription (CLI `auth.json`), API key |
-| 3 | OpenCode | `opencode serve` + `@opencode-ai/sdk` | API keys via the models.dev catalog; Codex and SuperGrok subscriptions via vendored OAuth plugins |
+| 3 | OpenCode | OpenCode v2 (2.0+): `opencode serve` + `@opencode/client` | API keys via the models.dev catalog; ChatGPT Pro/Plus (`opencode auth login openai`) and SuperGrok (`opencode auth login xai`) logins are built into v2 — no plugins. Credentials live in OpenCode's SQLite; we read only type per provider through `opencode auth list --format json` |
 | 4 | Grok | `grok agent stdio` over ACP | Grok login (`cached_token`), `XAI_API_KEY` |
 
 Out of scope: Cursor and Antigravity. Upstream behaviour is checked against
@@ -214,8 +214,8 @@ Codex — on that provider's own default (`MOXEN_DEFAULT_MODEL` pins one).
   changes. Pin versions and keep the API-key fallback green. We never run
   our own Claude OAuth, but a CLI-side auth change still reaches us — watch
   `@anthropic-ai/claude-agent-sdk` releases.
-* **Model lists.** The OpenCode plugin's Codex allowlist lags the native
-  driver's live `model/list`; prefer native results where both exist.
+* **Model lists.** OpenCode's built-in ChatGPT model list can lag the native
+  Codex driver's live `model/list`; prefer native results where both exist.
 * **Effect migration.** Effect's release-candidate churn, and
   workspace-only deps (`effect-acp`, `effect-codex-app-server`) that need
   path-mapping or clean-room equivalents.

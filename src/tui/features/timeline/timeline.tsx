@@ -1030,8 +1030,17 @@ function TurnBlock({  group,
     for (const entry of group.work) consider(entry);
     return first;
   }, [group]);
+  const renderPrompt = (entry: TimelineEntry) => {
+    if (isUsageContinue(entry.message)) return <ContinueNotice key={entry.id} entry={entry} now={now} />;
+    const tasks = taskNotifications(entry.message);
+    return tasks === null ? (
+      <PromptBlock key={entry.id} entry={entry} homeDir={homeDir} now={now} onOpenActions={() => onOpenMessageActions(entry)} />
+    ) : (
+      <TaskNotificationBlock key={entry.id} entry={entry} tasks={tasks} now={now} modelLabel={modelLabel} width={width} />
+    );
+  };
   const renderWorkEntry = (entry: TimelineEntry) =>
-    entry.kind === "activity" ? (
+    entry.kind === "user" ? renderPrompt(entry) : entry.kind === "activity" ? (
       <ActivityRow entry={entry} now={now} turnFiles={overlayRowIds.has(entry.id) ? turnFiles : EMPTY_PATCH_FILES} onOpenUrl={onOpenUrl} />
     ) : (
       <box
@@ -1077,7 +1086,13 @@ function TurnBlock({  group,
   const live = open ? group.live : null;
   // A thought still running renders last; finished, it takes its place in line.
   const thought = open ? runningThought(group) : null;
-  const inLine = inFlow && group.reply !== null ? [...group.work, group.reply].sort((left, right) => left.at.localeCompare(right.at)) : group.work;
+  // Expanded, a prompt sent mid-turn sits where it landed in the work; folded,
+  // it stays with the turn's opening prompts above the fold.
+  const nudges = workExpanded ? group.nudges : [];
+  const inLine =
+    (inFlow && group.reply !== null) || nudges.length > 0
+      ? [...group.work, ...(inFlow && group.reply !== null ? [group.reply] : []), ...nudges].sort((left, right) => left.at.localeCompare(right.at))
+      : group.work;
   const work = thought === null ? inLine : inLine.filter((entry) => entry !== thought);
 
   // Fold rule: the Worked fold always hides the work when collapsed. Once
@@ -1101,23 +1116,16 @@ function TurnBlock({  group,
     // carries its own marginTop, and the scrollbox pads the last turn — a
     // wrapper margin here stacked with the next prompt's into a double gap.
     <box style={{ flexDirection: "column", flexShrink: 0 }}>
-      {group.prompts.map((entry) => {
-        if (isUsageContinue(entry.message)) return <ContinueNotice key={entry.id} entry={entry} now={now} />;
-        const tasks = taskNotifications(entry.message);
-        return tasks === null ? (
-          <PromptBlock key={entry.id} entry={entry} homeDir={homeDir} now={now} onOpenActions={() => onOpenMessageActions(entry)} />
-        ) : (
-          <TaskNotificationBlock key={entry.id} entry={entry} tasks={tasks} now={now} modelLabel={modelLabel} width={width} />
-        );
-      })}
+      {group.prompts.filter((entry) => !nudges.includes(entry)).map(renderPrompt)}
 
       <WorkFold group={group} open={open} now={now} expanded={workExpanded} onToggle={() => onToggleWork(group.id)} />
       {segments.map((segment, index) => {
         const closingBoundary =
           segment.message !== null && closing !== null && segment.message.id === closing.id;
         // Only a message-closed segment folds into a summary — the still-open
-        // trailing tools always render flat until a message lands after them.
-        const segmentSummary = segment.message === null ? null : summarizeWork(segment.tools);
+        // trailing tools always render flat until a message lands after them,
+        // and a turn with no interim message never folds (see `folds`).
+        const segmentSummary = segment.folds ? summarizeWork(segment.tools) : null;
         return (
           <WorkSegment
             key={`${group.id}-seg${index}`}

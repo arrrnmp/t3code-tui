@@ -145,6 +145,15 @@ describe("segmentWork", () => {
     expect(segments[0]?.message?.id).toBe("m1");
   });
 
+  it("folds segments only when the agent wrote something while it worked", () => {
+    // Tools straight to the reply: nothing to backtrack through, shown flat.
+    expect(segmentWork([tool("a"), tool("b")], msg("m2")).map((segment) => segment.folds)).toEqual([false]);
+    // An interim message: every message-closed segment folds, the closing one too.
+    expect(segmentWork([tool("a"), msg("m1"), tool("b")], msg("m2")).map((segment) => segment.folds)).toEqual([true, true]);
+    // Still running: the open tail never folds.
+    expect(segmentWork([tool("a"), msg("m1"), tool("b")], null).map((segment) => segment.folds)).toEqual([true, false]);
+  });
+
   it("returns no segments for empty work", () => {
     expect(segmentWork([], msg("m2"))).toEqual([]);
     expect(segmentWork([], null)).toEqual([]);
@@ -197,6 +206,20 @@ describe("groupTurns", () => {
     // never restart the turn's clock.
     expect(groups[0]?.startedAt).toBe("2026-09-16T02:00:00.000Z");
     expect(groups[0]?.durationMs).toBe(9 * 60_000 + 43_000);
+    // Sent once the turn was working: the transcript places it in the work.
+    expect(groups[0]?.nudges.map((row) => row.id)).toEqual(["u2"]);
+  });
+
+  it("only counts a prompt as a nudge once the turn has started working", () => {
+    const groups = groupTurns([
+      entry({ id: "u1", kind: "user", text: "go", at: "2026-09-16T02:00:00.000Z" }),
+      // Sent before anything came back: still part of the opening.
+      entry({ id: "u2", kind: "user", text: "and X", at: "2026-09-16T02:00:01.000Z" }),
+      entry({ id: "a1", kind: "activity", at: "2026-09-16T02:00:05.000Z" }),
+      entry({ id: "u3", kind: "user", text: "actually Y", at: "2026-09-16T02:00:09.000Z" }),
+    ]);
+    expect(groups[0]?.prompts.map((row) => row.id)).toEqual(["u1", "u2", "u3"]);
+    expect(groups[0]?.nudges.map((row) => row.id)).toEqual(["u3"]);
   });
 
   // A nudge sent after the model had already replied once (thinking it was

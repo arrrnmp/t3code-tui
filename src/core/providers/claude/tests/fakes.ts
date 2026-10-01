@@ -147,6 +147,8 @@ export class FakeQuery implements ClaudeQuery {
 
 export class FakeTransport implements ClaudeTransport {
   readonly created: FakeQuery[] = [];
+  /** Prompts passed as a plain string (a one-shot command) rather than a stream. */
+  readonly stringPrompts: string[] = [];
   /** Handed to every query's `supportedCommands`. */
   commands: Array<{ name: string; description: string; argumentHint: string; builtin?: boolean }> = [];
 
@@ -159,6 +161,7 @@ export class FakeTransport implements ClaudeTransport {
     prompt: string | AsyncIterable<SDKUserMessage>,
     options: ClaudeQueryOptions,
   ): ClaudeQuery {
+    if (typeof prompt === "string") this.stringPrompts.push(prompt);
     const fake = new FakeQuery(
       this.scripts.shift() ?? [],
       options,
@@ -188,6 +191,19 @@ export class FakeSessionApi implements ClaudeSessionApi {
 
   async getSessionMessages(_sessionId: string): Promise<SessionMessage[]> {
     return this.history;
+  }
+
+  /** Titles by session id, and every rename pushed. */
+  readonly titles = new Map<string, string>();
+  readonly renames: Array<{ sessionId: string; title: string; dir: string }> = [];
+
+  async sessionTitle(sessionId: string, _dir: string): Promise<string | null> {
+    return this.titles.get(sessionId) ?? null;
+  }
+
+  async renameSession(sessionId: string, title: string, dir: string): Promise<void> {
+    this.renames.push({ sessionId, title, dir });
+    this.titles.set(sessionId, title);
   }
 
   async forkSession(sessionId: string, upToMessageId?: string): Promise<ForkSessionResult> {

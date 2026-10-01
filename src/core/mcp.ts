@@ -76,6 +76,12 @@ export interface InProcessMcpServerSpec {
   readonly tools: readonly InProcessMcpTool[];
   readonly call: (tool: string, args: Record<string, unknown>) => Promise<{ readonly text: string; readonly isError: boolean }>;
   readonly fallback: OutOfProcessMcpServerSpec;
+  /**
+   * `fallback` also offering a checklist tool, for a provider that keeps no
+   * checklist of its own (OpenCode v2 has no `todowrite`). Absent when the
+   * server has none to offer.
+   */
+  readonly checklist?: OutOfProcessMcpServerSpec;
   readonly alwaysLoad?: boolean;
 }
 
@@ -85,6 +91,11 @@ export type McpServerSpec = OutOfProcessMcpServerSpec | InProcessMcpServerSpec;
 /** The out-of-process form of a server, for a provider that cannot host one in-process. */
 export function outOfProcess(spec: McpServerSpec): OutOfProcessMcpServerSpec {
   return spec.type === "in-process" ? spec.fallback : spec;
+}
+
+/** `outOfProcess` for a provider with no checklist of its own: the form that lends one, where there is one. */
+export function outOfProcessWithChecklist(spec: McpServerSpec): OutOfProcessMcpServerSpec {
+  return spec.type === "in-process" ? (spec.checklist ?? spec.fallback) : spec;
 }
 
 /**

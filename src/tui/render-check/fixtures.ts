@@ -131,6 +131,17 @@ const threadFrames = [
             createdAt: ago(8 * 60_000),
             updatedAt: ago(8 * 60_000),
           },
+          // Written mid-turn, between the checks and the edits: a turn the
+          // agent narrated folds each stretch of tools under a summary.
+          {
+            id: "m2b",
+            role: "assistant",
+            text: "Checks pass. Now the timeline.",
+            turnId: "turn-1",
+            streaming: false,
+            createdAt: ago(6 * 60_000 + 15_000),
+            updatedAt: ago(6 * 60_000 + 15_000),
+          },
           // A second, newer turn with its own checkpoint, so the harness
           // exercises the multi-turn picker and the different-turn jump.
           {

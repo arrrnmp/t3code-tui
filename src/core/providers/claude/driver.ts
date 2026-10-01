@@ -273,6 +273,9 @@ function refusalCategoryLabel(raw: unknown): string | null {
   return category;
 }
 
+/** The model `/rename` retitles on: a short summary, so the cheapest one. */
+const TITLE_MODEL = "claude-haiku-4-5";
+
 /** A user message: the text, then each image as a base64 content block. */
 function userMessage(text: string, images: readonly ProviderImage[] = []): SDKUserMessage {
   return {
@@ -363,7 +366,14 @@ function toolResultText(content: unknown): string | null {
 function isPromptSessionMessage(message: SessionMessage): boolean {
   if (message.type !== "user" || message.parent_tool_use_id !== null) return false;
   const blocks = contentBlocks(message.message);
-  return blocks.some((block) => block["type"] === "text" && typeof block["text"] === "string");
+  // A local slash command (`/rename` for a title) is logged as a user message
+  // but is no turn: rolling back must not count it.
+  return blocks.some(
+    (block) =>
+      block["type"] === "text" &&
+      typeof block["text"] === "string" &&
+      !/^\s*<(?:command-name|local-command-)/u.test(block["text"]),
+  );
 }
 
 export class ClaudeDriver implements ProviderAdapter<CliError> {
@@ -645,6 +655,48 @@ export class ClaudeDriver implements ProviderAdapter<CliError> {
     const text = (parts.join("\n\n").trim() || result?.trim()) ?? "";
     if (!text) throw new CliError("SIDE_QUESTION_FAILED", "The side question came back empty.");
     return { text, withContext: input.cursor !== null };
+  };
+
+  readonly sessionTitle = async (cursor: string, workingDirectory: string): Promise<string | null> =>
+    await this.sessionApi.sessionTitle(cursor, workingDirectory);
+
+  readonly renameSession = async (cursor: string, workingDirectory: string, title: string): Promise<void> => {
+    await this.sessionApi.renameSession(cursor, title, workingDirectory);
+  };
+
+  /**
+   * Claude Code's own `/rename` with no name, which retitles the session from
+   * its conversation. It runs as a one-shot `resume` of the same session in
+   * its own process: the CLI handles the command locally (no user turn is
+   * written, no assistant reply), appends the new title to the session file
+   * and exits, so nothing shows in the thread. The title is then read back.
+   */
+  readonly regenerateSessionTitle = async (cursor: string, workingDirectory: string): Promise<string | null> => {
+    const stringEnv: Record<string, string> = {};
+    for (const [key, value] of Object.entries(this.baseEnv)) if (typeof value === "string") stringEnv[key] = value;
+    const query = this.transport.query("/rename", {
+      cwd: workingDirectory,
+      permissionMode: "default",
+      env: stringEnv,
+      pathToClaudeCodeExecutable: resolveClaudeExecutable(this.settings.binaryPath, this.baseEnv),
+      resume: cursor,
+      model: TITLE_MODEL,
+      tools: [],
+      maxTurns: 1,
+    });
+    try {
+      for await (const message of query) {
+        if (message.type === "result") {
+          if (message.subtype !== "success") {
+            throw new CliError("TITLE_REGENERATION_FAILED", `Claude could not retitle the session (${message.subtype}).`);
+          }
+          break;
+        }
+      }
+    } finally {
+      query.close?.();
+    }
+    return await this.sessionApi.sessionTitle(cursor, workingDirectory);
   };
 
   /**

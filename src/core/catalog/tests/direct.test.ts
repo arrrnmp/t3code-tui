@@ -25,6 +25,14 @@ function binDir(names: string[]): string {
   return dir;
 }
 
+/** A stub `opencode` whose `auth list --format json` prints `list` (v2 shape). */
+function opencodeBin(list: unknown[]): string {
+  const dir = tempDir("moxen-bin-");
+  const file = path.join(dir, "opencode");
+  fs.writeFileSync(file, `#!/bin/sh\necho '${JSON.stringify(list)}'\n`, { mode: 0o755 });
+  return dir;
+}
+
 const MODELS_DEV = {
   catalog: [
     {
@@ -124,9 +132,8 @@ describe("buildDirectProviders", () => {
   it("merges all models.dev providers into one addressed opencode instance", async () => {
     const live = await buildDirectProviders({
       env: {
-        PATH: binDir(["opencode"]),
+        PATH: opencodeBin([{ id: "anthropic", name: "Anthropic", connections: [{ type: "oauth" }] }]),
         ANTHROPIC_API_KEY: "k",
-        OPENCODE_AUTH_CONTENT: JSON.stringify({ anthropic: { type: "oauth" } }),
       },
       storeRoot: tmpStore(),
       modelsDev: async () => MODELS_DEV,

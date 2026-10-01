@@ -301,20 +301,40 @@ function fromOpencode(event: ToolRuntimeEvent, raw: Record<string, unknown>): Na
         : statusOfEvent(event.type);
   const time = asRecord(state.time) ?? {};
   const metadata = asRecord(state.metadata) ?? {};
+  const tool = asString(raw.tool) ?? event.tool;
+  const input = asRecord(state.input) ?? {};
   return {
     callId,
-    tool: asString(raw.tool) ?? event.tool,
-    input: asRecord(state.input) ?? {},
+    tool,
+    input,
     output: asString(state.output) ?? asString(state.error),
     status,
     exit: asNumber(metadata.exit),
     startMs: asNumber(time.start),
     endMs: asNumber(time.end),
-    files: [],
+    files: opencodeFiles(tool, input),
     patch: null,
     title: asString(state.title),
     itemType: null,
   };
+}
+
+/**
+ * The files an OpenCode edit touches. v2's `edit`/`write` name theirs in
+ * `path`; `patch` names every one in its `patchText` section headers
+ * (`*** Update File: src/a.ts`).
+ */
+function opencodeFiles(tool: string, input: Record<string, unknown>): ReadonlyArray<{ path: string }> {
+  const name = tool.toLowerCase();
+  if (name === "edit" || name === "write") {
+    const path = asString(input.path) ?? asString(input.filePath);
+    return path === null ? [] : [{ path }];
+  }
+  if (name === "patch" || name === "apply_patch") {
+    const text = asString(input.patchText) ?? "";
+    return [...text.matchAll(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/gmu)].map((match) => ({ path: match[1]!.trim() }));
+  }
+  return [];
 }
 
 /** Shell tools, by the verb their (possibly namespaced) name ends in —
@@ -325,7 +345,7 @@ const SHELL_TOOLS: ReadonlySet<string> = new Set(["bash", "shell", "exec", "powe
 function itemTypeForTool(tool: string): string {
   // Namespaced harness tools (`default.bash`) carry the verb last.
   const short = tool.toLowerCase().split(/[^a-z]+/).filter((part) => part.length > 0).pop() ?? "";
-  if (SHELL_TOOLS.has(short) || short === "execute") return "command_execution";
+  if (SHELL_TOOLS.has(short)) return "command_execution";
   if (short === "edit" || short === "write" || short === "multiedit" || short === "patch") return "file_change";
   if (short === "websearch" || short === "webfetch" || short === "fetch") return "web_search";
   return "dynamic_tool_call";

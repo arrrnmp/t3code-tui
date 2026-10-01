@@ -385,9 +385,9 @@ export type ProviderRuntimeEvent =
     }
   | {
       /**
-       * A provider-native subagent (Claude's Agent tool) starting or
-       * stopping, with the last thing it said. Moxen's own delegated threads
-       * are threads, not this.
+       * A provider-native subagent (Claude's Agent tool, OpenCode's
+       * `subagent` tool) starting or stopping, with the last thing it said.
+       * Moxen's own delegated threads are threads, not this.
        */
       readonly type: "subagent.updated";
       readonly provider: ProviderDriverKind;
@@ -397,6 +397,8 @@ export type ProviderRuntimeEvent =
       readonly agentType: string;
       readonly status: "started" | "stopped";
       readonly lastMessage: string | null;
+      /** What it was sent to do, where the provider says so as it starts (OpenCode). */
+      readonly description?: string | null;
     }
   | {
       /**
@@ -435,6 +437,16 @@ export type ProviderRuntimeEvent =
     };
 
 /** A live background task, as a driver reports it. */
+/**
+ * One entry of a native subagent's conversation, oldest first, as a driver
+ * that keeps it elsewhere than Claude's on-disk transcripts reads it back
+ * (OpenCode: the child session). Tool entries carry the provider's own tool
+ * payload, mapped by `toolActivityRow` exactly as live calls are.
+ */
+export type SubagentHistoryItem =
+  | { readonly kind: "prompt" | "text" | "reasoning"; readonly id: string; readonly at: string | null; readonly text: string }
+  | { readonly kind: "tool"; readonly id: string; readonly at: string | null; readonly tool: string; readonly raw: Record<string, unknown> };
+
 export interface BackgroundTaskSummary {
   readonly taskId: string;
   readonly taskType: string | null;
@@ -446,7 +458,23 @@ export interface BackgroundTaskSummary {
   readonly startedAt?: string | null;
 }
 
-export interface ProviderAdapter<TError = unknown> {
+/**
+ * The provider's own session title, for the drivers whose provider keeps
+ * one (Claude Code, OpenCode). `cursor` is the native session handle
+ * (`resumeCursor`); `workingDirectory` is where that session lives. Each
+ * method is omitted where the provider lacks the capability: moxen never
+ * generates a title itself, it reads or asks the provider to.
+ */
+export interface ProviderSessionTitles {
+  /** The session's title, or null while the provider has not titled it. Never a first-prompt fallback. */
+  readonly sessionTitle?: (cursor: string, workingDirectory: string) => Promise<string | null>;
+  /** Set the session's title natively. */
+  readonly renameSession?: (cursor: string, workingDirectory: string, title: string) => Promise<void>;
+  /** Have the provider title the session again from its conversation; resolves to the new title, null when it made none. */
+  readonly regenerateSessionTitle?: (cursor: string, workingDirectory: string) => Promise<string | null>;
+}
+
+export interface ProviderAdapter<TError = unknown> extends ProviderSessionTitles {
   readonly provider: ProviderDriverKind;
   readonly capabilities: ProviderAdapterCapabilities;
 

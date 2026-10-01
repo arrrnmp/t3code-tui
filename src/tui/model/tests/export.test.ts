@@ -57,6 +57,7 @@ function group(overrides: Partial<TurnGroup> & { id: string }): TurnGroup {
   return {
     turnId: "turn-1",
     prompts: [],
+    nudges: [],
     work: [],
     reply: null,
     live: null,

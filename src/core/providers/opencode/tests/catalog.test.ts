@@ -11,7 +11,12 @@ import {
   loadModelsDevCatalog,
   parseModelsDevCatalog,
   presentApiKeyEnvs,
+  AUTH_LIST_CACHE_TTL_MS,
+  authTypesOf,
+  clearStoredAuthCache,
   readStoredAuthTypes,
+  sameProviderId,
+  storedAuthTypeFor,
   resolveModelsDevUrl,
 } from "../catalog.js";
 import { tempDir } from "../../../testing/tmp.js";
@@ -101,15 +106,85 @@ describe("resolveModelsDevUrl", () => {
 });
 
 describe("readStoredAuthTypes", () => {
-  it("prefers inline content, then file, then empty", () => {
+  const LIST = JSON.stringify([
+    { id: "anthropic", name: "Anthropic", connections: [{ type: "key" }] },
+    { id: "openai", name: "OpenAI", connections: [{ type: "env", name: "OPENAI_API_KEY" }, { type: "oauth" }] },
+    { id: "xai", name: "xAI", connections: [{ type: "env", name: "XAI_API_KEY" }] },
+    { id: "azure", name: "Azure", connections: [] },
+    { id: "odd", connections: "nope" },
+  ]);
+
+  it("maps v2 connection types onto api / oauth / env", async () => {
+    expect(await readStoredAuthTypes({}, { run: async () => LIST, fresh: true })).toEqual({
+      anthropic: "api",
+      openai: "oauth",
+      xai: "env",
+    });
+  });
+
+  it("reads the integration API's credential/env connections the same way", async () => {
     expect(
-      readStoredAuthTypes({ OPENCODE_AUTH_CONTENT: JSON.stringify({ xai: { type: "oauth" } }) }),
-    ).toEqual({ xai: "oauth" });
-    expect(readStoredAuthTypes({}, () => null)).toEqual({});
-    expect(readStoredAuthTypes({}, () => "not json")).toEqual({});
-    expect(
-      readStoredAuthTypes({}, () => JSON.stringify({ openai: { type: "oauth" }, odd: { nope: 1 } })),
-    ).toEqual({ openai: "oauth" });
+      authTypesOf([
+        { id: "openai", name: "OpenAI", methods: [], connections: [{ type: "credential", id: "c1", label: "x", method: "oauth" }] },
+        { id: "anthropic", name: "A", methods: [], connections: [{ type: "env", name: "ANTHROPIC_API_KEY" }, { type: "credential", id: "c2", label: "y", method: "key" }] },
+        { id: "none", name: "N", methods: [], connections: [] },
+      ]),
+    ).toEqual({ openai: "oauth", anthropic: "api" });
+  });
+
+  it("runs the CLI with --standalone, asynchronously, through the given binary", async () => {
+    const dir = tempDir("moxen-auth-list-");
+    const log = path.join(dir, "args.log");
+    const bin = path.join(dir, "fake-opencode");
+    fs.writeFileSync(bin, `#!/bin/sh\necho "$@" > "${log}"\necho '[{"id":"xai","connections":[{"type":"key"}]}]'\n`, { mode: 0o755 });
+    const pending = readStoredAuthTypes(process.env, { binaryPath: bin, fresh: true });
+    // Not spawnSync: the promise is returned before the child has been read.
+    expect(pending).toBeInstanceOf(Promise);
+    expect(await pending).toEqual({ xai: "api" });
+    expect(fs.readFileSync(log, "utf8").trim()).toBe("auth list --format json --standalone");
+  });
+
+  it("degrades to empty on failure, bad JSON, or a wrong shape", async () => {
+    expect(await readStoredAuthTypes({}, { run: async () => null, fresh: true })).toEqual({});
+    expect(await readStoredAuthTypes({}, { run: async () => "not json", fresh: true })).toEqual({});
+    expect(await readStoredAuthTypes({}, { run: async () => "{}", fresh: true })).toEqual({});
+  });
+
+  it("no longer reads OPENCODE_AUTH_CONTENT", async () => {
+    const env = { OPENCODE_AUTH_CONTENT: JSON.stringify({ xai: { type: "oauth" } }) };
+    expect(await readStoredAuthTypes(env, { run: async () => "[]", fresh: true })).toEqual({});
+  });
+
+  it("passes the configured binary and caches per binary for the TTL", async () => {
+    clearStoredAuthCache();
+    const calls: string[] = [];
+    let clock = 1_000;
+    const options = {
+      binaryPath: "/opt/oc",
+      now: () => clock,
+      run: async (binary: string) => {
+        calls.push(binary);
+        return LIST;
+      },
+    };
+    await readStoredAuthTypes({}, options);
+    await readStoredAuthTypes({}, options);
+    expect(calls).toEqual(["/opt/oc"]);
+    clock += AUTH_LIST_CACHE_TTL_MS + 1;
+    await readStoredAuthTypes({}, options);
+    expect(calls).toEqual(["/opt/oc", "/opt/oc"]);
+    clearStoredAuthCache();
+  });
+});
+
+describe("provider id aliases", () => {
+  it("treats the v1 and v2 spellings as one provider", () => {
+    expect(sameProviderId("azure-cognitive-services", "azure")).toBe(true);
+    expect(sameProviderId("google-vertex-anthropic", "Google-Vertex")).toBe(true);
+    expect(sameProviderId("azure", "openai")).toBe(false);
+    expect(storedAuthTypeFor({ azure: "api" }, "azure-cognitive-services")).toBe("api");
+    expect(storedAuthTypeFor({ "google-vertex-anthropic": "oauth" }, "google-vertex")).toBe("oauth");
+    expect(storedAuthTypeFor({}, "azure")).toBeUndefined();
   });
 });
 

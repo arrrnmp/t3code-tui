@@ -486,7 +486,8 @@ export function App({
     selected,
     creating,
     shellThreads: shell.threads,
-    activeThreadIds: sections.active.map((row) => row.thread.id),
+    // Settled headers of live families sit in `active` too; never fall back onto one.
+    activeThreadIds: sections.active.filter((row) => row.status !== "settled").map((row) => row.thread.id),
     toasts,
     paletteReturnFocus,
     deleteArmed,

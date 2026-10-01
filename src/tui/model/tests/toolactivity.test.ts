@@ -207,6 +207,87 @@ describe("toolActivityRow", () => {
     expect(view(done!)).toMatchObject({ kind: "command", exit: 0, durationMs: 1000, running: false });
   });
 
+  describe("OpenCode v2 tools (shapes captured from a live v2.0.19 server)", () => {
+    const completed = (tool: string, input: Record<string, unknown>, output: string) =>
+      view(
+        toolActivityRow(
+          event({
+            provider: "opencode",
+            type: "tool.execute.completed",
+            tool,
+            raw: { id: `call_${tool}`, callID: `call_${tool}`, type: "tool", tool, state: { status: "completed", input, output } },
+          }),
+        )!,
+      );
+
+    it("reads the file from `path`, and a directory read as a listing", () => {
+      expect(completed("read", { path: "/repo/src/app.ts" }, "1\timport x")).toMatchObject({ kind: "read", path: "src/app.ts" });
+      expect(completed("read", { path: "/repo/src/server/mcp" }, "Read directory /repo/src/server/mcp, entries 1-5\ntests/")).toMatchObject({
+        kind: "list",
+        path: "src/server/mcp",
+      });
+    });
+
+    it("names the file `write` and `edit` change, from `path`", () => {
+      expect(completed("write", { path: "/repo/notes.txt", content: "a\nb\n" }, "Created file successfully")).toMatchObject({
+        kind: "file",
+        verb: "Write",
+        path: "repo/notes.txt",
+        added: 2,
+      });
+      expect(
+        completed("edit", { path: "/repo/notes.txt", oldString: "a\nb", newString: "a" }, "Edited notes.txt (1 replacement)"),
+      ).toMatchObject({ kind: "file", verb: "Update", path: "repo/notes.txt", removed: 1 });
+    });
+
+    it("names every file a `patch` touches", () => {
+      const row = toolActivityRow(
+        event({
+          provider: "opencode",
+          type: "tool.execute.completed",
+          tool: "patch",
+          raw: {
+            callID: "call_p",
+            tool: "patch",
+            state: { status: "completed", input: { patchText: "*** Begin Patch\n*** Update File: src/a.ts\n@@\n-x\n+y\n*** Add File: src/b.ts\n+z\n*** End Patch" } },
+          },
+        }),
+      );
+      expect((row!.payload.data as { files: unknown }).files).toEqual([{ path: "src/a.ts" }, { path: "src/b.ts" }]);
+      expect(view(row!)).toMatchObject({ kind: "file", path: "src/a.ts", fileCount: 2 });
+    });
+
+    it("shows Code Mode's `execute` as the tools it called, not a shell command", () => {
+      const code = 'const r1 = search({query: "moxen"});\nconst r2 = search({query: "browser"});\nawait tools.moxen.delegate({});\ntools.opencode.models({});';
+      expect(completed("execute", { code }, "{}")).toEqual({ kind: "tool", tool: "Ran code", detail: "search ×2, moxen.delegate, models", running: false });
+    });
+
+    it("keeps moxen's lent checklist out of the transcript, called directly or from Code Mode", () => {
+      expect(completed("moxen_todos", { todos: [{ content: "Write tests", status: "in_progress" }] }, '{"recorded":1}')).toMatchObject({
+        kind: "todos",
+        items: [{ content: "Write tests", status: "in_progress" }],
+      });
+      expect(completed("execute", { code: 'await tools.moxen.todos({todos: []});\nawait tools.moxen.todos({todos: []});' }, "{}")).toMatchObject({ kind: "todos" });
+      expect(completed("execute", { code: "await tools.moxen.todos({todos: []}); search({query: 'x'})" }, "{}")).toMatchObject({ kind: "tool" });
+    });
+
+    it("shows a `subagent` call as the native subagent it started", () => {
+      expect(
+        completed(
+          "subagent",
+          { agent: "general", description: "Report research guidance text", prompt: "Read-only task: …" },
+          '<subagent sessionID="ses_1" state="completed">\nRESEARCH_GUIDANCE at line 51\n</subagent>',
+        ),
+      ).toMatchObject({ kind: "agent", source: "native", title: "general", subject: "Report research guidance text", state: null, running: false });
+      expect(completed("subagent", { agent: "explore", description: "Map auth", prompt: "…", background: true }, '<subagent sessionID="ses_2" state="running">')).toMatchObject({
+        kind: "agent",
+        title: "explore",
+        state: "sent to the background",
+        running: false,
+      });
+    });
+  });
+
   it("keeps a signature that changes only when the row says something new", () => {
     const base = {
       provider: "opencode" as const,

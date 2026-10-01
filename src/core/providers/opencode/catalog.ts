@@ -15,11 +15,9 @@
  *   `~/.moxen/cache/opencode-models.json` so we never contend with the
  *   server's lock/refresh protocol.
  *
- * Auth status mirrors upstream `packages/opencode/src/auth/index.ts`:
- * `OPENCODE_AUTH_CONTENT` wins, else `<xdg-data>/opencode/auth.json`.
- * Only the credential *type* per provider is surfaced — secrets are never
- * read into our process beyond what `JSON.parse` holds transiently, and
- * never logged.
+ * Auth status comes from `opencode auth list --format json --standalone` (v2 keeps
+ * credentials in SQLite). Only the credential *type* per provider is
+ * surfaced — the command itself emits no secrets, and we never log any.
  *
  * Snapshot provenance: `models-snapshot.json` is a verbatim
  * `GET https://models.opencode.ai/api.json` response pinned 2026-09-21
@@ -27,10 +25,11 @@
  * the pin.
  */
 import fs from "node:fs";
-import os from "node:os";
+import { execFile } from "node:child_process";
 import path from "node:path";
 
 import { appHomeDir } from "../../config.js";
+import { OPENCODE_DEFAULT_BINARY } from "./config.js";
 
 export const MODELS_DEV_DEFAULT_URL = "https://models.opencode.ai";
 export const MODELS_DEV_API_PATH = "/api.json";
@@ -194,7 +193,7 @@ async function snapshotCatalog(): Promise<ModelsDevCatalog | null> {
 export async function providerEnvNames(providerID: string): Promise<ReadonlyArray<string> | null> {
   const catalog = await snapshotCatalog();
   if (!catalog) return null;
-  const found = catalog.find((provider) => provider.id.toLowerCase() === providerID.toLowerCase());
+  const found = catalog.find((provider) => sameProviderId(provider.id, providerID));
   return found ? [...found.env] : null;
 }
 
@@ -232,25 +231,100 @@ export function defaultModelsDevCachePath(): string {
   return path.join(appHomeDir(), "cache", "opencode-models.json");
 }
 
+/** Provider ids v2 renamed; both spellings resolve to the current id. */
+const PROVIDER_ID_ALIASES: Readonly<Record<string, string>> = {
+  "azure-cognitive-services": "azure",
+  "google-vertex-anthropic": "google-vertex",
+};
+
+/** Current v2 provider id for a v1 or v2 spelling (lower-cased). */
+export function canonicalProviderId(providerId: string): string {
+  const id = providerId.toLowerCase();
+  return PROVIDER_ID_ALIASES[id] ?? id;
+}
+
+/** Whether two provider ids name the same provider across the v1→v2 renames. */
+export function sameProviderId(a: string, b: string): boolean {
+  return canonicalProviderId(a) === canonicalProviderId(b);
+}
+
+/** Credential type stored for `providerId`, tolerating the renamed ids. */
+export function storedAuthTypeFor(stored: Readonly<Record<string, string>>, providerId: string): string | undefined {
+  for (const [key, type] of Object.entries(stored)) {
+    if (sameProviderId(key, providerId)) return type;
+  }
+  return undefined;
+}
+
+export const AUTH_LIST_TIMEOUT_MS = 5_000;
+export const AUTH_LIST_CACHE_TTL_MS = 15_000;
+
+/** Runs `opencode auth list --format json --standalone`; stdout on success, null on any failure. */
+export type AuthListRunner = (binary: string, env: NodeJS.ProcessEnv) => Promise<string | null>;
+
 /**
- * Stored OpenCode credentials per provider id (`oauth`/`api`/`wellknown`/…).
- * `OPENCODE_AUTH_CONTENT` (inline JSON, upstream `auth/index.ts`) wins over
- * the auth file; the default file is `<xdg-data>/opencode/auth.json`,
- * overridable with `OPENCODE_AUTH_FILE` (ours). Unparseable input reads as
- * "no stored auth", never an error — listing must degrade, not fail.
+ * `--standalone` reads the credential store directly. Without it the CLI
+ * connects to the user's shared background service and starts one when none
+ * is running, leaving a daemon behind. Async, so a slow CLI never blocks the
+ * event loop of the server or the TUI.
  */
-export function readStoredAuthTypes(
+function defaultAuthListRunner(binary: string, env: NodeJS.ProcessEnv): Promise<string | null> {
+  return new Promise((resolve) => {
+    try {
+      const child = execFile(
+        binary,
+        ["auth", "list", "--format", "json", "--standalone"],
+        { env, encoding: "utf8", timeout: AUTH_LIST_TIMEOUT_MS, windowsHide: true, maxBuffer: 4 * 1024 * 1024 },
+        (error, stdout) => resolve(error || typeof stdout !== "string" ? null : stdout),
+      );
+      child.stdin?.end();
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+export interface ReadStoredAuthOptions {
+  /** Executable to ask (the `opencode.binaryPath` setting); default `opencode`. */
+  readonly binaryPath?: string | undefined;
+  readonly run?: AuthListRunner | undefined;
+  readonly now?: () => number;
+  /** Skip the per-process cache (tests). */
+  readonly fresh?: boolean;
+}
+
+const authCache = new Map<string, { at: number; value: Record<string, string> }>();
+
+/** Drop cached auth lists (after a login, and between tests). */
+export function clearStoredAuthCache(): void {
+  authCache.clear();
+}
+
+/**
+ * Stored OpenCode credentials per provider id, from v2's own
+ * `opencode auth list --format json --standalone` (v2 keeps credentials in SQLite, so
+ * `auth.json` is a stub). Output is `[{id, name, connections: [{type, name?}]}]`
+ * — type and env-var name only, never a secret. Connection types map onto
+ * the v1 vocabulary consumers already read: `key`→`api`, `oauth`→`oauth`,
+ * `env`→`env` (a key found in the environment); an unknown type passes
+ * through. Several connections: `oauth` wins, then `api`, then the rest.
+ * Cached per process for a short TTL, bounded by a timeout, and any failure
+ * (no binary, no service, bad JSON) reads as "no stored auth", never an
+ * error — listing must degrade, not fail.
+ */
+export async function readStoredAuthTypes(
   env: NodeJS.ProcessEnv = process.env,
-  readFile: (filePath: string) => string | null = defaultReadFile,
-): Record<string, string> {
-  const inline = env.OPENCODE_AUTH_CONTENT?.trim() ?? "";
-  if (inline.length > 0) return authTypesOf(parseJson(inline));
-  const file = env.OPENCODE_AUTH_FILE?.trim()?.length
-    ? (env.OPENCODE_AUTH_FILE as string).trim()
-    : path.join(env.XDG_DATA_HOME?.trim() || path.join(os.homedir(), ".local", "share"), "opencode", "auth.json");
-  const text = readFile(file);
-  if (text === null) return {};
-  return authTypesOf(parseJson(text));
+  options: ReadStoredAuthOptions = {},
+): Promise<Record<string, string>> {
+  const binary = options.binaryPath?.trim() || OPENCODE_DEFAULT_BINARY;
+  const now = (options.now ?? Date.now)();
+  const cacheKey = `${binary}\0${env.PATH ?? env.Path ?? ""}`;
+  const cached = options.fresh ? undefined : authCache.get(cacheKey);
+  if (cached && now - cached.at < AUTH_LIST_CACHE_TTL_MS) return { ...cached.value };
+  const text = await (options.run ?? defaultAuthListRunner)(binary, env);
+  const value = text === null ? {} : authTypesOf(parseJson(text));
+  if (!options.fresh) authCache.set(cacheKey, { at: now, value });
+  return { ...value };
 }
 
 function defaultReadFile(filePath: string): string | null {
@@ -269,13 +343,35 @@ function parseJson(text: string): unknown {
   }
 }
 
-function authTypesOf(raw: unknown): Record<string, string> {
-  const root = asRecord(raw);
-  if (!root) return {};
+const AUTH_TYPE_RANK: Readonly<Record<string, number>> = { oauth: 0, api: 1 };
+
+function mapConnectionType(type: string): string {
+  return type === "key" ? "api" : type;
+}
+
+/**
+ * Credential types per provider from a list of `{id, connections: [{type}]}`
+ * entries: the output of `opencode auth list --format json`, and equally the
+ * `data` of `GET /api/integration`, where a stored credential is
+ * `{type: "credential", method: "key" | "oauth"}` and an env key `{type: "env"}`.
+ */
+export function authTypesOf(raw: unknown): Record<string, string> {
+  if (!Array.isArray(raw)) return {};
   const out: Record<string, string> = {};
-  for (const [providerId, entry] of Object.entries(root)) {
-    const type = asRecord(entry)?.type;
-    if (typeof type === "string" && type.length > 0) out[providerId] = type;
+  for (const entry of raw) {
+    const record = asRecord(entry);
+    const id = record ? asString(record.id) : null;
+    const connections = record?.connections;
+    if (!id || !Array.isArray(connections)) continue;
+    const types = connections
+      .flatMap((connection) => {
+        const record = asRecord(connection);
+        const kind = asString(record?.type);
+        const type = kind === "credential" ? asString(record?.method) : kind;
+        return type ? [mapConnectionType(type)] : [];
+      })
+      .sort((a, b) => (AUTH_TYPE_RANK[a] ?? 2) - (AUTH_TYPE_RANK[b] ?? 2));
+    if (types[0] !== undefined) out[id] = types[0];
   }
   return out;
 }

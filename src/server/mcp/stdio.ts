@@ -9,7 +9,7 @@ import type { Readable, Writable } from "node:stream";
 import { createInterface } from "node:readline";
 
 import type { ClientApi } from "../api.js";
-import { callMoxenTool, MOXEN_TOOLS } from "./tools.js";
+import { callMoxenTool, MOXEN_TOOLS, TODOS_TOOL } from "./tools.js";
 
 /** Newest first; an unknown client version is answered with the newest. */
 export const MCP_PROTOCOL_VERSIONS = ["2025-06-18", "2025-03-26", "2024-11-05"] as const;
@@ -20,11 +20,17 @@ export const MOXEN_MCP_INSTRUCTIONS =
   "(any provider and model, in its own git worktree), then task_status to collect its report. " +
   "The models tool lists the providers, models and efforts you can delegate to.";
 
+/** How a client asks for the `todos` tool too: the HTTP endpoint's query, the stdio server's flag. */
+export const MOXEN_CHECKLIST_QUERY = "checklist=1";
+export const MOXEN_CHECKLIST_ARG = "--checklist";
+
 export interface McpSessionOptions {
   readonly api: ClientApi;
   /** The thread whose agent these tools act for. */
   readonly parentThreadId: string;
   readonly version?: string;
+  /** Also offer `todos`: the provider keeps no checklist of its own. */
+  readonly checklist?: boolean;
 }
 
 export interface ServeMcpOptions extends McpSessionOptions {
@@ -68,7 +74,7 @@ export async function answerMcp(options: McpSessionOptions, raw: unknown): Promi
       case "ping":
         return reply({});
       case "tools/list":
-        return reply({ tools: MOXEN_TOOLS });
+        return reply({ tools: options.checklist === true ? [...MOXEN_TOOLS, TODOS_TOOL] : MOXEN_TOOLS });
       case "tools/call": {
         const name = typeof params.name === "string" ? params.name : "";
         const args =

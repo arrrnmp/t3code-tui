@@ -26,10 +26,10 @@ async function setup(harnessOptions: Parameters<typeof testHarness>[0] = {}) {
 }
 
 /** One MCP session over in-memory pipes: send requests, read each reply line. */
-function mcpSession(connection: DirectConnection, parentThreadId: string) {
+function mcpSession(connection: DirectConnection, parentThreadId: string, checklist = false) {
   const input = new PassThrough();
   const output = new PassThrough();
-  const served = serveMcp({ api: connection, parentThreadId, input, output });
+  const served = serveMcp({ api: connection, parentThreadId, checklist, input, output });
   const replies = new Map<number, (value: Record<string, unknown>) => void>();
   let buffer = "";
   output.on("data", (chunk: Buffer) => {
@@ -190,6 +190,41 @@ describe("moxen MCP server", () => {
       const start = starts.find((input) => input.threadId === other.threadId);
       expect(start).not.toHaveProperty("mcpServers");
     } finally {
+      await connection.close();
+    }
+  });
+
+  it("lends its checklist only to a client that asks, and records it as the thread's plan", async () => {
+    const { harness, connection, parentThreadId, starts } = await setup();
+    const plain = mcpSession(connection, parentThreadId);
+    const lent = mcpSession(connection, parentThreadId, true);
+    try {
+      const names = async (session: ReturnType<typeof mcpSession>) =>
+        ((await session.request("tools/list")).result as { tools: Array<{ name: string }> }).tools.map((tool) => tool.name);
+      expect(await names(plain)).not.toContain("todos");
+      expect(await names(lent)).toContain("todos");
+
+      const called = await lent.request("tools/call", {
+        name: "todos",
+        arguments: { todos: [{ content: "Read the code", status: "completed" }, { content: "Fix it", status: "in_progress" }] },
+      });
+      expect(called.result).toMatchObject({ isError: false });
+      const store = await openThreadStore(harness.root);
+      const plans = (await store.readActivities(parentThreadId)).filter((row) => row.kind === "turn.plan.updated");
+      expect(plans.at(-1)?.payload).toEqual({ plan: [{ step: "Read the code", status: "completed" }, { step: "Fix it", status: "in_progress" }] });
+      expect(await callMoxenTool(connection, parentThreadId, "todos", { todos: [{ content: "x", status: "done" }] })).toMatchObject({ isError: true });
+
+      // The out-of-process form a checklist-less provider takes asks for it.
+      const spec = (starts.find((input) => input.threadId === parentThreadId) as { mcpServers: Array<Record<string, any>> }).mcpServers.find(
+        (server) => server.name === "moxen",
+      )!;
+      const lending = spec.checklist as { type: string; url?: string; args?: string[] };
+      expect(lending.type === "http" ? lending.url : lending.args).toEqual(
+        lending.type === "http" ? expect.stringMatching(/\?checklist=1$/) : expect.arrayContaining(["--checklist"]),
+      );
+    } finally {
+      await plain.close();
+      await lent.close();
       await connection.close();
     }
   });

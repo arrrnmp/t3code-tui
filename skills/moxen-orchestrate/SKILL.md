@@ -49,16 +49,25 @@ that is taking longer than it should.
 
 ## 1. Discover what you can spend
 
-Call `models` before you plan. It tells you what exists here; `.moxen/model-notes.md` (below) tells
-you what each model is good for. A model's name can be newer than your training data: if the notes
-say nothing about it, research it (release notes, benchmarks) before you trust it with more than a
-trivial task, and record what you learn.
+Discovery is not optional, and it comes before the plan: all three steps, every time, before the
+first `delegate`.
 
-Usage matters. `moxen --json providers list` reports `usageLimits` per provider (session and weekly
-windows, `usedPercent`, `resetsAt`). Prefer a provider with headroom for work that is not urgent, and
-say so in your reason. `null` means no data, not unlimited. A model can show headroom and still be
-refused at dispatch because the plan does not cover it; record that in the notes rather than
-retrying past it.
+1. **What exists.** Call `models`, then read `.moxen/model-notes.md` (below).
+2. **What is left.** Check usage for *every* provider you might use — `moxen --json providers list`
+   reports `usageLimits` per provider (session and weekly windows, `usedPercent`, `resetsAt`); if
+   `moxen` is not on PATH, read `~/.moxen/threads/usage-limits.json`. A provider at or near 100% is
+   out of the plan, not a retry. `null` means no data, not unlimited. Prefer headroom for work that
+   is not urgent, and size the fan-out to what is left.
+3. **What each model is good for.** Research every model you intend to use whose notes are missing
+   or stale — **including the family you run on**. Your own model's name can be newer than your
+   training data too; assuming its tier is not research. Use release notes and published benchmarks
+   (coding: SWE-bench, Terminal-Bench, CursorBench; reasoning: HLE), price per token, and scores
+   *per effort level* where published. Write what you find to the notes, with sources, and keep
+   researched facts apart from your own assumptions.
+
+Research done this way replaces trial runs: do not burn a throwaway task to find out what a model
+can do. A model can still show headroom and be refused at dispatch because the plan does not cover
+it; record that in the notes rather than retrying past it.
 
 ## 2. Remember, so the next run is cheaper
 
@@ -78,7 +87,12 @@ footing — the vendor you run on is not a reason to route work to it.
 
 - Breadth first: many small scouting tasks on cheap or free models.
 - Depth and judgment: nuanced analysis, adversarial review and the final merge on strong models.
-- Effort is a dial per task: `low` for mechanical sweeps, `high` and up for real reasoning. Only the
+- Effort is a dial per task, and it starts at `medium`. Published benchmarks show medium often
+  within a few points of high — and sometimes ahead of it — at a fraction of the tokens, while
+  `max` can score *below* `xhigh`. Go to `high` only when the task demonstrably needs it (long
+  multi-step implementation, adversarial review of high-stakes changes) and cite the benchmark gap
+  in your reason; `low` for mechanical sweeps. Before raising a mid-tier model to its top effort,
+  compare the next tier up at a lower effort — it can be cheaper and better. Only the
   values `models` lists for that model are valid.
 - Start scoped — one file or directory — then widen once the shape proves out.
 

@@ -1,4 +1,4 @@
-import { act } from "react";
+import { act, useState } from "react";
 import { testRender } from "@opentui/react/test-utils";
 
 import type { ThreadEnvelope } from "../../../core/types.js";
@@ -123,4 +123,84 @@ export async function runSidebarTree(): Promise<void> {
   await act(async () => viewing.mockMouse.click(viewRows[parentRow]!.indexOf("Test") + 1, parentRow));
   await viewing.flush();
   if (threads[0] !== "parent") fail("clicking the parent thread row did not open the thread");
+
+  // A family changes shape in place (children move from depth 1 to depth 0,
+  // or their parent becomes a dim header): no cell of the old frame may survive.
+  const shell = (threads: ThreadEnvelope[]) => ({
+    snapshotSequence: 1,
+    projects: [{ id: "p1", title: "moxen", workspaceRoot: "/repo", defaultModelSelection: null }],
+    threads,
+    synchronized: true,
+    unhandled: {},
+  });
+  const family = [
+    thread("parent", "Parent thread", { latestUserMessageAt: ago(30_000) }),
+    thread("k1", "Run thread test suite", { parentThreadId: "parent", createdAt: ago(400_000) }),
+    thread("k2", "Summarize render-check scenarios", { parentThreadId: "parent", createdAt: ago(300_000) }),
+  ];
+  const options = { settledExpanded: false, settledLimit: 10, now };
+  const settledParent = [{ ...family[0]!, settledAt: ago(1_000) }, ...family.slice(1)];
+  const stages = [
+    ["family active", buildSidebarSections(shell(family), options)],
+    ["parent settled (header rule)", buildSidebarSections(shell(settledParent), options)],
+    ["parent gone (children orphaned)", buildSidebarSections(shell(family.slice(1)), options)],
+    ["family active again", buildSidebarSections(shell(family), options)],
+  ] as const;
+  let setStage: (index: number) => void = () => {};
+  const Harness = () => {
+    const [index, set] = useState(0);
+    setStage = set;
+    return (
+      <Sidebar
+        sections={stages[index]![1]}
+        backdrop="off"
+      openThreadId={null}
+        markedThreadIds={new Set()}
+        settledExpanded={false}
+        width={44}
+        now={now}
+        height={20}
+        screenWidth={44}
+        onOpenThread={() => {}}
+        onToggleSettled={() => {}}
+        onShowMore={() => {}}
+        onSelectMode={() => {}}
+        onToggleProject={() => {}}
+        onCycleProject={() => {}}
+        onNewThread={() => {}}
+      />
+    );
+  };
+  const morph = await testRender(<Harness />, { width: 46, height: 20, exitOnCtrlC: false });
+  await morph.flush();
+  for (const [index, [label]] of stages.entries()) {
+    await act(async () => setStage(index));
+    await morph.flush();
+    const fresh = await testRender(
+      <Sidebar
+        sections={stages[index]![1]}
+        backdrop="off"
+      openThreadId={null}
+        markedThreadIds={new Set()}
+        settledExpanded={false}
+        width={44}
+        now={now}
+        height={20}
+        screenWidth={44}
+        onOpenThread={() => {}}
+        onToggleSettled={() => {}}
+        onShowMore={() => {}}
+        onSelectMode={() => {}}
+        onToggleProject={() => {}}
+        onCycleProject={() => {}}
+        onNewThread={() => {}}
+      />,
+      { width: 46, height: 20, exitOnCtrlC: false },
+    );
+    await fresh.flush();
+    const got = morph.captureCharFrame();
+    console.log(`--- sidebar morph: ${label} ---`);
+    console.log(got);
+    if (got !== fresh.captureCharFrame()) fail(`sidebar after "${label}" differs from a fresh render (stale cells)`);
+  }
 }

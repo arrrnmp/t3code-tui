@@ -109,7 +109,8 @@ function ActiveCard({
   // `updatedAt`, so a running thread doesn't glow permanently off its own
   // tool calls.
   const fresh = now - threadSortTime(row.thread) < FRESH_MS;
-  const titleFg = open || fresh ? COLOR.bright : COLOR.text;
+  // A settled parent shown as the header of live subtasks stays dim.
+  const titleFg = row.status === "settled" ? COLOR.dim : open || fresh ? COLOR.bright : COLOR.text;
   const ageFg = fresh ? COLOR.accent : COLOR.dim;
   const body = width - 2;
   const { hovered, handlers } = useHover();
@@ -133,12 +134,17 @@ function ActiveCard({
         ))}
       </>
     );
+  // The one-line and two-row layouts carry different fixed styles (row +
+  // height 1, versus a column). Each has its own key so a row that changes
+  // layout in place remounts: a reused box kept the old layout's style, so
+  // a family reshaping (depth 1 to 0) left stale cells and squeezed rows.
   if (compact === true || nested) {
     const tail = `${row.age.length > 0 ? `${row.age} ` : ""}${glyph}${row.waiting ? " ?" : ""}${marked ? ` ${DRAFT_DOT}` : ""}`;
     const lead = nested ? `  ${row.last ? "└" : "├"} ⇢ ` : " ";
     return (
       <>
       <box
+        key="line"
         style={{ flexDirection: "row", width, height: 1, flexShrink: 0 }}
         onMouseDown={onOpen}
         selectable={false}
@@ -169,6 +175,7 @@ function ActiveCard({
   return (
     <>
     <box
+      key="card"
       style={{ flexDirection: "column", width, flexShrink: 0 }}
       onMouseDown={onOpen}
       selectable={false}
@@ -575,7 +582,7 @@ export function Sidebar({
           deliberate break instead of a stray blank void. */}
       <box style={{ flexDirection: "column", flexShrink: 0, backgroundColor: SURFACE.panel, zIndex: 1 }}>
         <box style={{ flexDirection: "row", height: 1, flexShrink: 0 }} backgroundColor={SURFACE.panel}>
-          <text fg={COLOR.dim} selectable={false}>{` ${sections.active.length} active · `}</text>
+          <text fg={COLOR.dim} selectable={false}>{` ${sections.active.filter((row) => row.status !== "settled").length} active · `}</text>
           <text fg={runningCount > 0 ? COLOR.accent : COLOR.faint} selectable={false}>{`${runningCount} running`}</text>
           {blockedCount > 0 ? (
             <text fg={COLOR.danger} selectable={false}>{` · ${blockedCount} blocked`}</text>

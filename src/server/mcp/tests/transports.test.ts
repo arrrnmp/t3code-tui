@@ -88,6 +88,12 @@ describe("moxen tools over loopback HTTP", () => {
       expect(batch).toHaveLength(1);
       expect(batch[0]).toMatchObject({ id: 3, result: { isError: false } });
 
+      // A client with no checklist of its own asks for moxen's.
+      const lent = (await (await post({ jsonrpc: "2.0", id: 4, method: "tools/list" }, spec.headers, `${spec.url}?checklist=1`)).json()) as {
+        result: { tools: Array<{ name: string }> };
+      };
+      expect(lent.result.tools.map((tool) => tool.name)).toEqual([...MOXEN_TOOLS.map((tool) => tool.name), "todos"]);
+
       expect((await fetch(spec.url, { method: "GET", headers: spec.headers })).status).toBe(405);
     } finally {
       await server.close();

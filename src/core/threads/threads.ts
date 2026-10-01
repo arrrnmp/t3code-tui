@@ -157,6 +157,7 @@ export async function createThread(
     id,
     projectId,
     title,
+    ...(input.titleSource ? { titleSource: input.titleSource } : {}),
     modelSelection: input.modelSelection,
     runtimeMode: input.runtimeMode ?? "full-access",
     interactionMode: input.interactionMode ?? "default",
@@ -884,53 +885,115 @@ export async function interruptTurn(
   });
 }
 
+/**
+ * A thread's settlement family: its root ancestor (climbing `parentThreadId`,
+ * stopping at a missing parent or a cycle) and every live descendant. Archived
+ * and deleted members are left out; the requested thread is always in.
+ */
+async function threadFamily(store: ThreadStore, threadId: string): Promise<string[]> {
+  // The parent link lives in the delegations ledger, not on the thread record.
+  const rows = await store.readDelegations().catch(() => []);
+  const parentOf = new Map(rows.map((row) => [row.childThreadId, row.parentThreadId]));
+  let root = threadId;
+  const seen = new Set([root]);
+  for (;;) {
+    const parent = parentOf.get(root);
+    if (parent === undefined || seen.has(parent) || (await store.readThreadRecord(parent)) === null) break;
+    seen.add(parent);
+    root = parent;
+  }
+  const family = new Set([root]);
+  const queue = [root];
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    for (const row of rows) {
+      if (row.parentThreadId !== current || family.has(row.childThreadId)) continue;
+      const child = await store.readThreadRecord(row.childThreadId);
+      if (child === null || child.archivedAt != null || child.deletedAt != null) continue;
+      family.add(row.childThreadId);
+      queue.push(row.childThreadId);
+    }
+  }
+  family.add(threadId);
+  return [...family];
+}
+
+/** Hold every listed thread's lock at once; ids are taken in sorted order, so concurrent family operations cannot deadlock. */
+async function withThreadLocks<T>(store: ThreadStore, ids: readonly string[], run: () => Promise<T>): Promise<T> {
+  const [first, ...rest] = [...ids].sort();
+  if (first === undefined) return await run();
+  return await store.withThreadLock(first, () => withThreadLocks(store, rest, run));
+}
+
+/**
+ * Settling any thread settles its whole family (root and all live
+ * descendants), so a settled parent never leaves active subthreads behind.
+ * If any member still has running/queued work or pending approvals or input,
+ * nothing is settled. Returns the requested thread's record.
+ */
 export async function settleThread(store: ThreadStore, rawThreadId: string): Promise<StoredThread> {
   const threadId = requireThreadId(rawThreadId);
-  return await store.withThreadLock(threadId, async () => {
+  const family = await threadFamily(store, threadId);
+  return await withThreadLocks(store, family, async () => {
     const now = store.nowIso();
-    const thread = requireStoredThread(await store.readThreadRecord(threadId), threadId);
-    requireNotArchived(thread, "change settlement state");
-    const running = openTurn(await store.readTurns(threadId));
-    if (running || thread.hasPendingApprovals || thread.hasPendingUserInput) {
-      throw new CliError("THREAD_SETTLE_BLOCKED", `Thread ${threadId} still has active or blocked work.`, {
-        exitCode: 4,
-        details: {
-          threadId,
-          hasActiveTurn: running !== null,
-          hasPendingApprovals: thread.hasPendingApprovals,
-          hasPendingUserInput: thread.hasPendingUserInput,
-        },
-      });
+    const members: StoredThread[] = [];
+    const blocked: Array<{ id: string; running: boolean; thread: StoredThread }> = [];
+    for (const id of family) {
+      const thread = requireStoredThread(await store.readThreadRecord(id), id);
+      if (id === threadId) requireNotArchived(thread, "change settlement state");
+      if (thread.archivedAt != null || thread.deletedAt != null) continue;
+      members.push(thread);
+      const running = openTurn(await store.readTurns(id)) !== null;
+      if (running || thread.hasPendingApprovals || thread.hasPendingUserInput) blocked.push({ id, running, thread });
     }
-    const next: StoredThread = {
-      ...thread,
-      settledAt: now,
-      settledOverride: null,
-      snoozedUntil: null,
-      updatedAt: now,
-    };
-    await store.writeThreadRecord(next);
-    store.emit(threadId, "settled");
-    return next;
+    if (blocked.length > 0) {
+      const culprit = blocked.find((entry) => entry.id === threadId) ?? blocked[0]!;
+      throw new CliError(
+        "THREAD_SETTLE_BLOCKED",
+        culprit.id === threadId
+          ? `Thread ${threadId} still has active or blocked work.`
+          : `Thread ${threadId} cannot settle: ${culprit.id} in its family still has active or blocked work.`,
+        {
+          exitCode: 4,
+          details: {
+            threadId,
+            hasActiveTurn: culprit.running,
+            hasPendingApprovals: culprit.thread.hasPendingApprovals,
+            hasPendingUserInput: culprit.thread.hasPendingUserInput,
+            blockedThreadIds: blocked.map((entry) => entry.id),
+          },
+        },
+      );
+    }
+    let result: StoredThread | null = null;
+    for (const thread of members) {
+      if (thread.id !== threadId && thread.settledAt != null) continue;
+      const next: StoredThread = { ...thread, settledAt: now, settledOverride: null, snoozedUntil: null, updatedAt: now };
+      await store.writeThreadRecord(next);
+      store.emit(thread.id, "settled");
+      if (thread.id === threadId) result = next;
+    }
+    return result ?? members.find((thread) => thread.id === threadId)!;
   });
 }
 
+/** The mirror of `settleThread`: the whole family is woken; nothing can block it. Returns the requested thread's record. */
 export async function unsettleThread(store: ThreadStore, rawThreadId: string): Promise<StoredThread> {
   const threadId = requireThreadId(rawThreadId);
-  return await store.withThreadLock(threadId, async () => {
+  const family = await threadFamily(store, threadId);
+  return await withThreadLocks(store, family, async () => {
     const now = store.nowIso();
-    const thread = requireStoredThread(await store.readThreadRecord(threadId), threadId);
-    requireNotArchived(thread, "change settlement state");
-    const next: StoredThread = {
-      ...thread,
-      settledAt: null,
-      settledOverride: "active",
-      unsettledAt: now,
-      updatedAt: now,
-    };
-    await store.writeThreadRecord(next);
-    store.emit(threadId, "unsettle");
-    return next;
+    let result: StoredThread | null = null;
+    for (const id of family) {
+      const thread = requireStoredThread(await store.readThreadRecord(id), id);
+      if (id === threadId) requireNotArchived(thread, "change settlement state");
+      if (thread.archivedAt != null || thread.deletedAt != null) continue;
+      const next: StoredThread = { ...thread, settledAt: null, settledOverride: "active", unsettledAt: now, updatedAt: now };
+      await store.writeThreadRecord(next);
+      store.emit(id, "unsettle");
+      if (id === threadId) result = next;
+    }
+    return result!;
   });
 }
 
@@ -1014,26 +1077,56 @@ export async function updateThreadMeta(
     const thread = requireStoredThread(await store.readThreadRecord(threadId), threadId);
     requireNotArchived(thread, "be updated");
     let title = thread.title;
+    let titleSource = thread.titleSource;
     if (input.title !== undefined) {
       const trimmed = input.title.trim();
       if (!trimmed) {
         throw new CliError("INVALID_THREAD_OPTION", "A non-empty thread title is required.", { exitCode: 2 });
       }
       title = trimmed;
+      titleSource = "user";
     } else if (input.regenerateTitle === true) {
       const messages = await store.readMessages(threadId);
       const firstUser = messages.find((message) => message.role === "user" && message.text.trim().length > 0);
       const seed = firstUser?.text.trim().split(/\r?\n/u)[0]?.replace(/\s+/gu, " ").trim() || thread.title;
       title = seed.length <= 80 ? seed : `${seed.slice(0, 79)}…`;
+      titleSource = "seed";
     }
     const next: StoredThread = {
       ...thread,
       title,
+      ...(titleSource ? { titleSource } : {}),
       ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
       ...(input.runtimeMode !== undefined ? { runtimeMode: input.runtimeMode } : {}),
       ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
       updatedAt: now,
     };
+    await store.writeThreadRecord(next);
+    store.emit(threadId, "meta-updated");
+    return next;
+  });
+}
+
+/**
+ * Take the provider's native session title as the thread's. A title someone
+ * chose (`titleSource: "user"`) stays unless `force` says the user asked for
+ * the provider's (regenerate). Returns null when nothing changed.
+ */
+export async function adoptProviderTitle(
+  store: ThreadStore,
+  rawThreadId: string,
+  rawTitle: string,
+  options: { readonly force?: boolean } = {},
+): Promise<StoredThread | null> {
+  const threadId = requireThreadId(rawThreadId);
+  const title = rawTitle.trim().replace(/\s+/gu, " ");
+  if (!title) return null;
+  return await store.withThreadLock(threadId, async () => {
+    const thread = await store.readThreadRecord(threadId);
+    if (thread === null || thread.archivedAt != null || thread.deletedAt != null) return null;
+    if (thread.titleSource === "user" && options.force !== true) return null;
+    if (thread.title === title && thread.titleSource === "provider") return null;
+    const next: StoredThread = { ...thread, title, titleSource: "provider", updatedAt: store.nowIso() };
     await store.writeThreadRecord(next);
     store.emit(threadId, "meta-updated");
     return next;

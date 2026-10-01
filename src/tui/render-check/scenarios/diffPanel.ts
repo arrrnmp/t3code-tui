@@ -35,7 +35,8 @@ export async function runDiffPanel(setup: TestRendererSetup): Promise<void> {
   let sawStack = false;
   for (let sweep = 0; sweep < 60; sweep += 1) {
     const frame = setup.captureCharFrame();
-    if (frame.includes("Ran 3 commands")) sawSummary = true;
+    // The mid-turn nudge splits turn-1's work in two, each summarized.
+    if (/Ran \d+ commands?/u.test(frame)) sawSummary = true;
     if (frame.includes("read ×") || frame.includes("Update ×")) sawStack = true;
     if (sawSummary) break;
     const rows = frame.split("\n");

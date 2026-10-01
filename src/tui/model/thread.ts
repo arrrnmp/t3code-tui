@@ -605,12 +605,32 @@ const AGENT_TOOLS: ReadonlySet<string> = new Set(["Agent", "Task"]);
 function withSubagentState(activities: readonly ActivityEnvelope[]): ActivityEnvelope[] {
   const agentCalls = new Set<string>();
   const status = new Map<string, string>();
+  // OpenCode: a background `subagent` call names its child session in its
+  // result, and the child's own start/stop rows say where it stands.
+  const children = new Map<string, string>();
+  const childStatus = new Map<string, string>();
   for (const activity of activities) {
     const payload = asRecord(activity.payload);
-    const tool = asRecord(payload?.data)?.tool;
+    const data = asRecord(payload?.data);
+    const tool = data?.tool;
     if (typeof tool === "string" && AGENT_TOOLS.has(tool) && typeof payload?.toolCallId === "string") agentCalls.add(payload.toolCallId);
     if (activity.kind.startsWith("background.") && typeof payload?.toolUseId === "string" && typeof payload.status === "string") {
       status.set(payload.toolUseId, payload.status);
+    }
+    const state = asRecord(data?.state);
+    if (tool === "subagent" && asRecord(state?.input)?.background === true && typeof payload?.toolCallId === "string") {
+      const child = /<subagent\b[^>]*\bsessionID="([^"]+)"/u.exec(stringOf(state?.output) ?? "")?.[1];
+      if (child !== undefined) children.set(child, payload.toolCallId);
+    }
+    if (activity.kind === "subagent" && typeof payload?.agentId === "string" && typeof payload.status === "string") {
+      childStatus.set(payload.agentId, payload.status === "stopped" ? "completed" : "started");
+    }
+  }
+  for (const [child, callId] of children) {
+    const said = childStatus.get(child);
+    if (said !== undefined) {
+      agentCalls.add(callId);
+      status.set(callId, said);
     }
   }
   if (agentCalls.size === 0) return [...activities];

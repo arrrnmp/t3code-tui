@@ -100,6 +100,38 @@ export const MOXEN_TOOLS: readonly McpTool[] = [
   },
 ];
 
+/**
+ * A checklist for providers with none of their own (OpenCode v2 has no
+ * `todowrite`); listed only to those (`McpSessionOptions.checklist`). It
+ * becomes the thread's plan, the tasks panel the user watches.
+ */
+export const TODOS_TOOL: McpTool = {
+  name: "todos",
+  description:
+    "Your task checklist, shown to the user as the thread's Tasks panel. Use it for multi-step work: " +
+    "send the whole list every time (it replaces the last one), marking one item in_progress as you start it " +
+    "and completed as soon as it is done.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      todos: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            content: { type: "string", description: "The step, imperative and short." },
+            status: { type: "string", enum: ["pending", "in_progress", "completed"] },
+          },
+          required: ["content", "status"],
+          additionalProperties: false,
+        },
+      },
+    },
+    required: ["todos"],
+    additionalProperties: false,
+  },
+};
+
 const TERMINAL: ReadonlySet<DelegatedTaskStatus> = new Set(["completed", "failed", "interrupted"]);
 
 export interface ToolResult {
@@ -134,6 +166,16 @@ export async function callMoxenTool(
         return ok(await statusTool(api, parentThreadId, args, sleep));
       case "models":
         return ok(await modelsTool(api, args));
+      case "todos": {
+        const todos = Array.isArray(args.todos) ? args.todos : null;
+        if (todos === null) throw new CliError("INVALID_TOOL_INPUT", "todos must be an array of {content, status}.");
+        const plan = todos.map((entry) => {
+          const record = (entry !== null && typeof entry === "object" ? entry : {}) as Record<string, unknown>;
+          return { step: record.content, status: record.status };
+        });
+        const recorded = await api.dispatch({ type: "thread.plan.set", threadId: parentThreadId, plan: plan as never });
+        return ok({ recorded: recorded.steps });
+      }
       case "task_cancel": {
         const taskId = argString(args, "taskId", true)!;
         const cancelled = await api.dispatch({ type: "thread.task.cancel", parentThreadId, taskId });
